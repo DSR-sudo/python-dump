@@ -1,41 +1,66 @@
 import struct
 from dma_protocol import *
 
+
+#配合驱动 Lookaside List 大小 (4352 bytes)
+# 我们预留头部空间，安全设置为 4096
+DRIVER_MAX_CHUNK = 65536
+
 class DMAApi:
     def __init__(self, core):
         self.core = core
         self.cached_pid = 0
-        self.cached_user_dtb = 0
+        self.cached_dtb = 0 # 这是 User CR3
+        self.cached_kdtb = 0 #这是Kernel CR3
 
     def get_cr3(self, pid):
-        """获取并缓存 CR3 (返回 User 和 Kernel 两个 DTB)"""
-        # 按照 PACKET_FMT 发送请求
-        payload = pack_command(CMD_GET_CR3, pid, 0, 0, 0)
-        data = self.core.request(payload, 16) # 驱动会回传 16 字节
-    
-        if data and len(data) >= 16:
-            # <QQ 代表两个 8 字节的无符号长整型
-            user_cr3, kernel_cr3 = struct.unpack("<QQ", data[:16])
+        """获取 CR3 和 模块基址"""
+        payload = pack_cr3_req(pid)
+        # [修改] 现在接收 24 字节
+        data = self.core.request_bytes(payload, 24) 
         
-            # 更新本地缓存 (通常读写内存使用 User CR3)
+        if data and len(data) >= 24:
+            # 解析 3 个 Q (unsigned long long)
+            user_cr3, kernel_cr3, base_addr = struct.unpack("<QQQ", data[:24])
+            
             self.cached_pid = pid
-            self.cached_user_dtb = user_cr3
+            self.cached_dtb = kernel_cr3 if kernel_cr3 != 0 else user_cr3
+            self.cached_kdtb = kernel_cr3
+            
+            # [新增] 返回基址
+            return user_cr3, kernel_cr3, base_addr
+            
+        return None, None, None
+
+
+    def read_chunk(self, addr, size):
+        # 内部辅助函数
+        payload = pack_read_req(self.cached_dtb, addr, size)
+        return self.core.request_bytes(payload, size)
+
+    def read_mem(self, addr, size):
+        """
+        [极速版] 移除客户端切片，直接请求全量数据
+        """
+        if self.cached_dtb == 0: return None
         
-            return user_cr3, kernel_cr3
+        # 1. 临时增大 UDP 接收缓冲区 (防止 Python 处理不过来导致丢包)
+        # 这一步通常在 dma_core 初始化时做，确保 SO_RCVBUF 至少 4MB+
+        
+        # 2. 直接构造全量请求
+        # 假设我们要读 30MB，直接告诉驱动 "给我 30MB"
+        # 你的驱动有 while (totalProcessed < size) 循环，它完全能处理！
+        payload = pack_read_req(self.cached_dtb, addr, size)
+        
+        # 3. 调用核心接收逻辑
+        # core.request_bytes 需要能处理 size 这么大的数据接收
+        # 它会一直 recv 直到凑够 size 字节
+        print(f"DEBUG REQ: {payload.hex()}")
+        return self.core.request_bytes(payload, size, timeout=10.0) # 超时设长一点
 
-
-    def read_mem(self, pid, addr, size):
-        """读取内存 (自动处理 CR3)"""
-        if pid != self.cached_pid:
-            if not self.get_cr3(pid)[0]: return None
-        payload = pack_command(CMD_READ_MEM, pid, addr, self.cached_user_dtb, size)
-        return self.core.request(payload, size)
-
-    def scan_pattern(self, module, pattern):
-        """扫描特征码"""
-        payload = pack_scan(module, pattern)
-        # 扫描可能较慢，给予 5 秒超时
-        data = self.core.request(payload, 8, timeout=5.0)
-        if data:
-            return struct.unpack("<Q", data)[0]
-        return 0
+    def enum_user_modules(self, pid):
+        """发送枚举模块请求"""
+        payload = pack_enum_modules_req(pid)
+        # 注意: 这是一个流式指令，C++ 会发送多个 DATA 包回来
+        # 此处仅负责发送指令，接收逻辑需由 core.py 的 _receiver_loop 处理
+        self.core.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))

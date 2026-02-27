@@ -1,101 +1,162 @@
-# ue_types.py
 import struct
-from ue_memory import mem
+import ue_memory
+from ue_memory import MemoryReader
 
-class UE424_Offsets:
-    # --- UObject ---
-    UObject_Index       = 0x0C  # Index in GObjects
-    UObject_Class       = 0x10  # UClass pointer
-    UObject_Name        = 0x18  # FName (Index)
-    UObject_Outer       = 0x20
-
-    # --- UField (UE4.24 继承自 UObject) ---
-    UField_Next         = 0x28  # 链表指针 (UE4.24)
+class UE_Offsets:
+    # UE 4.24 专用
+    UStruct_SuperStruct     = 0x40 
+    UStruct_Children        = 0x48 
+    UField_Class            = 0x10
+    UField_Next             = 0x28
+    UField_Name             = 0x18
+    UProperty_Offset        = 0x44
+    UProperty_PropertyFlags = 0x38 # 或 0x40
     
-    # --- UStruct ---
-    UStruct_SuperStruct = 0x40 
-    UStruct_Children    = 0x48  # UE4.24 使用 Children (UField*), 位于 0x48
-    
-    # --- UProperty (UE4.24) ---
-    # 在 4.24 中 UProperty 是 UObject -> UField -> UProperty
-    UProperty_ElementSize = 0x34 # or 0x38 depending on build
-    UProperty_PropertyFlags = 0x40
-    UProperty_Offset      = 0x44  # 成员变量偏移量 (通常是 0x44, 4.25+ 变成了 0x4C)
+    UBoolProperty_ByteMask  = 0x70 
+    UBoolProperty_FieldMask = 0x72
+    UArrayProperty_Inner    = 0x70 
 
-class FNameEntryArray_UE424:
-    """针对 UE 4.24 的 GNames (TNameEntryArray)"""
-    def __init__(self, gnames_addr):
-        self.base = gnames_addr
-        
-    def get_name(self, index):
-        # 1. 计算 Chunk 和 InChunk 索引
-        # UE4.24 每个 Chunk 通常存 16384 (0x4000) 个指针
-        chunk_idx = index // 0x4000
-        in_chunk_idx = index % 0x4000
-        
-        # 2. 读取 Chunk 指针
-        # GNames 指向一个指针数组
-        chunk_ptr = mem.read_ptr(self.base + chunk_idx * 8)
-        if not chunk_ptr: return f"ErrChunk[{index}]"
-        
-        # 3. 读取 FNameEntry 指针 (这是旧版与新版最大的区别)
-        # 旧版：Chunk 里存的是 FNameEntry* (指针)
-        # 新版：Chunk 里存的是实际数据
-        entry_ptr = mem.read_ptr(chunk_ptr + in_chunk_idx * 8)
-        if not entry_ptr: return f"ErrEntry[{index}]"
-        
-        # 4. 读取字符串
-        # UE4.24 FNameEntry 结构: { FNameEntry* NextHash; int32 Index; char AnsiName[]; }
-        # 字符串偏移通常在 0x0C 或 0x10
-        return mem.read_string(entry_ptr + 0x10) 
-
-class TUObjectArray:
-    """UE4 全局对象数组 (Chunked)"""
-    def __init__(self, gobjects_addr):
-        self.base = gobjects_addr
-        self.num_elements = mem.read_u32(self.base + 0x14) 
-    
-    def get_object_ptr(self, index):
-        if index >= self.num_elements: return 0
-        
-        # GObjects -> Objects (0x10) -> Chunks
-        objects_ptr = mem.read_ptr(self.base + 0x10)
-        if not objects_ptr: return 0
-        
-        chunk_index = index // 0x10000
-        in_chunk_index = index % 0x10000
-        
-        chunk_addr = mem.read_ptr(objects_ptr + chunk_index * 8)
-        if not chunk_addr: return 0
-        
-        # FUObjectItem 大小通常是 24 字节
-        item_addr = chunk_addr + (in_chunk_index * 24)
-        return mem.read_ptr(item_addr) # 第一个成员是 Object*
+# ==========================================
+# 兼容模式类 (使用 ue_memory.mem)
+# ==========================================
 
 class UStruct:
     def __init__(self, addr):
         self.addr = addr
-    
     def get_children(self):
-        # UE4.24: Children at 0x48
-        return mem.read_ptr(self.addr + UE424_Offsets.UStruct_Children)
-    
+        return ue_memory.mem.read_ptr(self.addr + UE_Offsets.UStruct_Children)
     def get_super(self):
-        return mem.read_ptr(self.addr + UE424_Offsets.UStruct_SuperStruct)
+        return ue_memory.mem.read_ptr(self.addr + UE_Offsets.UStruct_SuperStruct)
 
 class UProperty:
     def __init__(self, addr):
         self.addr = addr
-    
     def get_next(self):
-        # UE4.24: UField_Next at 0x28
-        addr = mem.read_ptr(self.addr + UE424_Offsets.UField_Next)
+        addr = ue_memory.mem.read_ptr(self.addr + UE_Offsets.UField_Next)
         return UProperty(addr) if addr else None
-    
     def get_name_id(self):
-        # UObject_Name at 0x18
-        return mem.read_u32(self.addr + UE424_Offsets.UObject_Name)
-    
+        return ue_memory.mem.read_u32(self.addr + UE_Offsets.UField_Name)
     def get_offset(self):
-        # UProperty_Offset at 0x44 (UE4.24)
-        return mem.read_u32(self.addr + UE424_Offsets.UProperty_Offset)
+        return ue_memory.mem.read_u32(self.addr + UE_Offsets.UProperty_Offset)
+
+class TUObjectArray:
+    def __init__(self, gobjects_addr):
+        # Issue 3 修复：在 UE 4.24 中，GUObjectArray 包含一个嵌套的 TUObjectArray 结构
+        # 嵌套结构通常位于 0x10 偏移处
+        self.base = gobjects_addr
+        # Objects 指针位于嵌套结构的 0x00 (总偏移 0x10)
+        self.objects_ptr = ue_memory.mem.read_ptr(self.base + 0x10)
+        # NumElements 位于嵌套结构的 0x0C (总偏移 0x1C)
+        self.num_elements = ue_memory.mem.read_u32(self.base + 0x1C) 
+    
+    def get_object_ptr(self, index):
+        if index >= self.num_elements or not self.objects_ptr: return 0
+        
+        chunk_idx = index // 0x10000
+        in_chunk_idx = index % 0x10000
+        
+        # 从已解析的 objects_ptr 开始读取 Chunk
+        chunk_addr = ue_memory.mem.read_ptr(self.objects_ptr + chunk_idx * 8)
+        if not chunk_addr: return 0
+        
+        # UE 4.24 的 FUObjectItem 大小通常为 24 字节 (0x18)
+        return ue_memory.mem.read_ptr(chunk_addr + in_chunk_idx * 24)
+
+class FNameEntryArray_UE424:
+    def __init__(self, gnames_addr):
+        self.base = gnames_addr
+        
+    def get_name(self, index):
+        chunk_idx = index // 0x4000
+        in_chunk_idx = index % 0x4000
+        
+        # 同样需要应用 0x10 的 Chunks 数组偏移
+        chunk_ptr = ue_memory.mem.read_ptr(self.base + 0x10 + chunk_idx * 8)
+        if not chunk_ptr: return f"ErrChunk[{index}]"
+        
+        entry_ptr = ue_memory.mem.read_ptr(chunk_ptr + in_chunk_idx * 8)
+        if not entry_ptr: return f"ErrEntry[{index}]"
+        
+        return ue_memory.mem.read_string(entry_ptr + 0x10)
+
+# ==========================================
+# 缓存 & 智能读取 (使用 MemoryReader)
+# ==========================================
+
+class FNameCache:
+    def __init__(self, gnames_addr):
+        self.base = gnames_addr
+        self.cache = {}         # ID -> Name 字符串缓存
+        self.chunk_ptrs = {}    # ChunkID -> ChunkAddr 缓存
+        self.is_cached = False
+
+    def build_cache(self):
+        print("[*] Enabling On-Demand GNames Cache...")
+        try:
+            # Issue 2 修复：FNameEntryArray 的 Chunks 指针数组从 0x10 偏移开始
+            # 0x00-0x0F 存储的是 Lock 和计数器
+            raw_chunks = ue_memory.mem.read_bytes(self.base + 0x10, 128 * 8)
+            if raw_chunks:
+                for i in range(128):
+                    ptr = struct.unpack_from("<Q", raw_chunks, i * 8)[0]
+                    if ptr:
+                        self.chunk_ptrs[i] = ptr
+                print(f"[+] Pre-cached {len(self.chunk_ptrs)} GNames chunk pointers.")
+            
+            self.is_cached = True
+            print("[+] Name caching active. SDK generation will accelerate over time.")
+        except Exception as e:
+            print(f"[-] Cache init failed: {e}")
+            self.is_cached = False
+
+    def get_name(self, index):
+        # 1. 优先查本地字典 (极速)
+        if index in self.cache:
+            return self.cache[index]
+        
+        # 2. 本地没有，走远程读取逻辑
+        chunk_idx = index // 0x4000
+        in_chunk_idx = index % 0x4000
+        
+        # 尝试从预读的 Chunk 表里拿地址
+        chunk_ptr = self.chunk_ptrs.get(chunk_idx)
+        if not chunk_ptr:
+            # 修复：手动读取时也必须加上 0x10 的起始偏移
+            chunk_ptr = ue_memory.mem.read_ptr(self.base + 0x10 + chunk_idx * 8)
+            if chunk_ptr:
+                self.chunk_ptrs[chunk_idx] = chunk_ptr # 存起来下次用
+        
+        if not chunk_ptr: return f"ErrChunk[{index}]"
+        
+        # 读取 Entry 指针
+        entry_ptr = ue_memory.mem.read_ptr(chunk_ptr + in_chunk_idx * 8)
+        if not entry_ptr: return f"ErrEntry[{index}]"
+        
+        # 读取字符串 (FNameEntry->String 在 0x10 偏移)
+        name = ue_memory.mem.read_string(entry_ptr + 0x10)
+        
+        # 3. 读到了就存入缓存，下次不再读
+        if name:
+            self.cache[index] = name
+            return name
+            
+        return "None"
+
+class FPropertyReader:
+    def __init__(self, reader: MemoryReader, offset_in_reader):
+        self.reader = reader
+        self.base = offset_in_reader 
+    def get_offset(self):
+        return self.reader.read_u32(self.base + UE_Offsets.UProperty_Offset)
+    def get_name_id(self):
+        return self.reader.read_u32(self.base + UE_Offsets.UField_Name)
+    def get_flags(self):
+        return self.reader.read_u64(self.base + UE_Offsets.UProperty_PropertyFlags)
+    def get_next_ptr(self):
+        return self.reader.read_ptr(self.base + UE_Offsets.UField_Next)
+    def get_byte_mask(self):
+        return self.reader.read_u8(self.base + UE_Offsets.UBoolProperty_ByteMask)
+    def get_field_mask(self):
+        return self.reader.read_u8(self.base + UE_Offsets.UBoolProperty_FieldMask)
+    def get_inner_ptr(self):
+        return self.reader.read_ptr(self.base + UE_Offsets.UArrayProperty_Inner)
