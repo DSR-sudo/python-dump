@@ -56,7 +56,7 @@ def main():
                     log(f"UserDTB: {hex(u)}, KernelDTB: {hex(k)}, Base: {hex(b)}")
                     
             elif cmd == "watch2file":
-                handle.handle_watch2file(args)
+                handler.handle_watch2file(args)
                 
             elif cmd == "exit":
                 log("Exiting...")
