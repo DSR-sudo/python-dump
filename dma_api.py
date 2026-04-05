@@ -47,35 +47,10 @@ class DMAApi:
             return None
         return struct.unpack("<Q", data[:8])[0]
 
-    # RWbase business commands (CMD 11/12 and 6~10)
-    def vm_get_process_info(self, pid):
-        payload = pack_vm_get_process_info_req(pid)
-        data = self.core.request_bytes(payload, 24)
-        if not data or len(data) < 24:
-            return None
-        cr3, eprocess, peb = struct.unpack("<QQQ", data[:24])
-        return cr3, eprocess, peb
-
-    def vm_memory_copy(self, pid, src_va, size):
-        payload = pack_vm_memory_copy_req(pid, src_va, size)
-        return self.core.request_bytes(payload, size)
-
-    def install_callback_interceptor(self, pid, target_va, cold_va):
-        payload = pack_install_callback_interceptor_req(pid, target_va, cold_va)
+    def start_data_threads(self):
+        payload = pack_start_data_threads_req()
         return self._request_u64(payload)
 
-    def uninstall_callback_interceptor(self, pid, target_va):
-        payload = pack_uninstall_callback_interceptor_req(pid, target_va)
-        return self._request_u64(payload)
-
-    def cold_code_adapt_memory_page(self, pid, target_cold_va, shellcode: bytes):
-        payload = pack_cold_code_adapt_memory_page_req(pid, target_cold_va, shellcode)
-        return self._request_u64(payload)
-
-    def cold_code_adapt_physical(self, pid, target_cold_va, shellcode: bytes):
-        payload = pack_cold_code_adapt_physical_req(pid, target_cold_va, shellcode)
-        return self._request_u64(payload)
-
-    def memory_page_adapt(self, pid, target_va, patch: bytes):
-        payload = pack_memory_page_adapt_req(pid, target_va, patch)
+    def stop_data_threads(self):
+        payload = pack_stop_data_threads_req()
         return self._request_u64(payload)

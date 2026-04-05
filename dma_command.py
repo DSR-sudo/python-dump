@@ -35,28 +35,23 @@ def print_banner():
 
 def print_detailed_help():
     print("\n" + "=" * 60)
-    print("COMMAND HELP MENU".center(60))
+    print("命令帮助菜单".center(60))
     print("=" * 60)
     cmds = [
-        ("attach <PID>", "Bind process and cache CR3."),
-        ("cr3 <PID>", "Query process CR3 tuple."),
-        ("modules <PID>", "Enumerate user modules by CR3 path."),
-        ("vt_getp <PID>", "VT CMD11: get VM_PROCESS_INFO (Cr3/Eprocess/Peb)."),
-        ("vt_memc <PID> <SrcVA> <Size> [OutFile]", "VT CMD12: copy process memory, optional file output."),
-        ("vt_hoon <PID> <TargetVA> <ColdVA>", "VT CMD6: install callback interceptor (HookN)."),
-        ("vt_uoon <PID> <TargetVA>", "VT CMD7: uninstall callback interceptor (HookN)."),
-        ("vt_mhok <PID> <TargetColdVA> <ShellcodeHex>", "VT CMD8: cold code EPT patch."),
-        ("vt_khok <PID> <TargetColdVA> <ShellcodeHex>", "VT CMD9: cold code physical patch."),
-        ("vt_epat <PID> <TargetVA> <PatchHex>", "VT CMD10: EPT patch."),
-        ("auto_init", "Auto scan signatures."),
-        ("cache_gnames", "Build local FName cache."),
-        ("dump_sdk <ClassName>", "Generate C++ SDK header for class."),
-        ("pe_info", "Print PE section table from base."),
-        ("dump_mem <Addr> <Size> <File>", "Dump raw memory range to file."),
-        ("fast_init", "Use SDK RVA for fast init."),
-        ("watch <ClassName> <MemberName> <ObjIndex>", "Live watch one member value."),
-        ("watch2file <continuous/isolated> <Start> <End/none> <FPS> <Duration> <File>", "Record memory changes to file."),
-        ("exit", "Exit program."),
+        ("attach <PID>", "绑定目标进程并缓存 CR3。"),
+        ("cr3 <PID>", "查询进程 CR3（用户/内核）与基址。"),
+        ("modules <PID>", "按 CR3 路径枚举用户模块。"),
+        ("start_data_threads", "发送 CMD13，开启 GhostCore 数据线程。"),
+        ("stop_data_threads", "发送 CMD14，关闭 GhostCore 数据线程。"),
+        ("auto_init", "自动扫描并初始化关键签名。"),
+        ("cache_gnames", "构建本地 FName 缓存。"),
+        ("dump_sdk <ClassName>", "为指定类生成 C++ SDK 头文件。"),
+        ("pe_info", "打印当前基址对应的 PE 节区信息。"),
+        ("dump_mem <Addr> <Size> <File>", "将内存范围导出到文件。"),
+        ("fast_init", "使用 SDK RVA 快速初始化。"),
+        ("watch <ClassName> <MemberName> <ObjIndex>", "实时监控单个成员值。"),
+        ("watch2file <continuous/isolated> <Start> <End/none> <FPS> <Duration> <File>", "按指定模式录制内存变化到文件。"),
+        ("exit", "退出程序。"),
     ]
     for cmd, desc in cmds:
         print(f"\n[ {cmd} ]\n    {desc}")
@@ -184,122 +179,25 @@ class CommandHandler:
         except ValueError:
             log("PID must be a number.", "ERROR")
 
-    def handle_vt_getp(self, args):
-        if not args:
-            log("Usage: vt_getp <PID>", "ERROR")
+    def handle_start_data_threads(self):
+        ack = self.api.start_data_threads()
+        if ack is None:
+            log("start_data_threads failed (no response).", "ERROR")
             return
-        try:
-            pid = int(args[0], 0)
-            info = self.api.vm_get_process_info(pid)
-            if not info:
-                log("vt_getp failed (no response).", "ERROR")
-                return
-            cr3, eprocess, peb = info
-            log(f"VT_GETP => CR3={hex(cr3)} EPROCESS={hex(eprocess)} PEB={hex(peb)}", "SUCCESS")
-        except ValueError:
-            log("PID must be a number.", "ERROR")
+        if ack == 1:
+            log("Data threads enabled (ACK=1).", "SUCCESS")
+        else:
+            log(f"Data threads enable returned ACK={ack}.", "WARN")
 
-    def handle_vt_memc(self, args):
-        if len(args) < 3:
-            log("Usage: vt_memc <PID> <SrcVA> <Size> [OutFile]", "ERROR")
+    def handle_stop_data_threads(self):
+        ack = self.api.stop_data_threads()
+        if ack is None:
+            log("stop_data_threads failed (no response).", "ERROR")
             return
-        try:
-            pid = int(args[0], 0)
-            src_va = int(args[1], 0)
-            size = int(args[2], 0)
-            data = self.api.vm_memory_copy(pid, src_va, size)
-            if not data or len(data) != size:
-                got = len(data) if data else 0
-                log(f"vt_memc failed: got {got}/{size} bytes.", "ERROR")
-                return
-            if len(args) >= 4:
-                out_file = args[3]
-                with open(out_file, "wb") as f:
-                    f.write(data)
-                log(f"vt_memc ok: wrote {size} bytes to {out_file}", "SUCCESS")
-            else:
-                log(f"vt_memc ok: {size} bytes, head={data[:32].hex()}", "SUCCESS")
-        except ValueError:
-            log("PID/SrcVA/Size must be numbers.", "ERROR")
-
-    def handle_vt_hoon(self, args):
-        if len(args) < 3:
-            log("Usage: vt_hoon <PID> <TargetVA> <ColdVA>", "ERROR")
-            return
-        try:
-            pid = int(args[0], 0)
-            target_va = int(args[1], 0)
-            cold_va = int(args[2], 0)
-            result = self.api.install_callback_interceptor(pid, target_va, cold_va)
-            if result is None:
-                log("vt_hoon failed (no response).", "ERROR")
-                return
-            log(f"vt_hoon vmResult={hex(result)}", "SUCCESS")
-        except ValueError:
-            log("PID/TargetVA/ColdVA must be numbers.", "ERROR")
-
-    def handle_vt_uoon(self, args):
-        if len(args) < 2:
-            log("Usage: vt_uoon <PID> <TargetVA>", "ERROR")
-            return
-        try:
-            pid = int(args[0], 0)
-            target_va = int(args[1], 0)
-            result = self.api.uninstall_callback_interceptor(pid, target_va)
-            if result is None:
-                log("vt_uoon failed (no response).", "ERROR")
-                return
-            log(f"vt_uoon vmResult={hex(result)}", "SUCCESS")
-        except ValueError:
-            log("PID/TargetVA must be numbers.", "ERROR")
-
-    def handle_vt_mhok(self, args):
-        if len(args) < 3:
-            log("Usage: vt_mhok <PID> <TargetColdVA> <ShellcodeHex>", "ERROR")
-            return
-        try:
-            pid = int(args[0], 0)
-            target_va = int(args[1], 0)
-            shellcode = bytes.fromhex(args[2].replace(" ", ""))
-            result = self.api.cold_code_adapt_memory_page(pid, target_va, shellcode)
-            if result is None:
-                log("vt_mhok failed (no response).", "ERROR")
-                return
-            log(f"vt_mhok vmResult={hex(result)}", "SUCCESS")
-        except ValueError:
-            log("Invalid PID/TargetColdVA/ShellcodeHex.", "ERROR")
-
-    def handle_vt_khok(self, args):
-        if len(args) < 3:
-            log("Usage: vt_khok <PID> <TargetColdVA> <ShellcodeHex>", "ERROR")
-            return
-        try:
-            pid = int(args[0], 0)
-            target_va = int(args[1], 0)
-            shellcode = bytes.fromhex(args[2].replace(" ", ""))
-            result = self.api.cold_code_adapt_physical(pid, target_va, shellcode)
-            if result is None:
-                log("vt_khok failed (no response).", "ERROR")
-                return
-            log(f"vt_khok vmResult={hex(result)}", "SUCCESS")
-        except ValueError:
-            log("Invalid PID/TargetColdVA/ShellcodeHex.", "ERROR")
-
-    def handle_vt_epat(self, args):
-        if len(args) < 3:
-            log("Usage: vt_epat <PID> <TargetVA> <PatchHex>", "ERROR")
-            return
-        try:
-            pid = int(args[0], 0)
-            target_va = int(args[1], 0)
-            patch = bytes.fromhex(args[2].replace(" ", ""))
-            result = self.api.memory_page_adapt(pid, target_va, patch)
-            if result is None:
-                log("vt_epat failed (no response).", "ERROR")
-                return
-            log(f"vt_epat vmResult={hex(result)}", "SUCCESS")
-        except ValueError:
-            log("Invalid PID/TargetVA/PatchHex.", "ERROR")
+        if ack == 1:
+            log("Data threads disabled (ACK=1).", "SUCCESS")
+        else:
+            log(f"Data threads disable returned ACK={ack}.", "WARN")
 
     def handle_dump_mem(self, args):
         if len(args) < 3:

@@ -42,20 +42,10 @@ def main():
                 handler.handle_dump_sdk(args)
             elif cmd == "modules":
                 handler.handle_modules(args)
-            elif cmd == "vt_getp":
-                handler.handle_vt_getp(args)
-            elif cmd == "vt_memc":
-                handler.handle_vt_memc(args)
-            elif cmd == "vt_hoon":
-                handler.handle_vt_hoon(args)
-            elif cmd == "vt_uoon":
-                handler.handle_vt_uoon(args)
-            elif cmd == "vt_mhok":
-                handler.handle_vt_mhok(args)
-            elif cmd == "vt_khok":
-                handler.handle_vt_khok(args)
-            elif cmd == "vt_epat":
-                handler.handle_vt_epat(args)
+            elif cmd == "start_data_threads":
+                handler.handle_start_data_threads()
+            elif cmd == "stop_data_threads":
+                handler.handle_stop_data_threads()
             elif cmd == "dump_mem":
                 handler.handle_dump_mem(args)
                 
