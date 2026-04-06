@@ -46,6 +46,8 @@ def main():
                 handler.handle_start_data_threads()
             elif cmd == "stop_data_threads":
                 handler.handle_stop_data_threads()
+            elif cmd == "stream_stats":
+                handler.handle_stream_stats()
             elif cmd == "dump_mem":
                 handler.handle_dump_mem(args)
                 

@@ -43,6 +43,7 @@ def print_detailed_help():
         ("modules <PID>", "按 CR3 路径枚举用户模块。"),
         ("start_data_threads", "发送 CMD13，开启 GhostCore 数据线程。"),
         ("stop_data_threads", "发送 CMD14，关闭 GhostCore 数据线程。"),
+        ("stream_stats", "查看 RWVG 实时流统计与命令回包字节统计。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
         ("cache_gnames", "构建本地 FName 缓存。"),
         ("dump_sdk <ClassName>", "为指定类生成 C++ SDK 头文件。"),
@@ -198,6 +199,20 @@ class CommandHandler:
             log("Data threads disabled (ACK=1).", "SUCCESS")
         else:
             log(f"Data threads disable returned ACK={ack}.", "WARN")
+
+    def handle_stream_stats(self):
+        stats = self.api.core.get_stream_stats()
+        log(
+            "RWVG stats: "
+            f"utils={stats.get('utils_frames', 0)}, "
+            f"player={stats.get('player_frames', 0)}, "
+            f"item={stats.get('item_frames', 0)}, "
+            f"typed_bytes={stats.get('typed_bytes', 0)}, "
+            f"host_agg={stats.get('host_aggregate_frames', 0)}, "
+            f"host_raw_bytes={stats.get('host_aggregate_raw_bytes', 0)}, "
+            f"command_bytes={stats.get('command_bytes', 0)}, "
+            f"dropped={stats.get('dropped_data_packets', 0)}"
+        )
 
     def handle_dump_mem(self, args):
         if len(args) < 3:

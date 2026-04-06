@@ -22,6 +22,18 @@ class DMACore:
         self.is_running = True
         self.driver_online = False
         self.seq = 0
+        self.rwvg_stream_detected = False
+        self.host_aggregate_detected = False
+        self.rwvg_stats = {
+            "utils_frames": 0,
+            "player_frames": 0,
+            "item_frames": 0,
+            "typed_bytes": 0,
+            "host_aggregate_frames": 0,
+            "host_aggregate_raw_bytes": 0,
+            "command_bytes": 0,
+            "dropped_data_packets": 0,
+        }
         
         # 接收同步
         self.recv_event = threading.Event()
@@ -31,6 +43,22 @@ class DMACore:
 
         threading.Thread(target=self._receiver_loop, daemon=True).start()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+
+    def _handle_rwvg_typed_frame(self, typed_kind, typed_payload):
+        if typed_kind == RWVG_TYPE_UTILS:
+            self.rwvg_stats["utils_frames"] += 1
+        elif typed_kind == RWVG_TYPE_PLAYER:
+            self.rwvg_stats["player_frames"] += 1
+        elif typed_kind == RWVG_TYPE_ITEM:
+            self.rwvg_stats["item_frames"] += 1
+        self.rwvg_stats["typed_bytes"] += len(typed_payload)
+
+        if not self.rwvg_stream_detected:
+            print("[+] RWVG typed stream detected (GameCore data path aligned).")
+            self.rwvg_stream_detected = True
+
+    def get_stream_stats(self):
+        return dict(self.rwvg_stats)
 
     def _receiver_loop(self):
         """
@@ -78,27 +106,52 @@ class DMACore:
                 # 分支 2: 业务数据包 (Type = 0x02)
                 # ==========================================================
                 elif pkt_type == PACKET_TYPE_DATA:
-                    # 仅在主线程处于"接收态"时处理
+                    payload = scratch_buffer[1:nbytes]
+                    typed_parsed = try_parse_rwvg_typed_payload(payload)
+                    if typed_parsed is not None:
+                        typed_kind, typed_payload = typed_parsed
+                        self._handle_rwvg_typed_frame(typed_kind, typed_payload)
+                        continue
+
+                    # 不是 RWVG typed 包时，按命令返回流处理
                     if self.expected_size > 0:
-                        payload_len = nbytes - 1
-                        
+                        payload_len = len(payload)
+                        self.rwvg_stats["command_bytes"] += payload_len
+
                         # [核心优化 3] 内存视图切片赋值
                         # 将暂存区的数据 (scratch_buffer) "搬运" 到最终 Buffer (self.view)
                         # 这是一个纯内存操作 (memcpy)，速度极快，且不涉及 Python 对象创建
                         if self.recvd_bytes + payload_len <= self.expected_size:
-                            self.view[self.recvd_bytes : self.recvd_bytes + payload_len] = scratch_buffer[1:nbytes]
+                            self.view[self.recvd_bytes : self.recvd_bytes + payload_len] = payload
                             self.recvd_bytes += payload_len
-                        
+                        else:
+                            # 命令流超出预期长度，忽略该包，避免污染缓冲区
+                            self.rwvg_stats["dropped_data_packets"] += 1
+
                         # 检查是否收满
                         if self.recvd_bytes >= self.expected_size:
                             self.expected_size = 0 # 关闭接收态
                             self.recv_event.set()  # 唤醒主线程
+                    else:
+                        # 主线程未等待命令回包，且该包不是 RWVG typed：忽略
+                        self.rwvg_stats["dropped_data_packets"] += 1
                 
                 # ==========================================================
                 # 其他包忽略
                 # ==========================================================
                 else:
-                    pass
+                    host_agg = try_parse_host_aggregate_payload(scratch_buffer[:nbytes])
+                    if host_agg is not None:
+                        self.rwvg_stats["host_aggregate_frames"] += 1
+                        self.rwvg_stats["host_aggregate_raw_bytes"] += host_agg["raw_size"]
+                        if not self.host_aggregate_detected:
+                            print(
+                                "[+] Host-compat aggregate stream detected "
+                                f"(players={host_agg['player_count']}, items={host_agg['item_count']})."
+                            )
+                            self.host_aggregate_detected = True
+                    else:
+                        pass
 
             except Exception as e:
                 # 只有 socket 关闭时才退出，普通错误忽略
@@ -132,7 +185,7 @@ class DMACore:
             self.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
             
             # 动态超时计算 (每 100MB 增加 1秒)
-            dynamic_timeout = 50
+            dynamic_timeout = max(float(timeout), 1.0) + (size / (100 * 1024 * 1024))
             print(f"[*] Expecting {size} bytes, timeout set to {dynamic_timeout:.1f}s")
 
             if self.recv_event.wait(timeout=dynamic_timeout):
