@@ -26,6 +26,12 @@ RWVG_MAGIC = 0x47564352  # "RWVG"
 RWVG_TYPE_UTILS = 1
 RWVG_TYPE_PLAYER = 2
 RWVG_TYPE_ITEM = 3
+# RWbase::GameCore typed payload sizes (pack(1) structs)
+RWVG_TYPED_SIZE_BY_KIND = {
+    RWVG_TYPE_UTILS: 136,
+    RWVG_TYPE_PLAYER: 255,
+    RWVG_TYPE_ITEM: 90,
+}
 
 # RWbase host-compat aggregate payload layout (base64 wrapped, raw UDP payload):
 # [HostUtilsStruct][SIZE_T playerCount][HostSendPlayerStruct * N][SIZE_T itemCount][HostSendItemsStruct * M]
@@ -33,6 +39,7 @@ HOST_UTILS_SIZE = 145
 HOST_PLAYER_SIZE = 402
 HOST_ITEM_SIZE = 90
 HOST_COUNT_SIZE = 8  # SIZE_T on x64 kernel build
+ZOMBIE_ACK_OK = 1
 
 # RWbase src/Utils/Definitions.hpp:
 # #pragma pack(push, 1)
@@ -55,7 +62,7 @@ def parse_packet_header(data: bytes):
     return data[0], data[1:]
 
 
-def try_parse_rwvg_typed_payload(payload: bytes):
+def try_parse_rwvg_typed_payload(payload: bytes, strict_size: bool = True):
     """
     Parse PACKET_TYPE_DATA payload sent by RWbase::GameCore::SendTypedPacket.
     Returns (typed_kind, typed_payload_bytes) on success; otherwise None.
@@ -70,7 +77,23 @@ def try_parse_rwvg_typed_payload(payload: bytes):
         return None
     if typed_size != (len(payload) - 12):
         return None
+
+    if strict_size:
+        expected = RWVG_TYPED_SIZE_BY_KIND.get(typed_kind)
+        if expected is not None and typed_size != expected:
+            return None
+
     return typed_kind, payload[12:12 + typed_size]
+
+
+def parse_zombie_control_ack(payload: bytes):
+    """
+    Parse CMD13/CMD14 ACK returned by GhostCore zombie control path.
+    ACK format is a single ULONG64 value.
+    """
+    if not payload or len(payload) != 8:
+        return None
+    return int(struct.unpack_from("<Q", payload, 0)[0])
 
 
 def try_parse_host_aggregate_payload(datagram: bytes):

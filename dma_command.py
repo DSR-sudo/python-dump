@@ -211,7 +211,10 @@ class CommandHandler:
             f"host_agg={stats.get('host_aggregate_frames', 0)}, "
             f"host_raw_bytes={stats.get('host_aggregate_raw_bytes', 0)}, "
             f"command_bytes={stats.get('command_bytes', 0)}, "
-            f"dropped={stats.get('dropped_data_packets', 0)}"
+            f"dropped={stats.get('dropped_data_packets', 0)}, "
+            f"zombie_ack={stats.get('zombie_ack_packets', 0)}, "
+            f"zombie_non_ok={stats.get('zombie_ack_non_ok', 0)}, "
+            f"zombie_last_ack={stats.get('zombie_last_ack')}"
         )
 
     def handle_dump_mem(self, args):

@@ -33,6 +33,9 @@ class DMACore:
             "host_aggregate_raw_bytes": 0,
             "command_bytes": 0,
             "dropped_data_packets": 0,
+            "zombie_ack_packets": 0,
+            "zombie_ack_non_ok": 0,
+            "zombie_last_ack": None,
         }
         
         # 接收同步
@@ -56,6 +59,17 @@ class DMACore:
         if not self.rwvg_stream_detected:
             print("[+] RWVG typed stream detected (GameCore data path aligned).")
             self.rwvg_stream_detected = True
+
+    def _handle_zombie_ack_packet(self, payload):
+        ack = parse_zombie_control_ack(payload)
+        if ack is None:
+            return False
+
+        self.rwvg_stats["zombie_ack_packets"] += 1
+        self.rwvg_stats["zombie_last_ack"] = ack
+        if ack != ZOMBIE_ACK_OK:
+            self.rwvg_stats["zombie_ack_non_ok"] += 1
+        return True
 
     def get_stream_stats(self):
         return dict(self.rwvg_stats)
@@ -133,7 +147,11 @@ class DMACore:
                             self.expected_size = 0 # 关闭接收态
                             self.recv_event.set()  # 唤醒主线程
                     else:
-                        # 主线程未等待命令回包，且该包不是 RWVG typed：忽略
+                        # 主线程未等待命令回包时，优先识别 zombie 控制 ACK（8 字节 u64）。
+                        if self._handle_zombie_ack_packet(payload):
+                            continue
+
+                        # 不是 RWVG typed，也不是 zombie ACK：忽略并记为 dropped
                         self.rwvg_stats["dropped_data_packets"] += 1
                 
                 # ==========================================================

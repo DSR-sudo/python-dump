@@ -41,16 +41,21 @@ class DMAApi:
         payload = pack_enum_modules_req(pid)
         self.core.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
 
-    def _request_u64(self, payload):
-        data = self.core.request_bytes(payload, 8)
-        if not data or len(data) < 8:
-            return None
-        return struct.unpack("<Q", data[:8])[0]
+    def _request_u64(self, payload, retries=0, timeout=3.0):
+        attempts = max(1, int(retries) + 1)
+        for attempt in range(attempts):
+            data = self.core.request_bytes(payload, 8, timeout=timeout)
+            ack = parse_zombie_control_ack(data) if data else None
+            if ack is not None:
+                return ack
+            if attempt + 1 < attempts:
+                print(f"[!] ACK parse failed, retrying... ({attempt + 1}/{attempts - 1})")
+        return None
 
     def start_data_threads(self):
         payload = pack_start_data_threads_req()
-        return self._request_u64(payload)
+        return self._request_u64(payload, retries=1)
 
     def stop_data_threads(self):
         payload = pack_stop_data_threads_req()
-        return self._request_u64(payload)
+        return self._request_u64(payload, retries=1)
