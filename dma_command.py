@@ -282,10 +282,10 @@ class CommandHandler:
             if self.api.cached_dtb == 0:
                 log("Cached DTB is 0. Trying to refresh from cached PID...", "WARN")
             start_time = time.time()
-            chunk_size = 2 * 1024 * 1024
-            chunk_timeout = 12.0
+            chunk_size = 8 * 1024 * 1024
+            chunk_timeout = 20.0
             max_retries = 4
-            progress_step = 16 * 1024 * 1024
+            progress_step = 32 * 1024 * 1024
 
             written = 0
             next_progress_mark = progress_step

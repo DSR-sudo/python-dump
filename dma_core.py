@@ -47,6 +47,7 @@ class DMACore:
         self.recvd_bytes = 0
         self.last_data_ts = 0.0
         self.last_untyped_data_ts = 0.0
+        self.last_request_timed_out = False
         self.lock = threading.Lock()
 
         threading.Thread(target=self._receiver_loop, daemon=True).start()
@@ -162,17 +163,18 @@ class DMACore:
 
     def request_bytes(self, payload, size, timeout=3.0):
         with self.lock:
-            quiet_window_sec = 0.6
-            max_quiet_wait_sec = 6.0
-            quiet_start = time.monotonic()
-            while (time.monotonic() - self.last_untyped_data_ts) < quiet_window_sec:
-                if (time.monotonic() - quiet_start) >= max_quiet_wait_sec:
-                    print(
-                        "[-] RX channel still busy with previous command stream. "
-                        "Refusing to start a new request."
-                    )
-                    return None
-                time.sleep(0.05)
+            if self.last_request_timed_out:
+                quiet_window_sec = 0.6
+                max_quiet_wait_sec = 6.0
+                quiet_start = time.monotonic()
+                while (time.monotonic() - self.last_untyped_data_ts) < quiet_window_sec:
+                    if (time.monotonic() - quiet_start) >= max_quiet_wait_sec:
+                        print(
+                            "[-] RX channel still busy with previous command stream. "
+                            "Refusing to start a new request."
+                        )
+                        return None
+                    time.sleep(0.05)
 
             self.recv_event.clear()
 
@@ -198,6 +200,7 @@ class DMACore:
             timeout_reason = "transfer timeout"
             while True:
                 if self.recv_event.wait(timeout=WAIT_SLICE_SEC):
+                    self.last_request_timed_out = False
                     return self.buffer
 
                 now_ts = time.monotonic()
@@ -210,6 +213,7 @@ class DMACore:
                     break
 
             self.expected_size = 0
+            self.last_request_timed_out = True
             percent = (self.recvd_bytes / size) * 100 if size > 0 else 0.0
             print(
                 f"[-] Timeout ({timeout_reason})! Received "
