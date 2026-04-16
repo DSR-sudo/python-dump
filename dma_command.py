@@ -41,9 +41,12 @@ def print_detailed_help():
         ("attach <PID>", "绑定目标进程并缓存 CR3。"),
         ("cr3 <PID>", "查询进程 CR3（用户/内核）与基址。"),
         ("modules <PID>", "按 CR3 路径枚举用户模块。"),
-        ("start_data_threads", "发送 CMD13，开启 GhostCore 数据线程。"),
-        ("stop_data_threads", "发送 CMD14，关闭 GhostCore 数据线程。"),
-        ("stream_stats", "查看 RWVG 实时流统计与命令回包字节统计。"),
+        ("start_data_threads", "发送控制命令开启 GhostCore/RWbase 流式回传。"),
+        ("stop_data_threads", "发送控制命令关闭 GhostCore/RWbase 流式回传。"),
+        ("stream_stats", "查看接收线程维护的 RWbase/RWVG 流式统计。"),
+        ("stream_log [IntervalSec]", "按固定间隔流式打印 RWbase/RWVG 统计；数据本身由后台持续接收，Ctrl+C 停止。"),
+        ("rwbase_stream <on/off/stats/watch> [IntervalSec]", "RWbase 流式回传控制命令；on/off 开关流式回传，stats/watch 查看流式统计。"),
+        ("rwbase_data <on/off/stats/watch> [IntervalSec]", "兼容别名，等价 rwbase_stream。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
         ("cache_gnames", "构建本地 FName 缓存。"),
         ("dump_sdk <ClassName>", "为指定类生成 C++ SDK 头文件。"),
@@ -79,6 +82,23 @@ class CommandHandler:
         except Exception as e:
             self.sdk = None
             log(f"Failed to load SDK JSONs: {e}", "WARN")
+
+    def _format_stream_stats(self):
+        stats = self.api.core.get_stream_stats()
+        return (
+            "RWVG stats: "
+            f"utils={stats.get('utils_frames', 0)}, "
+            f"player={stats.get('player_frames', 0)}, "
+            f"item={stats.get('item_frames', 0)}, "
+            f"typed_bytes={stats.get('typed_bytes', 0)}, "
+            f"host_agg={stats.get('host_aggregate_frames', 0)}, "
+            f"host_raw_bytes={stats.get('host_aggregate_raw_bytes', 0)}, "
+            f"command_bytes={stats.get('command_bytes', 0)}, "
+            f"dropped={stats.get('dropped_data_packets', 0)}, "
+            f"zombie_ack={stats.get('zombie_ack_packets', 0)}, "
+            f"zombie_non_ok={stats.get('zombie_ack_non_ok', 0)}, "
+            f"zombie_last_ack={stats.get('zombie_last_ack')}"
+        )
 
     def handle_attach(self, args):
         if not args:
@@ -186,9 +206,9 @@ class CommandHandler:
             log("start_data_threads failed (no response).", "ERROR")
             return
         if ack == 1:
-            log("Data threads enabled (ACK=1).", "SUCCESS")
+            log("RWbase streaming enabled (ACK=1).", "SUCCESS")
         else:
-            log(f"Data threads enable returned ACK={ack}.", "WARN")
+            log(f"RWbase streaming enable returned ACK={ack}.", "WARN")
 
     def handle_stop_data_threads(self):
         ack = self.api.stop_data_threads()
@@ -196,26 +216,58 @@ class CommandHandler:
             log("stop_data_threads failed (no response).", "ERROR")
             return
         if ack == 1:
-            log("Data threads disabled (ACK=1).", "SUCCESS")
+            log("RWbase streaming disabled (ACK=1).", "SUCCESS")
         else:
-            log(f"Data threads disable returned ACK={ack}.", "WARN")
+            log(f"RWbase streaming disable returned ACK={ack}.", "WARN")
 
     def handle_stream_stats(self):
-        stats = self.api.core.get_stream_stats()
+        log(self._format_stream_stats())
+
+    def handle_stream_log(self, args):
+        interval = 1.0
+        if args:
+            try:
+                interval = float(args[0])
+            except ValueError:
+                log("Usage: stream_log [IntervalSec]", "ERROR")
+                return
+
+        if interval <= 0:
+            log("IntervalSec must be > 0.", "ERROR")
+            return
+
         log(
-            "RWVG stats: "
-            f"utils={stats.get('utils_frames', 0)}, "
-            f"player={stats.get('player_frames', 0)}, "
-            f"item={stats.get('item_frames', 0)}, "
-            f"typed_bytes={stats.get('typed_bytes', 0)}, "
-            f"host_agg={stats.get('host_aggregate_frames', 0)}, "
-            f"host_raw_bytes={stats.get('host_aggregate_raw_bytes', 0)}, "
-            f"command_bytes={stats.get('command_bytes', 0)}, "
-            f"dropped={stats.get('dropped_data_packets', 0)}, "
-            f"zombie_ack={stats.get('zombie_ack_packets', 0)}, "
-            f"zombie_non_ok={stats.get('zombie_ack_non_ok', 0)}, "
-            f"zombie_last_ack={stats.get('zombie_last_ack')}"
+            "Watching RWbase/RWVG streaming stats. "
+            "This is a passive stream view, not ping-pong polling; incoming [LOG] packets are printed automatically. Ctrl+C stops this watcher."
         )
+        try:
+            while True:
+                log(self._format_stream_stats())
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            log("stream_log stopped.")
+
+    def handle_rwbase_stream(self, args):
+        if not args:
+            log("Usage: rwbase_stream <on/off/stats/watch> [IntervalSec]", "ERROR")
+            return
+
+        action = args[0].lower()
+        rest = args[1:]
+
+        if action == "on":
+            self.handle_start_data_threads()
+        elif action == "off":
+            self.handle_stop_data_threads()
+        elif action == "stats":
+            self.handle_stream_stats()
+        elif action == "watch":
+            self.handle_stream_log(rest)
+        else:
+            log("Usage: rwbase_stream <on/off/stats/watch> [IntervalSec]", "ERROR")
+
+    def handle_rwbase_data(self, args):
+        self.handle_rwbase_stream(args)
 
     def handle_dump_mem(self, args):
         if len(args) < 3:

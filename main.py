@@ -48,6 +48,12 @@ def main():
                 handler.handle_stop_data_threads()
             elif cmd == "stream_stats":
                 handler.handle_stream_stats()
+            elif cmd == "stream_log":
+                handler.handle_stream_log(args)
+            elif cmd == "rwbase_stream":
+                handler.handle_rwbase_stream(args)
+            elif cmd == "rwbase_data":
+                handler.handle_rwbase_data(args)
             elif cmd == "dump_mem":
                 handler.handle_dump_mem(args)
                 
