@@ -1,8 +1,10 @@
-﻿import struct
+import os
+import struct
 from dma_protocol import *
 
 
 DRIVER_MAX_CHUNK = 65536
+DEBUG_REQ = os.getenv("DMA_DEBUG_REQ", "0") == "1"
 
 
 class DMAApi:
@@ -34,12 +36,14 @@ class DMAApi:
 
         return None, None, None
 
-    def read_chunk(self, addr, size):
+    def read_chunk(self, addr, size, timeout=6.0):
         if not self._ensure_cached_dtb():
             print("[-] No valid cached DTB. Run 'attach <PID>' first.")
             return None
         payload = pack_read_req(self.cached_dtb, addr, size)
-        return self.core.request_bytes(payload, size)
+        if DEBUG_REQ:
+            print(f"DEBUG REQ: {payload.hex()}")
+        return self.core.request_bytes(payload, size, timeout=timeout)
 
     def read_mem(self, addr, size):
         if not self._ensure_cached_dtb():
@@ -47,7 +51,8 @@ class DMAApi:
             return None
 
         payload = pack_read_req(self.cached_dtb, addr, size)
-        print(f"DEBUG REQ: {payload.hex()}")
+        if DEBUG_REQ:
+            print(f"DEBUG REQ: {payload.hex()}")
         return self.core.request_bytes(payload, size, timeout=10.0)
 
     def enum_user_modules(self, pid):

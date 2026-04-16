@@ -282,15 +282,54 @@ class CommandHandler:
             if self.api.cached_dtb == 0:
                 log("Cached DTB is 0. Trying to refresh from cached PID...", "WARN")
             start_time = time.time()
-            data = self.api.read_mem(target_addr, target_size)
+            chunk_size = 2 * 1024 * 1024
+            chunk_timeout = 12.0
+            max_retries = 4
+            progress_step = 16 * 1024 * 1024
 
-            if data and len(data) == target_size:
-                with open(filename, "wb") as f:
-                    f.write(data)
+            written = 0
+            next_progress_mark = progress_step
+            with open(filename, "wb") as f:
+                while written < target_size:
+                    remaining = target_size - written
+                    current_size = min(chunk_size, remaining)
+                    current_addr = target_addr + written
+                    chunk_ok = False
+
+                    for attempt in range(1, max_retries + 1):
+                        data = self.api.read_chunk(current_addr, current_size, timeout=chunk_timeout)
+                        if data and len(data) == current_size:
+                            f.write(data)
+                            written += current_size
+                            chunk_ok = True
+                            break
+
+                        recv_now = int(getattr(self.api.core, "recvd_bytes", 0))
+                        log(
+                            f"Chunk read retry {attempt}/{max_retries} failed at 0x{current_addr:X} "
+                            f"(expected={current_size}, received={recv_now})",
+                            "WARN",
+                        )
+                        time.sleep(0.15 * attempt)
+
+                    if not chunk_ok:
+                        break
+
+                    if written >= next_progress_mark or written == target_size:
+                        pct = (written / target_size) * 100 if target_size else 100.0
+                        log(f"Dump progress: {written}/{target_size} bytes ({pct:.1f}%)")
+                        next_progress_mark += progress_step
+
+            if written == target_size:
                 duration = time.time() - start_time
-                log(f"Dump saved successfully! Speed: {target_size/1024/1024/duration:.2f} MB/s", "SUCCESS")
+                speed = target_size / 1024 / 1024 / max(duration, 1e-6)
+                log(f"Dump saved successfully! Speed: {speed:.2f} MB/s", "SUCCESS")
             else:
-                log(f"Dump failed. Received {len(data) if data else 0}/{target_size} bytes.", "ERROR")
+                log(
+                    f"Dump failed after retries. Received {written}/{target_size} bytes "
+                    f"(partial file kept: {filename}).",
+                    "ERROR",
+                )
         except Exception as e:
             log(f"Dump error: {e}", "ERROR")
 
