@@ -12,6 +12,15 @@ class DMAApi:
         self.cached_dtb = 0
         self.cached_kdtb = 0
 
+    def _ensure_cached_dtb(self):
+        if self.cached_dtb != 0:
+            return True
+        if self.cached_pid != 0:
+            user_cr3, kernel_cr3, _ = self.get_cr3(self.cached_pid)
+            if (kernel_cr3 or 0) != 0 or (user_cr3 or 0) != 0:
+                return self.cached_dtb != 0
+        return False
+
     def get_cr3(self, pid):
         payload = pack_cr3_req(pid)
         data = self.core.request_bytes(payload, 24)
@@ -26,11 +35,15 @@ class DMAApi:
         return None, None, None
 
     def read_chunk(self, addr, size):
+        if not self._ensure_cached_dtb():
+            print("[-] No valid cached DTB. Run 'attach <PID>' first.")
+            return None
         payload = pack_read_req(self.cached_dtb, addr, size)
         return self.core.request_bytes(payload, size)
 
     def read_mem(self, addr, size):
-        if self.cached_dtb == 0:
+        if not self._ensure_cached_dtb():
+            print("[-] No valid cached DTB. Run 'attach <PID>' first.")
             return None
 
         payload = pack_read_req(self.cached_dtb, addr, size)

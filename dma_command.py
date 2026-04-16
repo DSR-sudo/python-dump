@@ -279,6 +279,8 @@ class CommandHandler:
             filename = args[2]
 
             log(f"Dumping {target_size/1024:.2f} KB from 0x{target_addr:X} to '{filename}'...")
+            if self.api.cached_dtb == 0:
+                log("Cached DTB is 0. Trying to refresh from cached PID...", "WARN")
             start_time = time.time()
             data = self.api.read_mem(target_addr, target_size)
 

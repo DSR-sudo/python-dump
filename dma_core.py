@@ -46,6 +46,7 @@ class DMACore:
         self.expected_size = 0
         self.recvd_bytes = 0
         self.last_data_ts = 0.0
+        self.last_untyped_data_ts = 0.0
         self.lock = threading.Lock()
 
         threading.Thread(target=self._receiver_loop, daemon=True).start()
@@ -116,6 +117,7 @@ class DMACore:
                     if self.expected_size > 0:
                         payload_len = len(payload)
                         self.rwvg_stats["command_bytes"] += payload_len
+                        self.last_untyped_data_ts = time.monotonic()
 
                         if self.recvd_bytes + payload_len <= self.expected_size:
                             self.view[self.recvd_bytes:self.recvd_bytes + payload_len] = payload
@@ -128,6 +130,7 @@ class DMACore:
                             self.expected_size = 0
                             self.recv_event.set()
                     else:
+                        self.last_untyped_data_ts = time.monotonic()
                         if self._handle_zombie_ack_packet(payload):
                             continue
                         self.rwvg_stats["dropped_data_packets"] += 1
@@ -159,6 +162,18 @@ class DMACore:
 
     def request_bytes(self, payload, size, timeout=3.0):
         with self.lock:
+            quiet_window_sec = 0.6
+            max_quiet_wait_sec = 6.0
+            quiet_start = time.monotonic()
+            while (time.monotonic() - self.last_untyped_data_ts) < quiet_window_sec:
+                if (time.monotonic() - quiet_start) >= max_quiet_wait_sec:
+                    print(
+                        "[-] RX channel still busy with previous command stream. "
+                        "Refusing to start a new request."
+                    )
+                    return None
+                time.sleep(0.05)
+
             self.recv_event.clear()
 
             self.buffer = bytearray(size)
