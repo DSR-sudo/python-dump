@@ -1,22 +1,24 @@
 import socket
 import threading
 import time
-import struct
 from dma_protocol import *
+
+DEFAULT_EXPECTED_TRANSFER_BPS = 8 * 1024 * 1024  # 8 MB/s conservative baseline.
+DEFAULT_TRANSFER_GRACE_SEC = 5.0
+DEFAULT_IDLE_TIMEOUT_SEC = 2.5
+WAIT_SLICE_SEC = 0.2
+
 
 class DMACore:
     def __init__(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # 允许端口复用（可选，开发调试时有用）
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(("0.0.0.0", BIND_PORT))
-        
-        # 增大内核缓冲区，防止大数据流传输时丢包
+
         try:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024 * 1024)
-        except:
+        except Exception:
             print("[!] Warning: Could not set 64MB Recv Buffer. OS limit might be lower.")
-            # 降级尝试 32MB
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024 * 1024)
 
         self.is_running = True
@@ -37,12 +39,14 @@ class DMACore:
             "zombie_ack_non_ok": 0,
             "zombie_last_ack": None,
         }
-        
-        # 接收同步
+
         self.recv_event = threading.Event()
         self.buffer = bytearray()
+        self.view = memoryview(self.buffer)
         self.expected_size = 0
-        self.lock = threading.Lock() # 保证请求串行
+        self.recvd_bytes = 0
+        self.last_data_ts = 0.0
+        self.lock = threading.Lock()
 
         threading.Thread(target=self._receiver_loop, daemon=True).start()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
@@ -75,51 +79,33 @@ class DMACore:
         return dict(self.rwvg_stats)
 
     def _receiver_loop(self):
-        """
-        [高性能版] 核心接收循环
-        使用 recv_into + scratch_buffer 实现 零拷贝 + 头部解析
-        """
         print(f"[*] UDP Receiver started on port {BIND_PORT}")
-        
-        # [优化 1] 静态分配一个 64KB 的暂存区
-        # 整个生命周期只分配这一次内存，彻底消除 GC 压力
         scratch_buffer = bytearray(65536)
-        
+
         while self.is_running:
             try:
-                # [优化 2] 使用 recv_into 直接读入暂存区
-                # nbytes 是实际读取到的字节数
-                # 这一步不创建任何 Python 对象 (bytes)，极快
                 nbytes = self.sock.recv_into(scratch_buffer)
-                
-                if nbytes < 1: continue
+                if nbytes < 1:
+                    continue
 
-                # 解析头部 (直接访问内存，不切片)
                 pkt_type = scratch_buffer[0]
-                
-                # ==========================================================
-                # 分支 1: 日志包 / 心跳包 (Type = 0x01)
-                # ==========================================================
+
                 if pkt_type == PACKET_TYPE_LOG:
                     try:
-                        # 只有日志包才需要解码，不影响数据包性能
-                        # scratch_buffer[1:nbytes] 虽然切片了，但日志频率低，无所谓
-                        msg = scratch_buffer[1:nbytes].decode('utf-8', errors='ignore').strip()
-                        
+                        msg = scratch_buffer[1:nbytes].decode("utf-8", errors="ignore").strip()
                         if "ALIVE_ACK" in msg or "DRIVER_ONLINE" in msg:
                             if not self.driver_online:
                                 print("[+] Driver is ONLINE.")
                             self.driver_online = True
                             continue
-                        
+
                         if msg:
                             print(f"\r[LOG] {msg}\n>> ", end="")
-                    except: pass
+                    except Exception:
+                        pass
+                    continue
 
-                # ==========================================================
-                # 分支 2: 业务数据包 (Type = 0x02)
-                # ==========================================================
-                elif pkt_type == PACKET_TYPE_DATA:
+                if pkt_type == PACKET_TYPE_DATA:
                     payload = scratch_buffer[1:nbytes]
                     typed_parsed = try_parse_rwvg_typed_payload(payload)
                     if typed_parsed is not None:
@@ -127,92 +113,91 @@ class DMACore:
                         self._handle_rwvg_typed_frame(typed_kind, typed_payload)
                         continue
 
-                    # 不是 RWVG typed 包时，按命令返回流处理
                     if self.expected_size > 0:
                         payload_len = len(payload)
                         self.rwvg_stats["command_bytes"] += payload_len
 
-                        # [核心优化 3] 内存视图切片赋值
-                        # 将暂存区的数据 (scratch_buffer) "搬运" 到最终 Buffer (self.view)
-                        # 这是一个纯内存操作 (memcpy)，速度极快，且不涉及 Python 对象创建
                         if self.recvd_bytes + payload_len <= self.expected_size:
-                            self.view[self.recvd_bytes : self.recvd_bytes + payload_len] = payload
+                            self.view[self.recvd_bytes:self.recvd_bytes + payload_len] = payload
                             self.recvd_bytes += payload_len
+                            self.last_data_ts = time.monotonic()
                         else:
-                            # 命令流超出预期长度，忽略该包，避免污染缓冲区
                             self.rwvg_stats["dropped_data_packets"] += 1
 
-                        # 检查是否收满
                         if self.recvd_bytes >= self.expected_size:
-                            self.expected_size = 0 # 关闭接收态
-                            self.recv_event.set()  # 唤醒主线程
+                            self.expected_size = 0
+                            self.recv_event.set()
                     else:
-                        # 主线程未等待命令回包时，优先识别 zombie 控制 ACK（8 字节 u64）。
                         if self._handle_zombie_ack_packet(payload):
                             continue
-
-                        # 不是 RWVG typed，也不是 zombie ACK：忽略并记为 dropped
                         self.rwvg_stats["dropped_data_packets"] += 1
-                
-                # ==========================================================
-                # 其他包忽略
-                # ==========================================================
-                else:
-                    host_agg = try_parse_host_aggregate_payload(scratch_buffer[:nbytes])
-                    if host_agg is not None:
-                        self.rwvg_stats["host_aggregate_frames"] += 1
-                        self.rwvg_stats["host_aggregate_raw_bytes"] += host_agg["raw_size"]
-                        if not self.host_aggregate_detected:
-                            print(
-                                "[+] Host-compat aggregate stream detected "
-                                f"(players={host_agg['player_count']}, items={host_agg['item_count']})."
-                            )
-                            self.host_aggregate_detected = True
-                    else:
-                        pass
+                    continue
 
-            except Exception as e:
-                # 只有 socket 关闭时才退出，普通错误忽略
-                if not self.is_running: break
-                pass
+                host_agg = try_parse_host_aggregate_payload(scratch_buffer[:nbytes])
+                if host_agg is not None:
+                    self.rwvg_stats["host_aggregate_frames"] += 1
+                    self.rwvg_stats["host_aggregate_raw_bytes"] += host_agg["raw_size"]
+                    if not self.host_aggregate_detected:
+                        print(
+                            "[+] Host-compat aggregate stream detected "
+                            f"(players={host_agg['player_count']}, items={host_agg['item_count']})."
+                        )
+                        self.host_aggregate_detected = True
+            except Exception:
+                if not self.is_running:
+                    break
 
     def _heartbeat_loop(self):
         while self.is_running:
             try:
-                payload = b'HELO'.ljust(32,b'\x00')
+                payload = b"HELO".ljust(32, b"\x00")
                 self.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
                 self.seq += 1
                 time.sleep(1.0)
-            except: pass
+            except Exception:
+                pass
 
     def request_bytes(self, payload, size, timeout=3.0):
-        """
-        [优化版] 预分配内存模式
-        """
         with self.lock:
             self.recv_event.clear()
-            
-            # [核心优化] 预分配 Buffer，避免接收时的动态扩容
+
             self.buffer = bytearray(size)
-            # 创建内存视图，允许直接对 buffer 进行切片写入，无需拷贝
             self.view = memoryview(self.buffer)
             self.recvd_bytes = 0
-            self.expected_size = size # 告诉接收循环：开始干活了
-            
-            # 发送请求指令
+            start_ts = time.monotonic()
+            self.last_data_ts = start_ts
+            self.expected_size = size
+
             self.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
-            
-            # 动态超时计算 (每 100MB 增加 1秒)
-            dynamic_timeout = max(float(timeout), 1.0) + (size / (100 * 1024 * 1024))
-            print(f"[*] Expecting {size} bytes, timeout set to {dynamic_timeout:.1f}s")
 
-            if self.recv_event.wait(timeout=dynamic_timeout):
-                # 接收完成，返回填满数据的 buffer
-                # 注意：这里返回 bytes(self.buffer) 可能会有一次拷贝，
-                # 如果追求极致，可以直接返回 self.buffer
-                return self.buffer
+            requested_timeout = max(float(timeout), 1.0)
+            transfer_budget = (size / DEFAULT_EXPECTED_TRANSFER_BPS) + DEFAULT_TRANSFER_GRACE_SEC
+            total_timeout = max(requested_timeout, transfer_budget)
+            idle_timeout = max(DEFAULT_IDLE_TIMEOUT_SEC, requested_timeout / 2.0)
+            deadline_ts = start_ts + total_timeout
+            print(
+                f"[*] Expecting {size} bytes, timeout set to {total_timeout:.1f}s "
+                f"(idle {idle_timeout:.1f}s)"
+            )
 
-            percent = (self.recvd_bytes / size) * 100
-            
-            print(f"[-] Timeout! Received {self.recvd_bytes}/{size} bytes ({percent:.1f}%).Packet Loss detected!")
+            timeout_reason = "transfer timeout"
+            while True:
+                if self.recv_event.wait(timeout=WAIT_SLICE_SEC):
+                    return self.buffer
+
+                now_ts = time.monotonic()
+                if now_ts >= deadline_ts:
+                    timeout_reason = "transfer timeout"
+                    break
+
+                if self.recvd_bytes > 0 and (now_ts - self.last_data_ts) >= idle_timeout:
+                    timeout_reason = f"idle timeout ({idle_timeout:.1f}s no new packets)"
+                    break
+
+            self.expected_size = 0
+            percent = (self.recvd_bytes / size) * 100 if size > 0 else 0.0
+            print(
+                f"[-] Timeout ({timeout_reason})! Received "
+                f"{self.recvd_bytes}/{size} bytes ({percent:.1f}%)."
+            )
             return None
