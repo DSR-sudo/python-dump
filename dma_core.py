@@ -1,12 +1,14 @@
 import socket
 import threading
 import time
+import os
 from dma_protocol import *
 
 DEFAULT_EXPECTED_TRANSFER_BPS = 8 * 1024 * 1024  # 8 MB/s conservative baseline.
 DEFAULT_TRANSFER_GRACE_SEC = 5.0
 DEFAULT_IDLE_TIMEOUT_SEC = 2.5
 WAIT_SLICE_SEC = 0.2
+VERBOSE_EXPECTING_LOG = os.getenv("DMA_VERBOSE_EXPECTING", "0") == "1"
 
 
 class DMACore:
@@ -192,10 +194,11 @@ class DMACore:
             total_timeout = max(requested_timeout, transfer_budget)
             idle_timeout = max(DEFAULT_IDLE_TIMEOUT_SEC, requested_timeout / 2.0)
             deadline_ts = start_ts + total_timeout
-            print(
-                f"[*] Expecting {size} bytes, timeout set to {total_timeout:.1f}s "
-                f"(idle {idle_timeout:.1f}s)"
-            )
+            if VERBOSE_EXPECTING_LOG:
+                print(
+                    f"[*] Expecting {size} bytes, timeout set to {total_timeout:.1f}s "
+                    f"(idle {idle_timeout:.1f}s)"
+                )
 
             timeout_reason = "transfer timeout"
             while True:
