@@ -9,6 +9,8 @@ from ue_generator import SDKGenerator
 from ue_scanner import UEScanner
 from ue_types import FNameCache, FNameEntryArray_UE424, TUObjectArray
 
+DEFAULT_DUMP_CHUNK_SIZE = 0x10000  # 64KB
+DEFAULT_RETRY_CHUNK_SIZE = 0x1000  # 4KB (robust bad-page recovery)
 
 def log(msg, level="INFO"):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -52,8 +54,8 @@ def print_detailed_help():
         ("cache_gnames", "构建本地 FName 缓存。"),
         ("dump_sdk <ClassName>", "为指定类生成 C++ SDK 头文件。"),
         ("pe_info", "打印当前基址对应的 PE 节区信息。"),
-        ("dump_mem <Addr> <Size> <File>", "将内存范围导出到文件。"),
-        ("retry_bad_pages <DumpFile> [BadPagesFile]", "对 bad_pages 列表进行二次读取回填。"),
+        ("dump_mem <Addr> <Size> <File> [ChunkSizeHex]", "将内存范围导出到文件。默认块大小 0x10000 (64KB)。"),
+        ("retry_bad_pages <DumpFile> [BadPagesFile] [ChunkSizeHex]", "对 bad_pages 列表进行二次读取回填；默认按 0x1000(4KB) 子块稳健回填。"),
         ("fast_init", "使用 SDK RVA 快速初始化。"),
         ("watch <ClassName> <MemberName> <ObjIndex>", "实时监控单个成员值。"),
         ("watch2file <continuous/isolated> <Start> <End/none> <FPS> <Duration> <File>", "按指定模式录制内存变化到文件。"),
@@ -273,15 +275,19 @@ class CommandHandler:
 
     def handle_dump_mem(self, args):
         if len(args) < 3:
-            log("Usage: dump_mem <HexAddr> <HexSize> <Filename>", "ERROR")
+            log("Usage: dump_mem <HexAddr> <HexSize> <Filename> [ChunkSizeHex]", "ERROR")
             return
         try:
             target_addr = int(args[0], 16)
             target_size = int(args[1], 16)
             filename = args[2]
+            chunk_size = int(args[3], 0) if len(args) >= 4 else DEFAULT_DUMP_CHUNK_SIZE
 
             if target_size <= 0:
                 log("HexSize must be > 0.", "ERROR")
+                return
+            if chunk_size < 0x1000:
+                log("ChunkSizeHex must be >= 0x1000.", "ERROR")
                 return
 
             log(f"Dumping {target_size/1024:.2f} KB from 0x{target_addr:X} to '{filename}'...")
@@ -292,10 +298,11 @@ class CommandHandler:
             # - Read one page at a time.
             # - On page failure, write zero placeholder and continue.
             # - Record failed pages to bad_pages.txt for later retry.
-            page_size = 0x1000
+            page_size = chunk_size
             page_timeout = 3.0
             max_retries = 3
             progress_step = 32 * 1024 * 1024
+            log(f"Reliable dump mode enabled. chunk_size=0x{page_size:X}, retries={max_retries}, timeout={page_timeout:.1f}s")
 
             start_time = time.time()
             total_pages = (target_size + page_size - 1) // page_size
@@ -373,7 +380,7 @@ class CommandHandler:
 
     def handle_retry_bad_pages(self, args):
         if len(args) < 1:
-            log("Usage: retry_bad_pages <DumpFile> [BadPagesFile]", "ERROR")
+            log("Usage: retry_bad_pages <DumpFile> [BadPagesFile] [ChunkSizeHex]", "ERROR")
             return
         try:
             dump_file = args[0]
@@ -381,6 +388,7 @@ class CommandHandler:
                 os.path.dirname(os.path.abspath(dump_file)),
                 "bad_pages.txt",
             )
+            chunk_override = int(args[2], 0) if len(args) >= 3 else None
 
             if not os.path.exists(dump_file):
                 log(f"Dump file not found: {dump_file}", "ERROR")
@@ -391,7 +399,7 @@ class CommandHandler:
 
             start_addr = None
             total_size = None
-            page_size = 0x1000
+            source_page_size = DEFAULT_DUMP_CHUNK_SIZE
             bad_entries = []
 
             with open(bad_pages_file, "r", encoding="utf-8", errors="ignore") as bf:
@@ -410,7 +418,7 @@ class CommandHandler:
                                 elif "size=" in p:
                                     total_size = int(p.split("size=")[1], 16)
                                 elif "page_size=" in p:
-                                    page_size = int(p.split("page_size=")[1], 16)
+                                    source_page_size = int(p.split("page_size=")[1], 16)
                         continue
 
                     cols = [x.strip() for x in text.split(",")]
@@ -434,16 +442,27 @@ class CommandHandler:
             file_size = os.path.getsize(dump_file)
             if total_size is None:
                 total_size = file_size
+            retry_chunk_size = chunk_override if chunk_override is not None else DEFAULT_RETRY_CHUNK_SIZE
+            if chunk_override is not None:
+                if chunk_override < 0x1000:
+                    log("ChunkSizeHex must be >= 0x1000.", "ERROR")
+                    return
+            else:
+                # Keep robust default for bad-page recovery regardless of dump chunk size.
+                retry_chunk_size = DEFAULT_RETRY_CHUNK_SIZE
 
             log(
                 f"Retrying {len(bad_entries)} bad pages from '{bad_pages_file}' "
-                f"into '{dump_file}' (base=0x{start_addr:X}, page=0x{page_size:X})..."
+                f"into '{dump_file}' (base=0x{start_addr:X}, source_page=0x{source_page_size:X}, "
+                f"retry_chunk=0x{retry_chunk_size:X})..."
             )
 
             page_timeout = 3.0
             max_retries = 3
+            total_retry_chunks = sum((sz + retry_chunk_size - 1) // retry_chunk_size for _, sz in bad_entries if sz > 0)
             recovered = 0
             still_bad = []
+            processed_chunks = 0
 
             with open(dump_file, "r+b") as f:
                 for idx, (va, sz) in enumerate(bad_entries, 1):
@@ -456,26 +475,34 @@ class CommandHandler:
                         still_bad.append((va, sz, "offset_oob"))
                         continue
 
-                    ok = False
-                    for attempt in range(1, max_retries + 1):
-                        data = self.api.read_chunk(va, sz, timeout=page_timeout)
-                        if data and len(data) == sz:
-                            f.seek(off)
-                            f.write(data)
-                            recovered += 1
-                            ok = True
-                            break
-                        if attempt < max_retries:
-                            time.sleep(0.05 * attempt)
+                    chunk_off = 0
+                    while chunk_off < sz:
+                        sub_sz = min(retry_chunk_size, sz - chunk_off)
+                        sub_va = va + chunk_off
+                        sub_file_off = off + chunk_off
 
-                    if not ok:
-                        still_bad.append((va, sz, "read_failed"))
+                        ok = False
+                        for attempt in range(1, max_retries + 1):
+                            data = self.api.read_chunk(sub_va, sub_sz, timeout=page_timeout)
+                            if data and len(data) == sub_sz:
+                                f.seek(sub_file_off)
+                                f.write(data)
+                                recovered += 1
+                                ok = True
+                                break
+                            if attempt < max_retries:
+                                time.sleep(0.05 * attempt)
 
-                    if idx % 256 == 0 or idx == len(bad_entries):
-                        pct = (idx / len(bad_entries)) * 100.0
+                        processed_chunks += 1
+                        if not ok:
+                            still_bad.append((sub_va, sub_sz, "read_failed"))
+                        chunk_off += sub_sz
+
+                    if idx % 128 == 0 or idx == len(bad_entries):
+                        pct = (processed_chunks / total_retry_chunks) * 100.0 if total_retry_chunks else 100.0
                         log(
-                            f"Retry progress: {idx}/{len(bad_entries)} ({pct:.1f}%), "
-                            f"recovered={recovered}, remaining={len(still_bad)}"
+                            f"Retry progress: chunks {processed_chunks}/{total_retry_chunks} ({pct:.1f}%), "
+                            f"entries {idx}/{len(bad_entries)}, recovered={recovered}, remaining={len(still_bad)}"
                         )
 
             remaining_file = os.path.join(
@@ -486,15 +513,16 @@ class CommandHandler:
                 rf.write("# remaining bad pages after retry_bad_pages\n")
                 rf.write(
                     f"# source={bad_pages_file}\n"
-                    f"# recovered={recovered}, remaining={len(still_bad)}, total={len(bad_entries)}\n"
+                    f"# recovered={recovered}, remaining={len(still_bad)}, total_entries={len(bad_entries)}, "
+                    f"total_chunks={total_retry_chunks}, retry_chunk_size=0x{retry_chunk_size:X}\n"
                 )
                 rf.write("# columns: va,size,reason\n")
                 for va, sz, reason in still_bad:
                     rf.write(f"0x{va:X},0x{sz:X},{reason}\n")
 
-            ratio = (recovered / len(bad_entries)) * 100.0
+            ratio = (recovered / total_retry_chunks) * 100.0 if total_retry_chunks else 100.0
             log(
-                f"Retry finished. recovered={recovered}/{len(bad_entries)} ({ratio:.2f}%), "
+                f"Retry finished. recovered={recovered}/{total_retry_chunks} chunks ({ratio:.2f}%), "
                 f"remaining={len(still_bad)}",
                 "SUCCESS" if not still_bad else "WARN",
             )
