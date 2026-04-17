@@ -1,4 +1,5 @@
 ﻿import datetime
+import os
 import struct
 import time
 
@@ -52,6 +53,7 @@ def print_detailed_help():
         ("dump_sdk <ClassName>", "为指定类生成 C++ SDK 头文件。"),
         ("pe_info", "打印当前基址对应的 PE 节区信息。"),
         ("dump_mem <Addr> <Size> <File>", "将内存范围导出到文件。"),
+        ("retry_bad_pages <DumpFile> [BadPagesFile]", "对 bad_pages 列表进行二次读取回填。"),
         ("fast_init", "使用 SDK RVA 快速初始化。"),
         ("watch <ClassName> <MemberName> <ObjIndex>", "实时监控单个成员值。"),
         ("watch2file <continuous/isolated> <Start> <End/none> <FPS> <Duration> <File>", "按指定模式录制内存变化到文件。"),
@@ -278,60 +280,228 @@ class CommandHandler:
             target_size = int(args[1], 16)
             filename = args[2]
 
+            if target_size <= 0:
+                log("HexSize must be > 0.", "ERROR")
+                return
+
             log(f"Dumping {target_size/1024:.2f} KB from 0x{target_addr:X} to '{filename}'...")
             if self.api.cached_dtb == 0:
                 log("Cached DTB is 0. Trying to refresh from cached PID...", "WARN")
-            start_time = time.time()
-            chunk_size = 8 * 1024 * 1024
-            chunk_timeout = 20.0
-            max_retries = 4
+
+            # Reliable page-by-page mode:
+            # - Read one page at a time.
+            # - On page failure, write zero placeholder and continue.
+            # - Record failed pages to bad_pages.txt for later retry.
+            page_size = 0x1000
+            page_timeout = 3.0
+            max_retries = 3
             progress_step = 32 * 1024 * 1024
 
+            start_time = time.time()
+            total_pages = (target_size + page_size - 1) // page_size
+            success_pages = 0
+            bad_pages = []
             written = 0
             next_progress_mark = progress_step
+            zero_page = b"\x00" * page_size
+            bad_pages_file = os.path.join(os.path.dirname(os.path.abspath(filename)), "bad_pages.txt")
+
             with open(filename, "wb") as f:
-                while written < target_size:
+                for page_index in range(total_pages):
                     remaining = target_size - written
-                    current_size = min(chunk_size, remaining)
-                    current_addr = target_addr + written
-                    chunk_ok = False
+                    current_size = page_size if remaining >= page_size else remaining
+                    current_addr = target_addr + (page_index * page_size)
+                    page_ok = False
+                    last_recv = 0
+                    last_data_len = 0
 
                     for attempt in range(1, max_retries + 1):
-                        data = self.api.read_chunk(current_addr, current_size, timeout=chunk_timeout)
+                        data = self.api.read_chunk(current_addr, current_size, timeout=page_timeout)
                         if data and len(data) == current_size:
                             f.write(data)
-                            written += current_size
-                            chunk_ok = True
+                            success_pages += 1
+                            page_ok = True
                             break
 
-                        recv_now = int(getattr(self.api.core, "recvd_bytes", 0))
-                        log(
-                            f"Chunk read retry {attempt}/{max_retries} failed at 0x{current_addr:X} "
-                            f"(expected={current_size}, received={recv_now})",
-                            "WARN",
-                        )
-                        time.sleep(0.15 * attempt)
+                        last_recv = int(getattr(self.api.core, "recvd_bytes", 0))
+                        last_data_len = len(data) if data else 0
+                        if attempt < max_retries:
+                            time.sleep(0.05 * attempt)
 
-                    if not chunk_ok:
-                        break
+                    if not page_ok:
+                        if current_size == page_size:
+                            f.write(zero_page)
+                        else:
+                            f.write(b"\x00" * current_size)
+                        bad_pages.append((current_addr, current_size, last_data_len, last_recv))
+
+                    written += current_size
 
                     if written >= next_progress_mark or written == target_size:
                         pct = (written / target_size) * 100 if target_size else 100.0
-                        log(f"Dump progress: {written}/{target_size} bytes ({pct:.1f}%)")
+                        log(
+                            f"Dump progress: {written}/{target_size} bytes ({pct:.1f}%), "
+                            f"pages: {page_index + 1}/{total_pages}, bad_pages={len(bad_pages)}"
+                        )
                         next_progress_mark += progress_step
 
-            if written == target_size:
-                duration = time.time() - start_time
-                speed = target_size / 1024 / 1024 / max(duration, 1e-6)
-                log(f"Dump saved successfully! Speed: {speed:.2f} MB/s", "SUCCESS")
+            with open(bad_pages_file, "w", encoding="utf-8") as bf:
+                bf.write("# bad pages generated by dump_mem reliable mode\n")
+                bf.write(f"# start=0x{target_addr:X}, size=0x{target_size:X}, page_size=0x{page_size:X}\n")
+                bf.write("# columns: va,size,last_data_len,last_recv_bytes\n")
+                for va, sz, last_len, recv_now in bad_pages:
+                    bf.write(f"0x{va:X},0x{sz:X},{last_len},{recv_now}\n")
+
+            failed_bytes = sum(item[1] for item in bad_pages)
+            success_bytes = target_size - failed_bytes
+            success_ratio = (success_pages / total_pages) * 100 if total_pages else 100.0
+            byte_ratio = (success_bytes / target_size) * 100 if target_size else 100.0
+            duration = time.time() - start_time
+            speed = target_size / 1024 / 1024 / max(duration, 1e-6)
+
+            log(
+                f"Dump finished. Speed: {speed:.2f} MB/s | "
+                f"page_success={success_pages}/{total_pages} ({success_ratio:.2f}%) | "
+                f"byte_success={success_bytes}/{target_size} ({byte_ratio:.2f}%)"
+            )
+            if bad_pages:
+                log(f"bad_pages count={len(bad_pages)}; details saved to '{bad_pages_file}'", "WARN")
             else:
-                log(
-                    f"Dump failed after retries. Received {written}/{target_size} bytes "
-                    f"(partial file kept: {filename}).",
-                    "ERROR",
-                )
+                log("All pages dumped successfully (no bad pages).", "SUCCESS")
         except Exception as e:
             log(f"Dump error: {e}", "ERROR")
+
+    def handle_retry_bad_pages(self, args):
+        if len(args) < 1:
+            log("Usage: retry_bad_pages <DumpFile> [BadPagesFile]", "ERROR")
+            return
+        try:
+            dump_file = args[0]
+            bad_pages_file = args[1] if len(args) >= 2 else os.path.join(
+                os.path.dirname(os.path.abspath(dump_file)),
+                "bad_pages.txt",
+            )
+
+            if not os.path.exists(dump_file):
+                log(f"Dump file not found: {dump_file}", "ERROR")
+                return
+            if not os.path.exists(bad_pages_file):
+                log(f"Bad pages file not found: {bad_pages_file}", "ERROR")
+                return
+
+            start_addr = None
+            total_size = None
+            page_size = 0x1000
+            bad_entries = []
+
+            with open(bad_pages_file, "r", encoding="utf-8", errors="ignore") as bf:
+                for line in bf:
+                    text = line.strip()
+                    if not text:
+                        continue
+                    if text.startswith("#"):
+                        # expected header:
+                        # # start=0x..., size=0x..., page_size=0x...
+                        if "start=" in text and "size=" in text:
+                            parts = [p.strip() for p in text.split(",")]
+                            for p in parts:
+                                if "start=" in p:
+                                    start_addr = int(p.split("start=")[1], 16)
+                                elif "size=" in p:
+                                    total_size = int(p.split("size=")[1], 16)
+                                elif "page_size=" in p:
+                                    page_size = int(p.split("page_size=")[1], 16)
+                        continue
+
+                    cols = [x.strip() for x in text.split(",")]
+                    if len(cols) < 2:
+                        continue
+                    va = int(cols[0], 16)
+                    sz = int(cols[1], 16)
+                    bad_entries.append((va, sz))
+
+            if not bad_entries:
+                log("No bad pages found in file.", "SUCCESS")
+                return
+
+            if start_addr is None:
+                start_addr = min(va for va, _ in bad_entries)
+                log(
+                    f"Header start not found in bad pages file, using min VA as base: 0x{start_addr:X}",
+                    "WARN",
+                )
+
+            file_size = os.path.getsize(dump_file)
+            if total_size is None:
+                total_size = file_size
+
+            log(
+                f"Retrying {len(bad_entries)} bad pages from '{bad_pages_file}' "
+                f"into '{dump_file}' (base=0x{start_addr:X}, page=0x{page_size:X})..."
+            )
+
+            page_timeout = 3.0
+            max_retries = 3
+            recovered = 0
+            still_bad = []
+
+            with open(dump_file, "r+b") as f:
+                for idx, (va, sz) in enumerate(bad_entries, 1):
+                    if sz <= 0:
+                        still_bad.append((va, sz, "invalid_size"))
+                        continue
+
+                    off = va - start_addr
+                    if off < 0 or (off + sz) > file_size:
+                        still_bad.append((va, sz, "offset_oob"))
+                        continue
+
+                    ok = False
+                    for attempt in range(1, max_retries + 1):
+                        data = self.api.read_chunk(va, sz, timeout=page_timeout)
+                        if data and len(data) == sz:
+                            f.seek(off)
+                            f.write(data)
+                            recovered += 1
+                            ok = True
+                            break
+                        if attempt < max_retries:
+                            time.sleep(0.05 * attempt)
+
+                    if not ok:
+                        still_bad.append((va, sz, "read_failed"))
+
+                    if idx % 256 == 0 or idx == len(bad_entries):
+                        pct = (idx / len(bad_entries)) * 100.0
+                        log(
+                            f"Retry progress: {idx}/{len(bad_entries)} ({pct:.1f}%), "
+                            f"recovered={recovered}, remaining={len(still_bad)}"
+                        )
+
+            remaining_file = os.path.join(
+                os.path.dirname(os.path.abspath(bad_pages_file)),
+                "bad_pages_remaining.txt",
+            )
+            with open(remaining_file, "w", encoding="utf-8") as rf:
+                rf.write("# remaining bad pages after retry_bad_pages\n")
+                rf.write(
+                    f"# source={bad_pages_file}\n"
+                    f"# recovered={recovered}, remaining={len(still_bad)}, total={len(bad_entries)}\n"
+                )
+                rf.write("# columns: va,size,reason\n")
+                for va, sz, reason in still_bad:
+                    rf.write(f"0x{va:X},0x{sz:X},{reason}\n")
+
+            ratio = (recovered / len(bad_entries)) * 100.0
+            log(
+                f"Retry finished. recovered={recovered}/{len(bad_entries)} ({ratio:.2f}%), "
+                f"remaining={len(still_bad)}",
+                "SUCCESS" if not still_bad else "WARN",
+            )
+            log(f"Remaining bad pages saved to '{remaining_file}'")
+
+        except Exception as e:
+            log(f"retry_bad_pages error: {e}", "ERROR")
 
     def handle_fast_init(self):
         if self.ctx.g_base_addr == 0:
@@ -444,3 +614,4 @@ class CommandHandler:
             log(f"Successfully recorded {len(frames)} frames to '{filename}'", "SUCCESS")
         except Exception as e:
             log(f"Watch error: {e}", "ERROR")
+

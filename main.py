@@ -56,6 +56,8 @@ def main():
                 handler.handle_rwbase_data(args)
             elif cmd == "dump_mem":
                 handler.handle_dump_mem(args)
+            elif cmd == "retry_bad_pages":
+                handler.handle_retry_bad_pages(args)
                 
             elif cmd == "fast_init":
                 handler.handle_fast_init()
