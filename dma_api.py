@@ -59,6 +59,10 @@ class DMAApi:
         payload = pack_enum_modules_req(pid)
         self.core.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
 
+    def enum_user_regions(self, pid):
+        payload = pack_enum_regions_req(pid)
+        self.core.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
+
     def _request_u64(self, payload, retries=0, timeout=3.0):
         attempts = max(1, int(retries) + 1)
         for attempt in range(attempts):

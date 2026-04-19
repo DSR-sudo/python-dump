@@ -13,6 +13,7 @@ MAGIC_KEY = 0xDEADBEEF
 CMD_READ_MEM = 1
 CMD_WRITE_MEM = 2
 CMD_GET_CR3 = 3
+CMD_ENUM_USER_REGIONS = 4
 CMD_ENUM_USER_MODULES = 5
 CMD_START_DATA_THREADS = 13
 CMD_STOP_DATA_THREADS = 14
@@ -167,6 +168,10 @@ def pack_cr3_req(pid):
 
 def pack_enum_modules_req(pid):
     return _pack_request(CMD_ENUM_USER_MODULES, value=pid)
+
+
+def pack_enum_regions_req(pid):
+    return _pack_request(CMD_ENUM_USER_REGIONS, value=pid)
 
 
 def pack_start_data_threads_req():

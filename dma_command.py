@@ -1,4 +1,5 @@
 ﻿import datetime
+import json
 import os
 import struct
 import time
@@ -11,6 +12,19 @@ from ue_types import FNameCache, FNameEntryArray_UE424, TUObjectArray
 
 DEFAULT_DUMP_CHUNK_SIZE = 0x10000  # 64KB
 DEFAULT_RETRY_CHUNK_SIZE = 0x1000  # 4KB (robust bad-page recovery)
+
+MEM_COMMIT = 0x1000
+MEM_PRIVATE = 0x20000
+PAGE_GUARD = 0x100
+PAGE_NOACCESS = 0x01
+READABLE_PROTECTS = {
+    0x02,  # PAGE_READONLY
+    0x04,  # PAGE_READWRITE
+    0x08,  # PAGE_WRITECOPY
+    0x20,  # PAGE_EXECUTE_READ
+    0x40,  # PAGE_EXECUTE_READWRITE
+    0x80,  # PAGE_EXECUTE_WRITECOPY
+}
 
 def log(msg, level="INFO"):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -54,7 +68,10 @@ def print_detailed_help():
         ("cache_gnames", "构建本地 FName 缓存。"),
         ("dump_sdk <ClassName>", "为指定类生成 C++ SDK 头文件。"),
         ("pe_info", "打印当前基址对应的 PE 节区信息。"),
+        ("regions <PID> [WaitSec]", "枚举用户态内存区并缓存（含 MEM_PRIVATE）。"),
         ("dump_mem <Addr> <Size> <File> [ChunkSizeHex]", "将内存范围导出到文件。默认块大小 0x10000 (64KB)。"),
+        ("dump_private <PID> <OutDir> [ChunkSizeHex] [WaitSec]", "批量导出 MEM_PRIVATE + MEM_COMMIT + 可读区域，并生成 manifest。"),
+        ("pack_private <ManifestJson> <OutFile>", "将 dump_private 结果打包为单文件容器（含索引头 + 原始分段数据）。"),
         ("retry_bad_pages <DumpFile> [BadPagesFile] [ChunkSizeHex]", "对 bad_pages 列表进行二次读取回填；默认按 0x1000(4KB) 子块稳健回填。"),
         ("fast_init", "使用 SDK RVA 快速初始化。"),
         ("watch <ClassName> <MemberName> <ObjIndex>", "实时监控单个成员值。"),
@@ -86,6 +103,139 @@ class CommandHandler:
         except Exception as e:
             self.sdk = None
             log(f"Failed to load SDK JSONs: {e}", "WARN")
+
+    def _is_readable_region(self, protect: int) -> bool:
+        base = protect & 0xFF
+        if base == PAGE_NOACCESS:
+            return False
+        if (protect & PAGE_GUARD) != 0:
+            return False
+        return base in READABLE_PROTECTS
+
+    def _sanitize_filename(self, name: str) -> str:
+        invalid = '<>:"/\\|?*'
+        out = []
+        for ch in (name or ""):
+            if ch in invalid or ord(ch) < 32:
+                out.append("_")
+            else:
+                out.append(ch)
+        candidate = "".join(out).strip().strip(".")
+        return candidate if candidate else "noname"
+
+    def _dump_range_reliable(self, target_addr, target_size, filename, chunk_size):
+        if target_size <= 0:
+            raise ValueError("target_size must be > 0")
+        if chunk_size < 0x1000:
+            raise ValueError("chunk_size must be >= 0x1000")
+
+        os.makedirs(os.path.dirname(os.path.abspath(filename)) or ".", exist_ok=True)
+        log(f"Dumping {target_size / 1024:.2f} KB from 0x{target_addr:X} to '{filename}'...")
+
+        page_size = chunk_size
+        page_timeout = 3.0
+        max_retries = 3
+        progress_step = 32 * 1024 * 1024
+        log(
+            f"Reliable dump mode enabled. chunk_size=0x{page_size:X}, retries={max_retries}, timeout={page_timeout:.1f}s"
+        )
+
+        start_time = time.time()
+        total_pages = (target_size + page_size - 1) // page_size
+        success_pages = 0
+        bad_pages = []
+        written = 0
+        next_progress_mark = progress_step
+        zero_page = b"\x00" * page_size
+        bad_pages_file = os.path.join(os.path.dirname(os.path.abspath(filename)), "bad_pages.txt")
+
+        with open(filename, "wb") as f:
+            for page_index in range(total_pages):
+                remaining = target_size - written
+                current_size = page_size if remaining >= page_size else remaining
+                current_addr = target_addr + (page_index * page_size)
+                page_ok = False
+                last_recv = 0
+                last_data_len = 0
+
+                for attempt in range(1, max_retries + 1):
+                    data = self.api.read_chunk(current_addr, current_size, timeout=page_timeout)
+                    if data and len(data) == current_size:
+                        f.write(data)
+                        success_pages += 1
+                        page_ok = True
+                        break
+
+                    last_recv = int(getattr(self.api.core, "recvd_bytes", 0))
+                    last_data_len = len(data) if data else 0
+                    if attempt < max_retries:
+                        time.sleep(0.05 * attempt)
+
+                if not page_ok:
+                    if current_size == page_size:
+                        f.write(zero_page)
+                    else:
+                        f.write(b"\x00" * current_size)
+                    bad_pages.append((current_addr, current_size, last_data_len, last_recv))
+
+                written += current_size
+
+                if written >= next_progress_mark or written == target_size:
+                    pct = (written / target_size) * 100 if target_size else 100.0
+                    log(
+                        f"Dump progress: {written}/{target_size} bytes ({pct:.1f}%), "
+                        f"pages: {page_index + 1}/{total_pages}, bad_pages={len(bad_pages)}"
+                    )
+                    next_progress_mark += progress_step
+
+        with open(bad_pages_file, "w", encoding="utf-8") as bf:
+            bf.write("# bad pages generated by dump_mem reliable mode\n")
+            bf.write(f"# start=0x{target_addr:X}, size=0x{target_size:X}, page_size=0x{page_size:X}\n")
+            bf.write("# columns: va,size,last_data_len,last_recv_bytes\n")
+            for va, sz, last_len, recv_now in bad_pages:
+                bf.write(f"0x{va:X},0x{sz:X},{last_len},{recv_now}\n")
+
+        failed_bytes = sum(item[1] for item in bad_pages)
+        success_bytes = target_size - failed_bytes
+        success_ratio = (success_pages / total_pages) * 100 if total_pages else 100.0
+        byte_ratio = (success_bytes / target_size) * 100 if target_size else 100.0
+        duration = time.time() - start_time
+        speed = target_size / 1024 / 1024 / max(duration, 1e-6)
+
+        log(
+            f"Dump finished. Speed: {speed:.2f} MB/s | "
+            f"page_success={success_pages}/{total_pages} ({success_ratio:.2f}%) | "
+            f"byte_success={success_bytes}/{target_size} ({byte_ratio:.2f}%)"
+        )
+        if bad_pages:
+            log(f"bad_pages count={len(bad_pages)}; details saved to '{bad_pages_file}'", "WARN")
+        else:
+            log("All pages dumped successfully (no bad pages).", "SUCCESS")
+
+        return {
+            "target_addr": target_addr,
+            "target_size": target_size,
+            "filename": filename,
+            "bad_pages_file": bad_pages_file,
+            "bad_pages_count": len(bad_pages),
+            "success_pages": success_pages,
+            "total_pages": total_pages,
+            "success_bytes": success_bytes,
+            "failed_bytes": failed_bytes,
+            "speed_mb_s": speed,
+        }
+
+    def _enum_regions_with_wait(self, pid, wait_sec):
+        self.api.core.clear_region_snapshot()
+        self.api.enum_user_regions(pid)
+        deadline = time.time() + wait_sec
+        while time.time() < deadline:
+            entries, done, count = self.api.core.get_region_snapshot()
+            if done:
+                return entries, done, count
+            time.sleep(0.1)
+        entries, done, count = self.api.core.get_region_snapshot()
+        return entries, done, count
 
     def _format_stream_stats(self):
         stats = self.api.core.get_stream_stats()
@@ -204,6 +354,251 @@ class CommandHandler:
         except ValueError:
             log("PID must be a number.", "ERROR")
 
+    def handle_regions(self, args):
+        if not args:
+            log("Usage: regions <PID> [WaitSec]", "ERROR")
+            return
+        try:
+            target_pid = int(args[0], 0)
+            wait_sec = float(args[1]) if len(args) >= 2 else 6.0
+            if wait_sec <= 0:
+                wait_sec = 6.0
+
+            entries, done, count = self._enum_regions_with_wait(target_pid, wait_sec)
+            log(
+                f"Region snapshot: entries={len(entries)}, done={done}, driver_count={count}",
+                "SUCCESS" if done else "WARN",
+            )
+            if entries:
+                preview = min(5, len(entries))
+                for idx in range(preview):
+                    e = entries[idx]
+                    log(
+                        f"[{idx}] base=0x{e['base']:016X} size=0x{e['size']:X} "
+                        f"state=0x{e['state']:X} protect=0x{e['protect']:X} type=0x{e['type']:X}"
+                    )
+        except ValueError:
+            log("PID and WaitSec must be valid numbers.", "ERROR")
+
+    def handle_dump_private(self, args):
+        if len(args) < 2:
+            log("Usage: dump_private <PID> <OutDir> [ChunkSizeHex] [WaitSec]", "ERROR")
+            return
+        try:
+            target_pid = int(args[0], 0)
+            out_dir = args[1]
+            chunk_size = int(args[2], 0) if len(args) >= 3 else DEFAULT_DUMP_CHUNK_SIZE
+            wait_sec = float(args[3]) if len(args) >= 4 else 6.0
+            if chunk_size < 0x1000:
+                log("ChunkSizeHex must be >= 0x1000.", "ERROR")
+                return
+            if wait_sec <= 0:
+                wait_sec = 6.0
+
+            user_cr3, kernel_cr3, base_addr = self.api.get_cr3(target_pid)
+            if self.api.cached_dtb == 0:
+                log("Failed to cache DTB for target pid.", "ERROR")
+                return
+            log(
+                f"Target attached for dump_private. pid={target_pid}, "
+                f"UDTB={hex(user_cr3 or 0)}, KDTB={hex(kernel_cr3 or 0)}, Base={hex(base_addr or 0)}"
+            )
+
+            entries, done, count = self._enum_regions_with_wait(target_pid, wait_sec)
+            if not entries:
+                log("No region entries captured.", "ERROR")
+                return
+            if not done:
+                log("Region enumeration timeout; dumping captured partial snapshot.", "WARN")
+
+            candidates = [
+                e for e in entries
+                if e["state"] == MEM_COMMIT
+                and e["type"] == MEM_PRIVATE
+                and self._is_readable_region(e["protect"])
+                and e["size"] > 0
+            ]
+            candidates.sort(key=lambda x: x["base"])
+            os.makedirs(out_dir, exist_ok=True)
+
+            manifest = {
+                "pid": target_pid,
+                "udtb": int(user_cr3 or 0),
+                "kdtb": int(kernel_cr3 or 0),
+                "base_addr": int(base_addr or 0),
+                "region_enum_done": bool(done),
+                "region_enum_driver_count": int(count),
+                "region_enum_captured_count": len(entries),
+                "filters": {
+                    "state": "MEM_COMMIT(0x1000)",
+                    "type": "MEM_PRIVATE(0x20000)",
+                    "readable_only": True,
+                    "guard_filtered": True,
+                },
+                "dump_count": 0,
+                "regions": [],
+            }
+
+            log(f"dump_private candidates={len(candidates)} (from entries={len(entries)})")
+            if not candidates:
+                manifest_path = os.path.join(out_dir, "private_manifest.json")
+                with open(manifest_path, "w", encoding="utf-8") as mf:
+                    json.dump(manifest, mf, indent=2, ensure_ascii=False)
+                log(f"No private readable committed regions found. Manifest: {manifest_path}", "WARN")
+                return
+
+            for idx, e in enumerate(candidates):
+                region_name = f"private_{idx:05d}_{e['base']:016X}_{e['size']:X}.bin"
+                file_path = os.path.join(out_dir, self._sanitize_filename(region_name))
+                log(
+                    f"[{idx + 1}/{len(candidates)}] dumping base=0x{e['base']:016X} size=0x{e['size']:X} -> {file_path}"
+                )
+                stats = self._dump_range_reliable(e["base"], e["size"], file_path, chunk_size)
+                manifest["regions"].append({
+                    "index": idx,
+                    "base": e["base"],
+                    "size": e["size"],
+                    "state": e["state"],
+                    "protect": e["protect"],
+                    "type": e["type"],
+                    "file": os.path.basename(file_path),
+                    "bad_pages_count": stats["bad_pages_count"],
+                    "success_pages": stats["success_pages"],
+                    "total_pages": stats["total_pages"],
+                    "success_bytes": stats["success_bytes"],
+                    "failed_bytes": stats["failed_bytes"],
+                })
+
+            manifest["dump_count"] = len(manifest["regions"])
+            manifest_path = os.path.join(out_dir, "private_manifest.json")
+            with open(manifest_path, "w", encoding="utf-8") as mf:
+                json.dump(manifest, mf, indent=2, ensure_ascii=False)
+            log(f"dump_private finished. Manifest: {manifest_path}", "SUCCESS")
+        except ValueError:
+            log("PID/ChunkSizeHex/WaitSec format error.", "ERROR")
+        except Exception as e:
+            log(f"dump_private error: {e}", "ERROR")
+
+    def handle_pack_private(self, args):
+        if len(args) < 2:
+            log("Usage: pack_private <ManifestJson> <OutFile>", "ERROR")
+            return
+
+        manifest_path = os.path.abspath(args[0])
+        out_file = os.path.abspath(args[1])
+
+        if not os.path.exists(manifest_path):
+            log(f"Manifest not found: {manifest_path}", "ERROR")
+            return
+
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as mf:
+                manifest = json.load(mf)
+        except Exception as e:
+            log(f"Failed to load manifest json: {e}", "ERROR")
+            return
+
+        regions = manifest.get("regions")
+        if not isinstance(regions, list):
+            log("Invalid manifest: 'regions' must be a list.", "ERROR")
+            return
+
+        manifest_dir = os.path.dirname(manifest_path)
+        prepared = []
+        total_payload = 0
+        for idx, r in enumerate(regions):
+            rel_name = r.get("file")
+            if not rel_name:
+                log(f"Region[{idx}] missing file field; skipped.", "WARN")
+                continue
+
+            region_path = os.path.join(manifest_dir, rel_name)
+            if not os.path.exists(region_path):
+                log(f"Region file missing: {region_path}", "ERROR")
+                return
+
+            data_size = os.path.getsize(region_path)
+            total_payload += data_size
+            prepared.append({
+                "index": int(r.get("index", idx)),
+                "base": int(r.get("base", 0)),
+                "size": int(r.get("size", data_size)),
+                "state": int(r.get("state", 0)),
+                "protect": int(r.get("protect", 0)),
+                "type": int(r.get("type", 0)),
+                "bad_pages_count": int(r.get("bad_pages_count", 0)),
+                "path": region_path,
+                "name": os.path.basename(region_path),
+                "data_size": data_size,
+            })
+
+        if not prepared:
+            log("No valid region files to pack.", "ERROR")
+            return
+
+        cursor = 0
+        packed_regions = []
+        for p in prepared:
+            packed_regions.append({
+                "index": p["index"],
+                "base": p["base"],
+                "size": p["size"],
+                "state": p["state"],
+                "protect": p["protect"],
+                "type": p["type"],
+                "bad_pages_count": p["bad_pages_count"],
+                "name": p["name"],
+                "data_offset": cursor,
+                "data_size": p["data_size"],
+            })
+            cursor += p["data_size"]
+
+        header = {
+            "format": "RWBASE_PRIVATE_PACK_V1",
+            "created_at_local": datetime.datetime.now().isoformat(timespec="seconds"),
+            "source_manifest": os.path.basename(manifest_path),
+            "pid": int(manifest.get("pid", 0)),
+            "udtb": int(manifest.get("udtb", 0)),
+            "kdtb": int(manifest.get("kdtb", 0)),
+            "base_addr": int(manifest.get("base_addr", 0)),
+            "region_count": len(packed_regions),
+            "payload_size": total_payload,
+            "regions": packed_regions,
+        }
+        header_bytes = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+        out_dir = os.path.dirname(out_file)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
+        try:
+            with open(out_file, "wb") as wf:
+                wf.write(b"RWPACKV1")
+                wf.write(struct.pack("<IIQ", 1, len(header_bytes), total_payload))
+                wf.write(header_bytes)
+
+                copied = 0
+                for i, p in enumerate(prepared):
+                    log(
+                        f"Packing [{i + 1}/{len(prepared)}] base=0x{p['base']:016X} "
+                        f"size=0x{p['size']:X} file={p['name']}"
+                    )
+                    with open(p["path"], "rb") as rf:
+                        while True:
+                            chunk = rf.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            wf.write(chunk)
+                            copied += len(chunk)
+
+            log(
+                f"pack_private finished. out={out_file}, "
+                f"regions={len(prepared)}, payload={total_payload} bytes, copied={copied} bytes",
+                "SUCCESS",
+            )
+        except Exception as e:
+            log(f"pack_private error: {e}", "ERROR")
+
     def handle_start_data_threads(self):
         ack = self.api.start_data_threads()
         if ack is None:
@@ -290,91 +685,9 @@ class CommandHandler:
                 log("ChunkSizeHex must be >= 0x1000.", "ERROR")
                 return
 
-            log(f"Dumping {target_size/1024:.2f} KB from 0x{target_addr:X} to '{filename}'...")
             if self.api.cached_dtb == 0:
                 log("Cached DTB is 0. Trying to refresh from cached PID...", "WARN")
-
-            # Reliable page-by-page mode:
-            # - Read one page at a time.
-            # - On page failure, write zero placeholder and continue.
-            # - Record failed pages to bad_pages.txt for later retry.
-            page_size = chunk_size
-            page_timeout = 3.0
-            max_retries = 3
-            progress_step = 32 * 1024 * 1024
-            log(f"Reliable dump mode enabled. chunk_size=0x{page_size:X}, retries={max_retries}, timeout={page_timeout:.1f}s")
-
-            start_time = time.time()
-            total_pages = (target_size + page_size - 1) // page_size
-            success_pages = 0
-            bad_pages = []
-            written = 0
-            next_progress_mark = progress_step
-            zero_page = b"\x00" * page_size
-            bad_pages_file = os.path.join(os.path.dirname(os.path.abspath(filename)), "bad_pages.txt")
-
-            with open(filename, "wb") as f:
-                for page_index in range(total_pages):
-                    remaining = target_size - written
-                    current_size = page_size if remaining >= page_size else remaining
-                    current_addr = target_addr + (page_index * page_size)
-                    page_ok = False
-                    last_recv = 0
-                    last_data_len = 0
-
-                    for attempt in range(1, max_retries + 1):
-                        data = self.api.read_chunk(current_addr, current_size, timeout=page_timeout)
-                        if data and len(data) == current_size:
-                            f.write(data)
-                            success_pages += 1
-                            page_ok = True
-                            break
-
-                        last_recv = int(getattr(self.api.core, "recvd_bytes", 0))
-                        last_data_len = len(data) if data else 0
-                        if attempt < max_retries:
-                            time.sleep(0.05 * attempt)
-
-                    if not page_ok:
-                        if current_size == page_size:
-                            f.write(zero_page)
-                        else:
-                            f.write(b"\x00" * current_size)
-                        bad_pages.append((current_addr, current_size, last_data_len, last_recv))
-
-                    written += current_size
-
-                    if written >= next_progress_mark or written == target_size:
-                        pct = (written / target_size) * 100 if target_size else 100.0
-                        log(
-                            f"Dump progress: {written}/{target_size} bytes ({pct:.1f}%), "
-                            f"pages: {page_index + 1}/{total_pages}, bad_pages={len(bad_pages)}"
-                        )
-                        next_progress_mark += progress_step
-
-            with open(bad_pages_file, "w", encoding="utf-8") as bf:
-                bf.write("# bad pages generated by dump_mem reliable mode\n")
-                bf.write(f"# start=0x{target_addr:X}, size=0x{target_size:X}, page_size=0x{page_size:X}\n")
-                bf.write("# columns: va,size,last_data_len,last_recv_bytes\n")
-                for va, sz, last_len, recv_now in bad_pages:
-                    bf.write(f"0x{va:X},0x{sz:X},{last_len},{recv_now}\n")
-
-            failed_bytes = sum(item[1] for item in bad_pages)
-            success_bytes = target_size - failed_bytes
-            success_ratio = (success_pages / total_pages) * 100 if total_pages else 100.0
-            byte_ratio = (success_bytes / target_size) * 100 if target_size else 100.0
-            duration = time.time() - start_time
-            speed = target_size / 1024 / 1024 / max(duration, 1e-6)
-
-            log(
-                f"Dump finished. Speed: {speed:.2f} MB/s | "
-                f"page_success={success_pages}/{total_pages} ({success_ratio:.2f}%) | "
-                f"byte_success={success_bytes}/{target_size} ({byte_ratio:.2f}%)"
-            )
-            if bad_pages:
-                log(f"bad_pages count={len(bad_pages)}; details saved to '{bad_pages_file}'", "WARN")
-            else:
-                log("All pages dumped successfully (no bad pages).", "SUCCESS")
+            self._dump_range_reliable(target_addr, target_size, filename, chunk_size)
         except Exception as e:
             log(f"Dump error: {e}", "ERROR")
 

@@ -2,6 +2,7 @@ import socket
 import threading
 import time
 import os
+import re
 from dma_protocol import *
 
 DEFAULT_EXPECTED_TRANSFER_BPS = 8 * 1024 * 1024  # 8 MB/s conservative baseline.
@@ -12,6 +13,16 @@ VERBOSE_EXPECTING_LOG = os.getenv("DMA_VERBOSE_EXPECTING", "0") == "1"
 
 
 class DMACore:
+    MODULE_LOG_RE = re.compile(
+        r"^\[User\]\s+Base:\s+0x([0-9A-Fa-f]+)\s+\|\s+Size:\s+0x([0-9A-Fa-f]+)\s+\|\s+Name:\s+(.+)$"
+    )
+    REGION_LOG_RE = re.compile(
+        r"^\[UserRegion\]\s+Base:\s+0x([0-9A-Fa-f]+)\s+\|\s+Size:\s+0x([0-9A-Fa-f]+)\s+\|\s+State:\s+0x([0-9A-Fa-f]+)\s+\|\s+Protect:\s+0x([0-9A-Fa-f]+)\s+\|\s+Type:\s+0x([0-9A-Fa-f]+)$"
+    )
+    REGION_DONE_RE = re.compile(
+        r"^\[UserRegion\]\s+Done\s+PID=([0-9A-Fa-fx]+)\s+Count=(\d+)$"
+    )
+
     def __init__(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -51,6 +62,12 @@ class DMACore:
         self.last_untyped_data_ts = 0.0
         self.last_request_timed_out = False
         self.lock = threading.Lock()
+        self.module_lock = threading.Lock()
+        self.module_entries = []
+        self.region_lock = threading.Lock()
+        self.region_entries = []
+        self.region_enum_done = False
+        self.region_enum_count = 0
 
         threading.Thread(target=self._receiver_loop, daemon=True).start()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
@@ -97,10 +114,15 @@ class DMACore:
                 if pkt_type == PACKET_TYPE_LOG:
                     try:
                         msg = scratch_buffer[1:nbytes].decode("utf-8", errors="ignore").strip()
+                        self._try_capture_module_log(msg)
+                        consumed_region_log = self._try_capture_region_log(msg)
                         if "ALIVE_ACK" in msg or "DRIVER_ONLINE" in msg:
                             if not self.driver_online:
                                 print("[+] Driver is ONLINE.")
                             self.driver_online = True
+                            continue
+
+                        if consumed_region_log:
                             continue
 
                         if msg:
@@ -152,6 +174,73 @@ class DMACore:
             except Exception:
                 if not self.is_running:
                     break
+
+    def _try_capture_module_log(self, msg: str):
+        if not msg:
+            return
+        match = self.MODULE_LOG_RE.match(msg)
+        if not match:
+            return
+        try:
+            base = int(match.group(1), 16)
+            size = int(match.group(2), 16)
+            name = match.group(3).strip()
+            if base == 0 or size == 0 or not name:
+                return
+        except Exception:
+            return
+        entry = {"base": base, "size": size, "name": name}
+        with self.module_lock:
+            self.module_entries.append(entry)
+
+    def clear_module_snapshot(self):
+        with self.module_lock:
+            self.module_entries.clear()
+
+    def get_module_snapshot(self):
+        with self.module_lock:
+            return list(self.module_entries)
+
+    def _try_capture_region_log(self, msg: str):
+        if not msg:
+            return False
+        match = self.REGION_LOG_RE.match(msg)
+        if match:
+            try:
+                entry = {
+                    "base": int(match.group(1), 16),
+                    "size": int(match.group(2), 16),
+                    "state": int(match.group(3), 16),
+                    "protect": int(match.group(4), 16),
+                    "type": int(match.group(5), 16),
+                }
+            except Exception:
+                return False
+            with self.region_lock:
+                self.region_entries.append(entry)
+            return True
+
+        done = self.REGION_DONE_RE.match(msg)
+        if done:
+            try:
+                count = int(done.group(2))
+            except Exception:
+                count = 0
+            with self.region_lock:
+                self.region_enum_done = True
+                self.region_enum_count = count
+            return True
+        return False
+
+    def clear_region_snapshot(self):
+        with self.region_lock:
+            self.region_entries.clear()
+            self.region_enum_done = False
+            self.region_enum_count = 0
+
+    def get_region_snapshot(self):
+        with self.region_lock:
+            return list(self.region_entries), self.region_enum_done, self.region_enum_count
 
     def _heartbeat_loop(self):
         while self.is_running:

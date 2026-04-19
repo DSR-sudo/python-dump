@@ -56,6 +56,12 @@ def main():
                 handler.handle_rwbase_data(args)
             elif cmd == "dump_mem":
                 handler.handle_dump_mem(args)
+            elif cmd == "regions":
+                handler.handle_regions(args)
+            elif cmd == "dump_private":
+                handler.handle_dump_private(args)
+            elif cmd == "pack_private":
+                handler.handle_pack_private(args)
             elif cmd == "retry_bad_pages":
                 handler.handle_retry_bad_pages(args)
                 
