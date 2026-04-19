@@ -62,6 +62,7 @@ def print_detailed_help():
         ("stop_data_threads", "发送控制命令关闭 GhostCore/RWbase 流式回传。"),
         ("stream_stats", "查看接收线程维护的 RWbase/RWVG 流式统计。"),
         ("stream_log [IntervalSec]", "按固定间隔流式打印 RWbase/RWVG 统计；数据本身由后台持续接收，Ctrl+C 停止。"),
+        ("rwbase_host [stats/watch/recent] [IntervalSec]", "查看按 RWbase 当前 host 日志协议解析后的结构化联调状态。"),
         ("rwbase_stream <on/off/stats/watch> [IntervalSec]", "RWbase 流式回传控制命令；on/off 开关流式回传，stats/watch 查看流式统计。"),
         ("rwbase_data <on/off/stats/watch> [IntervalSec]", "兼容别名，等价 rwbase_stream。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
@@ -253,6 +254,93 @@ class CommandHandler:
             f"zombie_non_ok={stats.get('zombie_ack_non_ok', 0)}, "
             f"zombie_last_ack={stats.get('zombie_last_ack')}"
         )
+
+    def _format_rwbase_host_diag(self):
+        diag = self.api.core.get_rwbase_host_diag()
+
+        def fmt_hex(value):
+            if value is None:
+                return "n/a"
+            return f"0x{int(value):X}"
+
+        offsets = diag.get("offsets")
+        track = diag.get("track_ready")
+        chain = diag.get("chain")
+        runtime = diag.get("emu_runtime_init")
+        runtime_fail = diag.get("emu_runtime_exec_fail")
+        bridge = diag.get("emu_bridge_last")
+        call = diag.get("emu_call_last")
+
+        parts = []
+        if offsets:
+            parts.append(
+                "offsets:"
+                f" uworld={fmt_hex(offsets.get('uworld'))}"
+                f" fnames={fmt_hex(offsets.get('fnames'))}"
+                f" lpp={fmt_hex(offsets.get('local_player_ptr'))}"
+                f" ack=0x{offsets.get('acknowledged_pawn_offset', 0):X}"
+                f" mesh=0x{offsets.get('mesh_offset', 0):X}"
+                f" bone=0x{offsets.get('bone_array_offset', 0):X}"
+                f" team=0x{offsets.get('team_offset', 0):X}"
+            )
+        else:
+            parts.append("offsets: n/a")
+
+        if track:
+            parts.append(
+                "track:"
+                f" pid={fmt_hex(track.get('pid'))}"
+                f" ucr3={fmt_hex(track.get('user_cr3'))}"
+                f" kcr3={fmt_hex(track.get('kernel_cr3'))}"
+                f" base={fmt_hex(track.get('base'))}"
+                f" net={track.get('network', 'n/a')}"
+            )
+        else:
+            parts.append("track: n/a")
+
+        if chain:
+            parts.append(
+                "chain:"
+                f" uworld={fmt_hex(chain.get('uworld'))}"
+                f" fnames={fmt_hex(chain.get('fnames'))}"
+                f" pc={fmt_hex(chain.get('player_controller'))}"
+                f" pawn={fmt_hex(chain.get('pawn'))}"
+                f" ps={fmt_hex(chain.get('player_state'))}"
+                f" team={chain.get('team_id', 'n/a')}"
+                f" mesh={fmt_hex(chain.get('mesh'))}"
+            )
+        else:
+            parts.append("chain: n/a")
+
+        if runtime:
+            parts.append(
+                "runtime:"
+                f" init_status=0x{runtime.get('status', 0):08X}"
+                f" ready={runtime.get('ready', 0)}"
+            )
+        else:
+            parts.append("runtime: n/a")
+
+        if runtime_fail:
+            parts.append(
+                "runtime_fail:"
+                f" status=0x{runtime_fail.get('status', 0):08X}"
+                f" exit={runtime_fail.get('exit', 0)}"
+                f" exc={runtime_fail.get('exception', 0)}"
+                f" rip={fmt_hex(runtime_fail.get('rip'))}"
+            )
+
+        if bridge:
+            parts.append(f"bridge: {bridge.get('kind')} {bridge.get('details')}")
+        else:
+            parts.append("bridge: n/a")
+
+        if call:
+            parts.append(f"call: {call.get('kind')} {call.get('details')}")
+        else:
+            parts.append("call: n/a")
+
+        return " | ".join(parts)
 
     def handle_attach(self, args):
         if not args:
@@ -645,6 +733,46 @@ class CommandHandler:
                 time.sleep(interval)
         except KeyboardInterrupt:
             log("stream_log stopped.")
+
+    def handle_rwbase_host(self, args):
+        action = args[0].lower() if args else "stats"
+
+        if action == "stats":
+            log(self._format_rwbase_host_diag())
+            return
+
+        if action == "recent":
+            diag = self.api.core.get_rwbase_host_diag()
+            recent = diag.get("recent_logs", [])
+            if not recent:
+                log("No parsed RWbase host logs captured yet.", "WARN")
+                return
+            for item in recent[-10:]:
+                log(f"{item.get('category')}: {item.get('raw')}")
+            return
+
+        if action == "watch":
+            interval = 1.0
+            if len(args) >= 2:
+                try:
+                    interval = float(args[1])
+                except ValueError:
+                    log("Usage: rwbase_host [stats/watch/recent] [IntervalSec]", "ERROR")
+                    return
+            if interval <= 0:
+                log("IntervalSec must be > 0.", "ERROR")
+                return
+
+            log("Watching parsed RWbase host diagnostics. Ctrl+C stops this watcher.")
+            try:
+                while True:
+                    log(self._format_rwbase_host_diag())
+                    time.sleep(interval)
+            except KeyboardInterrupt:
+                log("rwbase_host watch stopped.")
+            return
+
+        log("Usage: rwbase_host [stats/watch/recent] [IntervalSec]", "ERROR")
 
     def handle_rwbase_stream(self, args):
         if not args:

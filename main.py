@@ -50,6 +50,8 @@ def main():
                 handler.handle_stream_stats()
             elif cmd == "stream_log":
                 handler.handle_stream_log(args)
+            elif cmd == "rwbase_host":
+                handler.handle_rwbase_host(args)
             elif cmd == "rwbase_stream":
                 handler.handle_rwbase_stream(args)
             elif cmd == "rwbase_data":

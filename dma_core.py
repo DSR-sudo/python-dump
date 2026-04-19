@@ -22,6 +22,27 @@ class DMACore:
     REGION_DONE_RE = re.compile(
         r"^\[UserRegion\]\s+Done\s+PID=([0-9A-Fa-fx]+)\s+Count=(\d+)$"
     )
+    TEST_OFFSETS_RE = re.compile(
+        r"^\[GameCore\]\[Test\]\[Offsets\]\s+uworld=(0x[0-9A-Fa-f]+)\s+fnames=(0x[0-9A-Fa-f]+)\s+lpp=(0x[0-9A-Fa-f]+)\s+pc=0x([0-9A-Fa-f]+)\s+pawn=0x([0-9A-Fa-f]+)\s+mesh=0x([0-9A-Fa-f]+)\s+bone=0x([0-9A-Fa-f]+)\s+c2w=0x([0-9A-Fa-f]+)\s+ps=0x([0-9A-Fa-f]+)\s+team=0x([0-9A-Fa-f]+)$"
+    )
+    TRACK_READY_RE = re.compile(
+        r"^\[GameCore\]\[Track\]\s+target ready pid=(0x[0-9A-Fa-f]+)\s+old=(0x[0-9A-Fa-f]+)\s+ucr3=(0x[0-9A-Fa-f]+)\s+kcr3=(0x[0-9A-Fa-f]+)\s+base=(0x[0-9A-Fa-f]+)\s+net=(\w+)$"
+    )
+    TEST_CHAIN_RE = re.compile(
+        r"^\[GameCore\]\[Test\]\[Chain\]\s+uworld=(0x[0-9A-Fa-f]+)\s+fnames=(0x[0-9A-Fa-f]+)\s+lpp=(0x[0-9A-Fa-f]+)\s+pc=(0x[0-9A-Fa-f]+)\s+pawn=(0x[0-9A-Fa-f]+)\s+ps=(0x[0-9A-Fa-f]+)\s+team=(-?\d+)\s+mesh=(0x[0-9A-Fa-f]+)\s+ack=0x([0-9A-Fa-f]+)$"
+    )
+    EMU_RUNTIME_INIT_RE = re.compile(
+        r"^\[Emu\]\[Runtime\]\s+initialize status=0x([0-9A-Fa-f]+)\s+ready=(\d+)$"
+    )
+    EMU_RUNTIME_EXEC_FAIL_RE = re.compile(
+        r"^\[Emu\]\[Runtime\]\s+execute-fail status=0x([0-9A-Fa-f]+)\s+exit=(\d+)\s+cpueaxh=(\d+)\s+exc=(\d+)\s+rip=(0x[0-9A-Fa-f]+)\s+cr3=(0x[0-9A-Fa-f]+)$"
+    )
+    EMU_BRIDGE_RE = re.compile(
+        r"^\[Emu\]\[Bridge\]\s+(dispatch-fail|guest-fail|guest-ok)\s+(.+)$"
+    )
+    EMU_CALL_RE = re.compile(
+        r"^\[Emu\]\[Call\]\s+(fail|ok)\s+(.+)$"
+    )
 
     def __init__(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -68,6 +89,17 @@ class DMACore:
         self.region_entries = []
         self.region_enum_done = False
         self.region_enum_count = 0
+        self.host_lock = threading.Lock()
+        self.host_diag = {
+            "offsets": None,
+            "track_ready": None,
+            "chain": None,
+            "emu_runtime_init": None,
+            "emu_runtime_exec_fail": None,
+            "emu_bridge_last": None,
+            "emu_call_last": None,
+            "recent_logs": [],
+        }
 
         threading.Thread(target=self._receiver_loop, daemon=True).start()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
@@ -99,6 +131,119 @@ class DMACore:
     def get_stream_stats(self):
         return dict(self.rwvg_stats)
 
+    def _append_host_log(self, category: str, raw: str, parsed: dict):
+        with self.host_lock:
+            self.host_diag[category] = parsed
+            recent = self.host_diag["recent_logs"]
+            recent.append({"category": category, "raw": raw, "parsed": parsed})
+            if len(recent) > 32:
+                del recent[:-32]
+
+    def _try_capture_rwbase_host_log(self, msg: str):
+        if not msg:
+            return False
+
+        match = self.TEST_OFFSETS_RE.match(msg)
+        if match:
+            parsed = {
+                "uworld": int(match.group(1), 16),
+                "fnames": int(match.group(2), 16),
+                "local_player_ptr": int(match.group(3), 16),
+                "player_controller_offset": int(match.group(4), 16),
+                "acknowledged_pawn_offset": int(match.group(5), 16),
+                "mesh_offset": int(match.group(6), 16),
+                "bone_array_offset": int(match.group(7), 16),
+                "component_to_world_offset": int(match.group(8), 16),
+                "player_state_offset": int(match.group(9), 16),
+                "team_offset": int(match.group(10), 16),
+            }
+            self._append_host_log("offsets", msg, parsed)
+            return True
+
+        match = self.TRACK_READY_RE.match(msg)
+        if match:
+            parsed = {
+                "pid": int(match.group(1), 16),
+                "old_pid": int(match.group(2), 16),
+                "user_cr3": int(match.group(3), 16),
+                "kernel_cr3": int(match.group(4), 16),
+                "base": int(match.group(5), 16),
+                "network": match.group(6),
+            }
+            self._append_host_log("track_ready", msg, parsed)
+            return True
+
+        match = self.TEST_CHAIN_RE.match(msg)
+        if match:
+            parsed = {
+                "uworld": int(match.group(1), 16),
+                "fnames": int(match.group(2), 16),
+                "local_player_ptr": int(match.group(3), 16),
+                "player_controller": int(match.group(4), 16),
+                "pawn": int(match.group(5), 16),
+                "player_state": int(match.group(6), 16),
+                "team_id": int(match.group(7)),
+                "mesh": int(match.group(8), 16),
+                "acknowledged_pawn_offset": int(match.group(9), 16),
+            }
+            self._append_host_log("chain", msg, parsed)
+            return True
+
+        match = self.EMU_RUNTIME_INIT_RE.match(msg)
+        if match:
+            parsed = {
+                "status": int(match.group(1), 16),
+                "ready": int(match.group(2)),
+            }
+            self._append_host_log("emu_runtime_init", msg, parsed)
+            return True
+
+        match = self.EMU_RUNTIME_EXEC_FAIL_RE.match(msg)
+        if match:
+            parsed = {
+                "status": int(match.group(1), 16),
+                "exit": int(match.group(2)),
+                "cpueaxh": int(match.group(3)),
+                "exception": int(match.group(4)),
+                "rip": int(match.group(5), 16),
+                "cr3": int(match.group(6), 16),
+            }
+            self._append_host_log("emu_runtime_exec_fail", msg, parsed)
+            return True
+
+        match = self.EMU_BRIDGE_RE.match(msg)
+        if match:
+            parsed = {
+                "kind": match.group(1),
+                "details": match.group(2),
+            }
+            self._append_host_log("emu_bridge_last", msg, parsed)
+            return True
+
+        match = self.EMU_CALL_RE.match(msg)
+        if match:
+            parsed = {
+                "kind": match.group(1),
+                "details": match.group(2),
+            }
+            self._append_host_log("emu_call_last", msg, parsed)
+            return True
+
+        return False
+
+    def get_rwbase_host_diag(self):
+        with self.host_lock:
+            return {
+                "offsets": None if self.host_diag["offsets"] is None else dict(self.host_diag["offsets"]),
+                "track_ready": None if self.host_diag["track_ready"] is None else dict(self.host_diag["track_ready"]),
+                "chain": None if self.host_diag["chain"] is None else dict(self.host_diag["chain"]),
+                "emu_runtime_init": None if self.host_diag["emu_runtime_init"] is None else dict(self.host_diag["emu_runtime_init"]),
+                "emu_runtime_exec_fail": None if self.host_diag["emu_runtime_exec_fail"] is None else dict(self.host_diag["emu_runtime_exec_fail"]),
+                "emu_bridge_last": None if self.host_diag["emu_bridge_last"] is None else dict(self.host_diag["emu_bridge_last"]),
+                "emu_call_last": None if self.host_diag["emu_call_last"] is None else dict(self.host_diag["emu_call_last"]),
+                "recent_logs": list(self.host_diag["recent_logs"]),
+            }
+
     def _receiver_loop(self):
         print(f"[*] UDP Receiver started on port {BIND_PORT}")
         scratch_buffer = bytearray(65536)
@@ -116,6 +261,7 @@ class DMACore:
                         msg = scratch_buffer[1:nbytes].decode("utf-8", errors="ignore").strip()
                         self._try_capture_module_log(msg)
                         consumed_region_log = self._try_capture_region_log(msg)
+                        self._try_capture_rwbase_host_log(msg)
                         if "ALIVE_ACK" in msg or "DRIVER_ONLINE" in msg:
                             if not self.driver_online:
                                 print("[+] Driver is ONLINE.")
