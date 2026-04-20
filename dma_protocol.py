@@ -17,6 +17,10 @@ CMD_ENUM_USER_REGIONS = 4
 CMD_ENUM_USER_MODULES = 5
 CMD_START_DATA_THREADS = 13
 CMD_STOP_DATA_THREADS = 14
+CMD_PINGPONG = 15
+
+CTRL_ACK_HANDLED = 1 << 0
+CTRL_ACK_CPUEAXH_ONLINE = 1 << 1
 
 PACKET_TYPE_LOG = 0x01
 PACKET_TYPE_DATA = 0x02
@@ -89,7 +93,7 @@ def try_parse_rwvg_typed_payload(payload: bytes, strict_size: bool = True):
 
 def parse_zombie_control_ack(payload: bytes):
     """
-    Parse CMD13/CMD14 ACK returned by GhostCore zombie control path.
+    Parse CMD13/CMD14/CMD15 ACK returned by GhostCore control path.
     ACK format is a single ULONG64 value.
     """
     if not payload or len(payload) != 8:
@@ -180,3 +184,7 @@ def pack_start_data_threads_req():
 
 def pack_stop_data_threads_req():
     return _pack_request(CMD_STOP_DATA_THREADS)
+
+
+def pack_pingpong_req():
+    return _pack_request(CMD_PINGPONG)

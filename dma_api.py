@@ -81,3 +81,7 @@ class DMAApi:
     def stop_data_threads(self):
         payload = pack_stop_data_threads_req()
         return self._request_u64(payload, retries=1)
+
+    def ping_cpueaxh(self):
+        payload = pack_pingpong_req()
+        return self._request_u64(payload, retries=1)

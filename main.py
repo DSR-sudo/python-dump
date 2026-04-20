@@ -46,6 +46,8 @@ def main():
                 handler.handle_start_data_threads()
             elif cmd == "stop_data_threads":
                 handler.handle_stop_data_threads()
+            elif cmd == "cpueaxh_ping":
+                handler.handle_cpueaxh_ping()
             elif cmd == "stream_stats":
                 handler.handle_stream_stats()
             elif cmd == "stream_log":

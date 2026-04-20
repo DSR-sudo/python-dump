@@ -5,6 +5,7 @@ import struct
 import time
 
 import ue_memory
+from dma_protocol import CTRL_ACK_CPUEAXH_ONLINE, CTRL_ACK_HANDLED
 from sdk_helper import SDKLoader
 from ue_generator import SDKGenerator
 from ue_scanner import UEScanner
@@ -60,11 +61,12 @@ def print_detailed_help():
         ("modules <PID>", "按 CR3 路径枚举用户模块。"),
         ("start_data_threads", "发送控制命令开启 GhostCore/RWbase 流式回传。"),
         ("stop_data_threads", "发送控制命令关闭 GhostCore/RWbase 流式回传。"),
+        ("cpueaxh_ping", "发送 PINGPONG 控制命令并返回 CPUEAXH 引擎在线状态。"),
         ("stream_stats", "查看接收线程维护的 RWbase/RWVG 流式统计。"),
         ("stream_log [IntervalSec]", "按固定间隔流式打印 RWbase/RWVG 统计；数据本身由后台持续接收，Ctrl+C 停止。"),
         ("rwbase_host [stats/watch/recent] [IntervalSec]", "查看按 RWbase 当前 host 日志协议解析后的结构化联调状态。"),
-        ("rwbase_stream <on/off/stats/watch> [IntervalSec]", "RWbase 流式回传控制命令；on/off 开关流式回传，stats/watch 查看流式统计。"),
-        ("rwbase_data <on/off/stats/watch> [IntervalSec]", "兼容别名，等价 rwbase_stream。"),
+        ("rwbase_stream <on/off/ping/stats/watch> [IntervalSec]", "RWbase 流式回传控制命令；on/off 开关回传，ping 查询 CPUEAXH，stats/watch 查看统计。"),
+        ("rwbase_data <on/off/ping/stats/watch> [IntervalSec]", "兼容别名，等价 rwbase_stream。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
         ("cache_gnames", "构建本地 FName 缓存。"),
         ("dump_sdk <ClassName>", "为指定类生成 C++ SDK 头文件。"),
@@ -692,20 +694,46 @@ class CommandHandler:
         if ack is None:
             log("start_data_threads failed (no response).", "ERROR")
             return
-        if ack == 1:
-            log("RWbase streaming enabled (ACK=1).", "SUCCESS")
-        else:
-            log(f"RWbase streaming enable returned ACK={ack}.", "WARN")
+        handled = (ack & CTRL_ACK_HANDLED) != 0
+        engine_online = (ack & CTRL_ACK_CPUEAXH_ONLINE) != 0
+        if not handled:
+            log(f"RWbase streaming enable returned malformed ACK=0x{ack:X}.", "WARN")
+            return
+
+        level = "SUCCESS" if engine_online else "WARN"
+        cpueaxh_state = "online" if engine_online else "offline"
+        log(f"RWbase streaming enabled (ACK=0x{ack:X}, cpueaxh={cpueaxh_state}).", level)
 
     def handle_stop_data_threads(self):
         ack = self.api.stop_data_threads()
         if ack is None:
             log("stop_data_threads failed (no response).", "ERROR")
             return
-        if ack == 1:
-            log("RWbase streaming disabled (ACK=1).", "SUCCESS")
-        else:
-            log(f"RWbase streaming disable returned ACK={ack}.", "WARN")
+        handled = (ack & CTRL_ACK_HANDLED) != 0
+        engine_online = (ack & CTRL_ACK_CPUEAXH_ONLINE) != 0
+        if not handled:
+            log(f"RWbase streaming disable returned malformed ACK=0x{ack:X}.", "WARN")
+            return
+
+        level = "SUCCESS" if engine_online else "WARN"
+        cpueaxh_state = "online" if engine_online else "offline"
+        log(f"RWbase streaming disabled (ACK=0x{ack:X}, cpueaxh={cpueaxh_state}).", level)
+
+    def handle_cpueaxh_ping(self):
+        ack = self.api.ping_cpueaxh()
+        if ack is None:
+            log("cpueaxh_ping failed (no response).", "ERROR")
+            return
+
+        handled = (ack & CTRL_ACK_HANDLED) != 0
+        engine_online = (ack & CTRL_ACK_CPUEAXH_ONLINE) != 0
+        if not handled:
+            log(f"cpueaxh_ping returned malformed ACK=0x{ack:X}.", "WARN")
+            return
+
+        level = "SUCCESS" if engine_online else "WARN"
+        cpueaxh_state = "online" if engine_online else "offline"
+        log(f"cpueaxh_ping ACK=0x{ack:X}, cpueaxh={cpueaxh_state}.", level)
 
     def handle_stream_stats(self):
         log(self._format_stream_stats())
@@ -776,7 +804,7 @@ class CommandHandler:
 
     def handle_rwbase_stream(self, args):
         if not args:
-            log("Usage: rwbase_stream <on/off/stats/watch> [IntervalSec]", "ERROR")
+            log("Usage: rwbase_stream <on/off/ping/stats/watch> [IntervalSec]", "ERROR")
             return
 
         action = args[0].lower()
@@ -786,12 +814,14 @@ class CommandHandler:
             self.handle_start_data_threads()
         elif action == "off":
             self.handle_stop_data_threads()
+        elif action == "ping":
+            self.handle_cpueaxh_ping()
         elif action == "stats":
             self.handle_stream_stats()
         elif action == "watch":
             self.handle_stream_log(rest)
         else:
-            log("Usage: rwbase_stream <on/off/stats/watch> [IntervalSec]", "ERROR")
+            log("Usage: rwbase_stream <on/off/ping/stats/watch> [IntervalSec]", "ERROR")
 
     def handle_rwbase_data(self, args):
         self.handle_rwbase_stream(args)
