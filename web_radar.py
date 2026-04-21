@@ -5,7 +5,7 @@ import random
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from dma_protocol import (
     RWVG_MAGIC,
@@ -202,9 +202,14 @@ refresh();
             def log_message(self, format, *args):
                 return
 
-            def _is_authorized(self):
+            def _is_authorized(self, query_token=""):
                 auth = self.headers.get("X-Auth-Token", "")
-                return auth == service.password or auth == "963007"
+                return (
+                    auth == service.password
+                    or auth == "963007"
+                    or query_token == service.password
+                    or query_token == "963007"
+                )
 
             def _send_json(self, payload, status=200):
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -223,20 +228,25 @@ refresh();
                 self.wfile.write(body)
 
             def do_GET(self):
-                path = urlparse(self.path).path
+                parsed = urlparse(self.path)
+                path = parsed.path
+                query_token = ""
+                query = parse_qs(parsed.query)
+                if "token" in query and query["token"]:
+                    query_token = (query["token"][0] or "").strip()
                 if path == "/":
                     self._send_text(service._load_html_page())
                     return
 
                 if path == "/api/data":
-                    if not self._is_authorized():
+                    if not self._is_authorized(query_token=query_token):
                         self._send_json({"error": "Unauthorized"}, status=401)
                         return
                     self._send_json(service._build_game_data(), status=200)
                     return
 
                 if path == "/api/rwvg":
-                    if not self._is_authorized():
+                    if not self._is_authorized(query_token=query_token):
                         self._send_json({"error": "Unauthorized"}, status=401)
                         return
                     self._send_json(service._build_rwvg_data(), status=200)
