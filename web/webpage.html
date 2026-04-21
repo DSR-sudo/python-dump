@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>游戏地图</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; touch-action: none; }
+        body { font-family: Arial, sans-serif; background-color: #1a1a1a; color: white; overflow: hidden; height: 100vh; width: 100vw; }
+        #top-controls { position: fixed; top: 0; left: 0; right: 0; background-color: #333; padding: 10px; z-index: 100; display: flex; flex-wrap: wrap; gap: 5px; max-height: 50%; overflow-y: auto; }
+        .button-group { display: flex; flex-wrap: wrap; gap: 5px; width: 100%; }
+        .map-btn, .player-btn, .control-btn { flex: 1; min-width: 70px; padding: 8px; background-color: #555; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .map-btn.active, .player-btn.active { background-color: #4CAF50; }
+        #map-container { position: fixed; top: 60px; left: 0; right: 0; bottom: 0; overflow: hidden; background-color: #222; }
+        #map { position: absolute; background-repeat: no-repeat; background-size: 100% 100%; transform-origin: 0 0; }
+        .entity-container { position: absolute; transform: translate(-50%, -50%); z-index: 10; }
+        .entity-body { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 1px solid white; display: flex; justify-content: center; align-items: center; font-size: 8px; font-weight: bold; color: white; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+        .entity-direction { position: absolute; width: 1.5px; height: 12px; background-color: white; left: 50%; bottom: 50%; transform-origin: center bottom; }
+        .entity-body.dead { width: 10px; height: 10px; background-color: transparent !important; border-width: 1.5px; }
+        .teammate { background-color: green; }
+        .white-player { background-color: white; border-color: black; color: black; }
+        #reset-view { background-color: #f44336; }
+        #reset-view:active { background-color: #d32f2f; }
+        #auth-container { display: flex; align-items: center; gap: 5px; margin-top: 5px; }
+        #auth-input { padding: 6px; border: none; border-radius: 4px; width: 120px; }
+        #auth-submit { padding: 6px 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        #auth-error { color: red; font-size: 12px; margin-top: 5px; display: none; }
+        #auth-container.hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div id="top-controls">
+        <div class="button-group">
+            <div id="map-buttons"></div>
+        </div>
+        <div class="button-group">
+            <div id="player-buttons"></div>
+        </div>
+        <div id="auth-container">
+            <input type="text" id="auth-input" placeholder="输入密码" autocomplete="off">
+            <button id="auth-submit">确认</button>
+            <div id="auth-error">密码错误，请重试</div>
+        </div>
+        <div id="calibration-status" style="width: 100%; text-align: center; padding: 2px; font-weight: bold; min-height: 1em;display:none"></div>
+    </div>
+    
+    <div id="map-container">
+        <div id="map"></div>
+    </div>
+
+    <script>
+    const mapDimensions = {
+        "db.png":  { width: 1244, height: 956 },
+        "cg.png":  { width: 1333, height: 936 },
+        "bks.png": { width: 833, height: 950 },
+        "ht.png":  { width: 921, height: 989 },
+        "jy.png":  { width: 1013, height: 1009 }
+    };
+
+    const mapConverters = {
+        "db.png": { 
+            point3D_1: { x: -16207, y: -27879 },
+            point2D_1: { x: 470, y: 245 }, 
+            point3D_2: { x: 35455, y: 37782  }, 
+            point2D_2: { x: 1025, y: 946 } 
+        },
+        "cg.png": { 
+            point3D_1: { x: -32065, y: 58724 },
+            point2D_1: { x: 176, y: 816 }, 
+            point3D_2: { x: -102202, y: -22623  }, 
+            point2D_2: { x: 863, y: 228 } 
+        },
+        "bks.png": { 
+            point3D_1: { x: -14036, y: 9953 },
+            point2D_1: { x: 182, y: 696 }, 
+            point3D_2: { x: 14128, y: -34523  }, 
+            point2D_2: { x: 588, y: 57 } 
+        },
+        "ht.png": { 
+            point3D_1: { x: -27015, y: -18887 },
+            point2D_1: { x: 104, y: 180 }, 
+            point3D_2: { x: 17252, y: 27568  }, 
+            point2D_2: { x: 686, y: 789 } 
+        },
+    };
+
+    const transformerCache = {};
+
+    function checkCalibration(mapName) {
+        const statusEl = document.getElementById('calibration-status');
+        if (!statusEl) return;
+        const converter = mapConverters[mapName];
+        if (!converter) { statusEl.innerHTML = ''; return; }
+        const isPoint2Set = converter.point3D_2 && (converter.point3D_2.x !== 0 || converter.point3D_2.y !== 0);
+        if (!isPoint2Set) {
+            statusEl.style.color = 'orange';
+            statusEl.textContent = '校准模式: 请微调Point 1';
+            return;
+        }
+        const worldVecX = converter.point3D_2.x - converter.point3D_1.x, worldVecY = converter.point3D_2.y - converter.point3D_1.y;
+        const mapVecX = converter.point2D_2.x - converter.point2D_1.x, mapVecY = converter.point2D_2.y - converter.point2D_1.y;
+        const determinant = worldVecX * mapVecY - worldVecY * mapVecX;
+        if (determinant < 0) {
+            statusEl.style.color = 'red';
+            statusEl.textContent = '警告: 校准点位可能为镜像(反向)!';
+        } else {
+            statusEl.style.color = '#4CAF50';
+            statusEl.textContent = '校准成功';
+        }
+    }
+
+    function createCoordinateTransformer(converter) {
+        const p1_3d = converter.point3D_1, p2_3d = converter.point3D_2, p1_2d = converter.point2D_1, p2_2d = converter.point2D_2;
+        const worldVecX = p2_3d.x - p1_3d.x, worldVecY = p2_3d.y - p1_3d.y, mapVecX = p2_2d.x - p1_2d.x, mapVecY = p2_2d.y - p1_2d.y;
+        const worldDist = Math.hypot(worldVecX, worldVecY), mapDist = Math.hypot(mapVecX, mapVecY);
+        const scale = (worldDist === 0) ? 1 : mapDist / worldDist;
+        const worldAngle = Math.atan2(worldVecY, worldVecX), mapAngle = Math.atan2(mapVecY, mapVecX);
+        const rotation = mapAngle - worldAngle, cosRotation = Math.cos(rotation), sinRotation = Math.sin(rotation);
+        const orientationCorrection = rotation * (180 / Math.PI);
+        return function transform(position3D, orientation) {
+            const deltaWorldX = position3D.x - p1_3d.x, deltaWorldY = position3D.y - p1_3d.y;
+            const rotatedDeltaX = deltaWorldX * cosRotation - deltaWorldY * sinRotation;
+            const rotatedDeltaY = deltaWorldX * sinRotation + deltaWorldY * cosRotation;
+            const finalMapX = p1_2d.x + rotatedDeltaX * scale, finalMapY = p1_2d.y + rotatedDeltaY * scale;
+            const finalRotation = (orientation || 0) + orientationCorrection + 90;
+            return { position: { x: finalMapX, y: finalMapY }, rotation: finalRotation };
+        };
+    }
+    
+    function getTransformedData(entityData, mapName) {
+        if (!entityData || !entityData.position) return { position: { x: 0, y: 0 }, rotation: 90 };
+        const converter = mapConverters[mapName];
+        if (!converter) return { position: { x: 0, y: 0 }, rotation: 90 };
+        const isPoint2Set = converter.point3D_2 && (converter.point3D_2.x !== 0 || converter.point3D_2.y !== 0);
+        if (!isPoint2Set) {
+            return { position: converter.point2D_1, rotation: (entityData.orientation || 0) + 90 };
+        }
+        if (!transformerCache[mapName]) {
+            transformerCache[mapName] = createCoordinateTransformer(converter);
+        }
+        return transformerCache[mapName](entityData.position, entityData.orientation);
+    }
+    
+    function getTeamColor(team_id) { const colors = [ 'rgba(80, 80, 255, 1)', 'rgba(255, 160, 80, 1)', 'rgba(180, 80, 255, 1)', 'rgba(160, 100, 60, 1)', 'rgba(255, 220, 80, 1)', 'rgba(80, 220, 220, 1)', 'rgba(180, 80, 80, 1)', 'rgba(120, 80, 180, 1)', 'rgba(220, 120, 80, 1)', 'rgba(255, 160, 160, 1)', 'rgba(160, 160, 255, 1)', 'rgba(255, 200, 160, 1)', 'rgba(200, 160, 255, 1)', 'rgba(200, 150, 100, 1)', 'rgba(255, 240, 160, 1)', 'rgba(160, 240, 240, 1)', 'rgba(240, 160, 160, 1)', 'rgba(200, 160, 200, 1)', 'rgba(240, 200, 160, 1)', ]; return colors[team_id] || 'rgba(128, 128, 128, 1)'; }
+
+    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1;
+    var entitiesToRender = [];
+    const mapContainer = document.getElementById('map-container'), map = document.getElementById('map');
+    
+    function applyMapTransform() { map.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`; }
+    
+    window.addEventListener('resize', () => { if (isFollowing) recenterView(); });
+    
+    mapContainer.addEventListener('mousedown', (e) => { isDragging = true; isFollowing = false; lastX = e.clientX; lastY = e.clientY; e.preventDefault(); });
+    mapContainer.addEventListener('mousemove', (e) => { if (isDragging) { offsetX += e.clientX - lastX; offsetY += e.clientY - lastY; lastX = e.clientX; lastY = e.clientY; applyMapTransform(); } });
+    mapContainer.addEventListener('mouseup', () => isDragging = false);
+    mapContainer.addEventListener('mouseleave', () => isDragging = false);
+
+    // ===============================================================
+    // == 修改点 1: 重写鼠标滚轮缩放逻辑 ==
+    // ===============================================================
+    mapContainer.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        isFollowing = false;
+
+        const rect = mapContainer.getBoundingClientRect();
+        // 我们不再以鼠标位置为中心，而是以视图容器的中心为中心
+        const centerX = rect.width / 2;
+        const centerY = rect.height / 2;
+
+        // 计算当前在视图中心点的地图坐标
+        const mapCenterX = (centerX - offsetX) / scale;
+        const mapCenterY = (centerY - offsetY) / scale;
+
+        // 计算新的缩放比例
+        const scaleFactor = 1.1;
+        const newScale = e.deltaY < 0 ? scale * scaleFactor : scale / scaleFactor;
+        scale = Math.min(Math.max(0.2, newScale), 5);
+
+        // 重新计算 offsetX 和 offsetY，以保持地图中心点不变
+        offsetX = centerX - mapCenterX * scale;
+        offsetY = centerY - mapCenterY * scale;
+
+        applyMapTransform();
+    });
+
+    mapContainer.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        isFollowing = false;
+        if (e.touches.length === 1) {
+            isDragging = true;
+            lastX = e.touches[0].clientX;
+            lastY = e.touches[0].clientY;
+        } else if (e.touches.length === 2) {
+            isDragging = false;
+            const t1 = e.touches[0], t2 = e.touches[1];
+            touchStartDistance = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+            touchStartScale = scale;
+        }
+    });
+
+    // ===============================================================
+    // == 修改点 2: 重写触摸移动（双指缩放）逻辑 ==
+    // ===============================================================
+    mapContainer.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        if (e.touches.length === 1 && isDragging) {
+            const touch = e.touches[0];
+            offsetX += touch.clientX - lastX;
+            offsetY += touch.clientY - lastY;
+            lastX = touch.clientX;
+            lastY = touch.clientY;
+            applyMapTransform();
+        } else if (e.touches.length === 2) {
+            const t1 = e.touches[0], t2 = e.touches[1];
+            
+            // 计算双指中心点
+            const midX = (t1.clientX + t2.clientX) / 2;
+            const midY = (t1.clientY + t2.clientY) / 2;
+            const rect = mapContainer.getBoundingClientRect();
+            const touchCenterX = midX - rect.left;
+            const touchCenterY = midY - rect.top;
+
+            // 计算当前在触摸中心点的地图坐标
+            const mapPointX = (touchCenterX - offsetX) / scale;
+            const mapPointY = (touchCenterY - offsetY) / scale;
+            
+            // 计算新的缩放比例
+            const distance = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+            if (touchStartDistance > 0) {
+                const newScale = touchStartScale * (distance / touchStartDistance);
+                scale = Math.min(Math.max(0.2, newScale), 5);
+
+                // 重新计算 offsetX 和 offsetY，以保持触摸中心点对应的地图坐标不变
+                offsetX = touchCenterX - mapPointX * scale;
+                offsetY = touchCenterY - mapPointY * scale;
+
+                applyMapTransform();
+            }
+        }
+    });
+
+    mapContainer.addEventListener('touchend', () => { isDragging = false; touchStartDistance = 0; });
+    var firstData = true;
+
+    async function updateGameData(forceUpdate = false) {
+        try {
+            const authInput = document.getElementById('auth-input'), password = authInput.value.trim();
+            const authContainer = document.getElementById('auth-container'), authError = document.getElementById('auth-error');
+            if (!password) { authContainer.classList.remove('hidden'); return; }
+            const response = await fetch('/api/data', { headers: { 'X-Auth-Token': password } });
+            if (response.status === 401) { authContainer.classList.remove('hidden'); authError.style.display = 'block'; localStorage.removeItem('authToken'); return; }
+            localStorage.setItem('authToken', password);
+            authError.style.display = 'none';
+            authContainer.classList.add('hidden');
+            if (firstData && !forceUpdate) { forceUpdate = true; firstData = false; }
+            forceUpdate = true;
+            const data = await response.json();
+            entitiesToRender = [...data.entities];
+            localPlayer = data.local_player;
+            teammates = data.teammates;
+            if (localPlayer) {
+                if (!entitiesToRender.some(e => e.id === localPlayer.id)) {
+                    entitiesToRender.push({ ...localPlayer, name: 'Local Player', health: 100, max_health: 100, orientation: localPlayer.yaw });
+                }
+            }
+            if (forceUpdate || data.teammates.length !== teammates.length) updatePlayerButtons();
+            if (pendingPlayerSelection !== null) { selectPlayer(pendingPlayerSelection); pendingPlayerSelection = null; }
+            if (isFollowing) recenterView();
+            map.innerHTML = '';
+            entitiesToRender.forEach(entityData => {
+                const { position: map2DPos, rotation: correctedOrientation } = getTransformedData(entityData, currentMap);
+                const container = document.createElement('div');
+                container.className = 'entity-container';
+                const body = document.createElement('div');
+                body.className = 'entity-body';
+                const isTeammate = entityData.team_id === localPlayer?.team_id;
+                const isDead = entityData.health <= 0;
+                if (isTeammate) {
+                    const isSelf = entityData.id === localPlayer?.id;
+                    let isSelected = (selectedPlayerId === null || selectedPlayerId === '') ? isSelf : (entityData.id == selectedPlayerId);
+                    body.classList.add(isSelected ? 'white-player' : 'teammate');
+                } else {
+                    const teamColor = getTeamColor(entityData.team_id);
+                    if (isDead) { body.classList.add('dead'); body.style.borderColor = teamColor; } 
+                    else { body.style.backgroundColor = teamColor; body.style.borderColor = 'black'; body.textContent = entityData.team_id; }
+                }
+                if (!isDead) {
+                    const direction = document.createElement('div');
+                    direction.className = 'entity-direction';
+                    direction.style.transform = `translateX(-50%) rotate(${correctedOrientation}deg)`;
+                    container.appendChild(direction);
+                }
+                container.appendChild(body);
+                container.style.left = `${map2DPos.x}px`;
+                container.style.top = `${map2DPos.y}px`;
+                map.appendChild(container);
+            });
+        } catch (error) { 
+            console.error('获取游戏数据失败:', error); 
+            document.getElementById('auth-container').classList.remove('hidden');
+        }
+    }
+
+    function recenterView() { 
+        let targetPlayer = null; 
+        if (selectedPlayerId) { targetPlayer = teammates.find(t => t.id == selectedPlayerId) || entitiesToRender.find(e => e.id == selectedPlayerId); } 
+        if (!targetPlayer) targetPlayer = localPlayer; 
+        if (targetPlayer) { 
+            const { position: viewCenter2D } = getTransformedData(targetPlayer, currentMap);
+            const rect = mapContainer.getBoundingClientRect(); 
+            offsetX = rect.width / 2 - viewCenter2D.x * scale; 
+            offsetY = rect.height / 2 - viewCenter2D.y * scale; 
+            applyMapTransform(); 
+        } 
+    }
+    function loadSelection() { currentMap = localStorage.getItem('selectedMap') || 'db.png'; pendingPlayerSelection = localStorage.getItem('selectedPlayerId'); }
+    function saveSelection() { localStorage.setItem('selectedMap', currentMap); localStorage.setItem('selectedPlayerId', selectedPlayerId || ''); }
+    
+    function selectMap(mapId) { 
+        currentMap = mapId; 
+        map.style.backgroundImage = `url('./${currentMap}')`; 
+        const dims = mapDimensions[mapId] || { width: 1000, height: 1000 }; 
+        map.style.width = `${dims.width}px`;
+        map.style.height = `${dims.height}px`; 
+        document.querySelectorAll('.map-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.map === mapId)); 
+        checkCalibration(mapId);
+        delete transformerCache[mapId];
+        saveSelection(); 
+        updateGameData(true); 
+    }
+
+    function selectPlayer(playerId) { selectedPlayerId = playerId; isFollowing = true; document.querySelectorAll('.player-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.playerId == (playerId || ''))); recenterView(); saveSelection(); }
+    function updateMapButtons() { const container = document.getElementById('map-buttons'); container.innerHTML = ''; Object.keys(mapDimensions).forEach(id => { const button = document.createElement('button'); button.className = `map-btn ${currentMap === id ? 'active' : ''}`; button.textContent = id.split('.')[0].toUpperCase(); button.dataset.map = id; button.onclick = () => selectMap(id); container.appendChild(button); }); }
+    function updatePlayerButtons() { const container = document.getElementById('player-buttons'); container.innerHTML = ''; const selfButton = document.createElement('button'); selfButton.className = `player-btn ${!selectedPlayerId || selectedPlayerId === '' ? 'active' : ''}`; selfButton.textContent = '自己'; selfButton.dataset.playerId = ''; selfButton.onclick = () => selectPlayer(null); container.appendChild(selfButton); var teamIndex = 1; teammates.forEach(t => { if (localPlayer && t.id === localPlayer.id) return; const button = document.createElement('button'); button.className = `player-btn ${selectedPlayerId == t.id ? 'active' : ''}`; button.textContent = `队友${ teamIndex}`; teamIndex++; button.dataset.playerId = t.id; button.onclick = () => selectPlayer(t.id); container.appendChild(button); }); }
+    function loadAuth() { const savedPassword = localStorage.getItem('authToken'); if (savedPassword) { document.getElementById('auth-input').value = savedPassword; } }
+
+    loadSelection();
+    loadAuth();
+    updateMapButtons();
+    selectMap(currentMap);
+    updateGameData(true);
+    setInterval(updateGameData, 50);
+
+    document.getElementById('auth-submit').addEventListener('click', () => {
+        updateGameData(true);
+    });
+    document.getElementById('auth-input').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            updateGameData(true);
+        }
+    });
+    </script>
+</body>
+</html>
