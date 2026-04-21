@@ -7,9 +7,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
 
-DEFAULT_EXTERNAL_IMAGE_DIR = r"D:\workspace\SuperPro\SuperVTPro\副机\image"
-DEFAULT_EXTERNAL_WEB_HTML = r"D:\workspace\SuperPro\SuperVTPro\副机\web\webpage.html"
-DEFAULT_EXTERNAL_WEB_CONFIG = r"D:\workspace\SuperPro\SuperVTPro\副机\web\config.txt"
+DEFAULT_EXTERNAL_BASE_DIR = "/root/python-dump"
+DEFAULT_EXTERNAL_IMAGE_DIR = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "image")
+DEFAULT_EXTERNAL_WEB_HTML = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "web", "webpage.html")
+DEFAULT_EXTERNAL_WEB_CONFIG = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "web", "config.txt")
 
 
 class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
