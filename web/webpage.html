@@ -390,7 +390,7 @@
     
     function selectMap(mapId) { 
         currentMap = mapId; 
-        map.style.backgroundImage = `url('./${currentMap}')`; 
+        map.style.backgroundImage = `url('/image/${currentMap}')`; 
         const dims = mapDimensions[mapId] || { width: 1000, height: 1000 }; 
         map.style.width = `${dims.width}px`;
         map.style.height = `${dims.height}px`; 
