@@ -10,6 +10,7 @@ from sdk_helper import SDKLoader
 from ue_generator import SDKGenerator
 from ue_scanner import UEScanner
 from ue_types import FNameCache, FNameEntryArray_UE424, TUObjectArray
+from web_radar import WebRadarService
 
 DEFAULT_DUMP_CHUNK_SIZE = 0x10000  # 64KB
 DEFAULT_RETRY_CHUNK_SIZE = 0x1000  # 4KB (robust bad-page recovery)
@@ -67,6 +68,7 @@ def print_detailed_help():
         ("rwbase_host [stats/watch/recent] [IntervalSec]", "查看按 RWbase 当前 host 日志协议解析后的结构化联调状态。"),
         ("rwbase_stream <on/off/ping/stats/watch> [IntervalSec]", "RWbase 流式回传控制命令；on/off 开关回传，ping 查询 CPUEAXH，stats/watch 查看统计。"),
         ("rwbase_data <on/off/ping/stats/watch> [IntervalSec]", "兼容别名，等价 rwbase_stream。"),
+        ("webradar <start/stop/status> [Port]", "启动/停止/查看网页雷达服务；token 写入 web/pwd.txt。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
         ("cache_gnames", "构建本地 FName 缓存。"),
         ("dump_sdk <ClassName>", "为指定类生成 C++ SDK 头文件。"),
@@ -100,6 +102,7 @@ class CommandHandler:
     def __init__(self, api):
         self.api = api
         self.ctx = UEContext()
+        self.web_radar = WebRadarService(self.api.core)
         try:
             self.sdk = SDKLoader()
             log("SDK JSONs loaded successfully.", "SUCCESS")
@@ -825,6 +828,47 @@ class CommandHandler:
 
     def handle_rwbase_data(self, args):
         self.handle_rwbase_stream(args)
+
+    def handle_webradar(self, args):
+        action = args[0].lower() if args else "status"
+
+        if action == "status":
+            status = self.web_radar.status()
+            state = "running" if status.get("running") else "stopped"
+            log(
+                f"WebRadar {state} on 0.0.0.0:{status.get('port')} "
+                f"token={status.get('password')} pwd={status.get('pwd_path')}"
+            )
+            return
+
+        if action == "start":
+            port = None
+            if len(args) >= 2:
+                try:
+                    port = int(args[1])
+                except ValueError:
+                    log("Usage: webradar <start/stop/status> [Port]", "ERROR")
+                    return
+            ok, message = self.web_radar.start(port_override=port)
+            log(f"WebRadar {message}", "SUCCESS" if ok else "ERROR")
+            return
+
+        if action == "stop":
+            ok, message = self.web_radar.stop()
+            level = "SUCCESS" if ok else "WARN"
+            log(f"WebRadar {message}", level)
+            return
+
+        log("Usage: webradar <start/stop/status> [Port]", "ERROR")
+
+    def shutdown(self):
+        if not hasattr(self, "web_radar"):
+            return
+        status = self.web_radar.status()
+        if not status.get("running"):
+            return
+        ok, message = self.web_radar.stop()
+        log(f"WebRadar {message}", "SUCCESS" if ok else "WARN")
 
     def handle_dump_mem(self, args):
         if len(args) < 3:

@@ -1,6 +1,6 @@
-﻿import os
+﻿import base64
+import os
 import struct
-import base64
 
 # RWbase src/Core/Network/Network.hpp defaults.
 # Keep env overrides first; fallback matches RWbase default listen/target port.
@@ -37,6 +37,11 @@ RWVG_TYPED_SIZE_BY_KIND = {
     RWVG_TYPE_PLAYER: 255,
     RWVG_TYPE_ITEM: 90,
 }
+
+# Mirrors RWbase::GameCore::GameCoreTypes.hpp with #pragma pack(push, 1)
+RWVG_UTILS_FMT = "<16f3Bi3f3fiQfB4f2i"
+RWVG_PLAYER_FMT = "<2f2i18s18s18s32s32sQ3f3ffiiB18fi"
+RWVG_ITEM_FMT = "<Q3fii32s18siii"
 
 # RWbase host-compat aggregate payload layout (base64 wrapped, raw UDP payload):
 # [HostUtilsStruct][SIZE_T playerCount][HostSendPlayerStruct * N][SIZE_T itemCount][HostSendItemsStruct * M]
@@ -89,6 +94,117 @@ def try_parse_rwvg_typed_payload(payload: bytes, strict_size: bool = True):
             return None
 
     return typed_kind, payload[12:12 + typed_size]
+
+
+def _decode_c_string(raw: bytes) -> str:
+    if not raw:
+        return ""
+    nul_pos = raw.find(b"\x00")
+    if nul_pos >= 0:
+        raw = raw[:nul_pos]
+    return raw.decode("utf-8", errors="ignore").strip()
+
+
+def parse_rwvg_utils_payload(payload: bytes):
+    if not payload or len(payload) != RWVG_TYPED_SIZE_BY_KIND[RWVG_TYPE_UTILS]:
+        return None
+
+    data = struct.unpack(RWVG_UTILS_FMT, payload)
+    return {
+        "matrix": [float(v) for v in data[0:16]],
+        "fight_mode": bool(data[16]),
+        "home_show": bool(data[17]),
+        "aim_bot": bool(data[18]),
+        "local_team_id": int(data[19]),
+        "local_neck_pos": {
+            "x": float(data[20]),
+            "y": float(data[21]),
+            "z": float(data[22]),
+        },
+        "local_pos": {
+            "x": float(data[23]),
+            "y": float(data[24]),
+            "z": float(data[25]),
+        },
+        "local_weapon_id": int(data[26]),
+        "get_data_ptr": int(data[27]),
+        "local_weapon_speed": float(data[28]),
+        "pre_should_draw": bool(data[29]),
+        "map_info": {
+            "x": float(data[30]),
+            "y": float(data[31]),
+            "w": float(data[32]),
+            "h": float(data[33]),
+            "map_x": int(data[34]),
+            "map_y": int(data[35]),
+        },
+    }
+
+
+def parse_rwvg_player_payload(payload: bytes):
+    if not payload or len(payload) != RWVG_TYPED_SIZE_BY_KIND[RWVG_TYPE_PLAYER]:
+        return None
+
+    data = struct.unpack(RWVG_PLAYER_FMT, payload)
+    bones_raw = data[17:35]
+    bones = []
+    for idx in range(0, len(bones_raw), 3):
+        bones.append({
+            "x": float(bones_raw[idx]),
+            "y": float(bones_raw[idx + 1]),
+            "z": float(bones_raw[idx + 2]),
+        })
+
+    return {
+        "health": float(data[0]),
+        "max_health": float(data[1]),
+        "armor_head": int(data[2]),
+        "armor_body": int(data[3]),
+        "class_name": _decode_c_string(data[4]),
+        "detective": _decode_c_string(data[5]),
+        "weapon_name": _decode_c_string(data[6]),
+        "player_name": _decode_c_string(data[7]),
+        "bot_name": _decode_c_string(data[8]),
+        "entity_ptr": int(data[9]),
+        "pos": {
+            "x": float(data[10]),
+            "y": float(data[11]),
+            "z": float(data[12]),
+        },
+        "prediction": {
+            "x": float(data[13]),
+            "y": float(data[14]),
+            "z": float(data[15]),
+        },
+        "direction": float(data[16]),
+        "distance": int(data[35]),
+        "team_id": int(data[36]),
+        "is_visible": bool(data[37]),
+        "bone_pos": bones,
+        "valid_flags": int(data[38]),
+    }
+
+
+def parse_rwvg_item_payload(payload: bytes):
+    if not payload or len(payload) != RWVG_TYPED_SIZE_BY_KIND[RWVG_TYPE_ITEM]:
+        return None
+
+    data = struct.unpack(RWVG_ITEM_FMT, payload)
+    return {
+        "dead_box_type": int(data[0]),
+        "pos": {
+            "x": float(data[1]),
+            "y": float(data[2]),
+            "z": float(data[3]),
+        },
+        "item_type": int(data[4]),
+        "distance": int(data[5]),
+        "item_name": _decode_c_string(data[6]),
+        "project_name": _decode_c_string(data[7]),
+        "item_money": int(data[8]),
+        "item_quality": int(data[9]),
+        "password": int(data[10]),
+    }
 
 
 def parse_zombie_control_ack(payload: bytes):

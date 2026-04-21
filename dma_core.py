@@ -3,6 +3,7 @@ import threading
 import time
 import os
 import re
+import math
 from dma_protocol import *
 
 DEFAULT_EXPECTED_TRANSFER_BPS = 8 * 1024 * 1024  # 8 MB/s conservative baseline.
@@ -10,6 +11,7 @@ DEFAULT_TRANSFER_GRACE_SEC = 5.0
 DEFAULT_IDLE_TIMEOUT_SEC = 2.5
 WAIT_SLICE_SEC = 0.2
 VERBOSE_EXPECTING_LOG = os.getenv("DMA_VERBOSE_EXPECTING", "0") == "1"
+DEFAULT_PLAYER_TTL_SEC = float(os.getenv("DMA_WEBRADAR_PLAYER_TTL", "1.5"))
 
 
 class DMACore:
@@ -100,22 +102,146 @@ class DMACore:
             "emu_call_last": None,
             "recent_logs": [],
         }
+        self.radar_lock = threading.Lock()
+        self.radar_latest_utils = None
+        self.radar_latest_utils_ts = 0.0
+        self.radar_players = {}
+        self.radar_items = {}
+        self.radar_player_ttl_sec = DEFAULT_PLAYER_TTL_SEC
 
         threading.Thread(target=self._receiver_loop, daemon=True).start()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
 
     def _handle_rwvg_typed_frame(self, typed_kind, typed_payload):
+        now_ts = time.monotonic()
         if typed_kind == RWVG_TYPE_UTILS:
             self.rwvg_stats["utils_frames"] += 1
+            parsed = parse_rwvg_utils_payload(typed_payload)
+            if parsed is not None:
+                with self.radar_lock:
+                    self.radar_latest_utils = parsed
+                    self.radar_latest_utils_ts = now_ts
         elif typed_kind == RWVG_TYPE_PLAYER:
             self.rwvg_stats["player_frames"] += 1
+            parsed = parse_rwvg_player_payload(typed_payload)
+            if parsed is not None:
+                entity_id = self._build_player_entity_id(parsed)
+                parsed["_entity_id"] = entity_id
+                parsed["_ts"] = now_ts
+                with self.radar_lock:
+                    self.radar_players[entity_id] = parsed
+                    self._purge_radar_stale_locked(now_ts)
         elif typed_kind == RWVG_TYPE_ITEM:
             self.rwvg_stats["item_frames"] += 1
+            parsed = parse_rwvg_item_payload(typed_payload)
+            if parsed is not None:
+                item_key = f"{parsed.get('dead_box_type', 0)}:{now_ts:.6f}"
+                parsed["_ts"] = now_ts
+                with self.radar_lock:
+                    self.radar_items[item_key] = parsed
+                    self._purge_radar_stale_locked(now_ts)
         self.rwvg_stats["typed_bytes"] += len(typed_payload)
 
         if not self.rwvg_stream_detected:
             print("[+] RWVG typed stream detected (GameCore data path aligned).")
             self.rwvg_stream_detected = True
+
+    def _build_player_entity_id(self, player: dict) -> str:
+        entity_ptr = int(player.get("entity_ptr", 0) or 0)
+        if entity_ptr != 0:
+            return f"0x{entity_ptr:X}"
+
+        team_id = int(player.get("team_id", 0) or 0)
+        player_name = str(player.get("player_name") or "")
+        detective = str(player.get("detective") or "")
+        return f"FALLBACK_{team_id}_{player_name}_{detective}"
+
+    def _purge_radar_stale_locked(self, now_ts: float):
+        cutoff = now_ts - max(self.radar_player_ttl_sec, 0.25)
+
+        stale_players = [
+            key
+            for key, value in self.radar_players.items()
+            if float(value.get("_ts", 0.0)) < cutoff
+        ]
+        for key in stale_players:
+            self.radar_players.pop(key, None)
+
+        stale_items = [
+            key
+            for key, value in self.radar_items.items()
+            if float(value.get("_ts", 0.0)) < cutoff
+        ]
+        for key in stale_items:
+            self.radar_items.pop(key, None)
+
+    @staticmethod
+    def _calculate_local_yaw(matrix_values):
+        if not matrix_values or len(matrix_values) < 5:
+            return 0.0
+        yaw_rad = math.atan2(matrix_values[4], matrix_values[0])
+        yaw_deg = yaw_rad * (180.0 / math.pi)
+        yaw_deg -= 90.0
+        if yaw_deg < 0.0:
+            yaw_deg += 360.0
+        if yaw_deg >= 360.0:
+            yaw_deg -= 360.0
+        return yaw_deg
+
+    def get_radar_snapshot(self):
+        now_ts = time.monotonic()
+        with self.radar_lock:
+            self._purge_radar_stale_locked(now_ts)
+            utils = dict(self.radar_latest_utils or {})
+            players = [dict(player) for player in self.radar_players.values()]
+
+        local_team_id = int(utils.get("local_team_id", 0) or 0)
+        local_pos = utils.get("local_pos") or {}
+        local_player = {
+            "id": "local",
+            "team_id": local_team_id,
+            "camp_id": 0,
+            "yaw": self._calculate_local_yaw(utils.get("matrix")),
+            "position": {
+                "x": int(float(local_pos.get("x", 0.0) or 0.0)),
+                "y": int(float(local_pos.get("y", 0.0) or 0.0)),
+            },
+        }
+
+        entities = []
+        teammates = []
+        for player in players:
+            class_name = str(player.get("class_name") or "")
+            is_actual_player = class_name != "AI"
+            if not class_name or not is_actual_player:
+                continue
+
+            entity_id = str(player.get("_entity_id") or self._build_player_entity_id(player))
+            player_name = str(player.get("player_name") or "")
+            pos = player.get("pos") or {}
+            entity = {
+                "id": entity_id,
+                "name": player_name if player_name else f"Player_{entity_id}",
+                "type": "player",
+                "team_id": int(player.get("team_id", 0) or 0),
+                "position": {
+                    "x": int(float(pos.get("x", 0.0) or 0.0)),
+                    "y": int(float(pos.get("y", 0.0) or 0.0)),
+                },
+                "orientation": float(player.get("direction", 0.0) or 0.0),
+                "health": float(player.get("health", 0.0) or 0.0),
+                "max_health": float(player.get("max_health", 0.0) or 0.0),
+            }
+            entities.append(entity)
+
+            if local_team_id > 0 and entity["team_id"] == local_team_id:
+                teammates.append(dict(entity))
+
+        return {
+            "local_player": local_player,
+            "entities": entities,
+            "teammates": teammates,
+        }
 
     def _handle_zombie_ack_packet(self, payload):
         ack = parse_zombie_control_ack(payload)

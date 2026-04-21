@@ -58,6 +58,8 @@ def main():
                 handler.handle_rwbase_stream(args)
             elif cmd == "rwbase_data":
                 handler.handle_rwbase_data(args)
+            elif cmd == "webradar":
+                handler.handle_webradar(args)
             elif cmd == "dump_mem":
                 handler.handle_dump_mem(args)
             elif cmd == "regions":
@@ -92,6 +94,7 @@ def main():
             break
         except Exception as e:
             log(f"Error: {e}", "ERROR")
+    handler.shutdown()
 
 if __name__ == "__main__":
     main()
