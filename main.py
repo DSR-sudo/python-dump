@@ -22,7 +22,11 @@ def main():
     # 3. 主循环
     while True:
         try:
-            line = input("\n>> ").strip()
+            core.begin_console_input()
+            try:
+                line = input("\n>> ").strip()
+            finally:
+                core.end_console_input()
             if not line: continue
             parts = line.split()
             cmd = parts[0].lower()

@@ -108,9 +108,47 @@ class DMACore:
         self.radar_players = {}
         self.radar_items = {}
         self.radar_player_ttl_sec = DEFAULT_PLAYER_TTL_SEC
+        self.console_lock = threading.Lock()
+        self.console_input_active = False
+        self.console_deferred_lines = []
+        self.console_deferred_dropped = 0
+        self.console_deferred_limit = 256
 
         threading.Thread(target=self._receiver_loop, daemon=True).start()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+
+    def _emit_console_line(self, line: str, defer_while_input: bool = True):
+        if not line:
+            return
+
+        with self.console_lock:
+            if defer_while_input and self.console_input_active:
+                if len(self.console_deferred_lines) < self.console_deferred_limit:
+                    self.console_deferred_lines.append(line)
+                else:
+                    self.console_deferred_dropped += 1
+                return
+        print(line)
+
+    def begin_console_input(self):
+        with self.console_lock:
+            self.console_input_active = True
+
+    def end_console_input(self):
+        deferred = []
+        dropped = 0
+        with self.console_lock:
+            self.console_input_active = False
+            if self.console_deferred_lines:
+                deferred = self.console_deferred_lines
+                self.console_deferred_lines = []
+            dropped = self.console_deferred_dropped
+            self.console_deferred_dropped = 0
+
+        for line in deferred:
+            print(line)
+        if dropped > 0:
+            print(f"[LOG] {dropped} background lines dropped while typing.")
 
     def _handle_rwvg_typed_frame(self, typed_kind, typed_payload):
         now_ts = time.monotonic()
@@ -143,7 +181,7 @@ class DMACore:
         self.rwvg_stats["typed_bytes"] += len(typed_payload)
 
         if not self.rwvg_stream_detected:
-            print("[+] RWVG typed stream detected (GameCore data path aligned).")
+            self._emit_console_line("[+] RWVG typed stream detected (GameCore data path aligned).")
             self.rwvg_stream_detected = True
 
     def _build_player_entity_id(self, player: dict) -> str:
@@ -371,7 +409,7 @@ class DMACore:
             }
 
     def _receiver_loop(self):
-        print(f"[*] UDP Receiver started on port {BIND_PORT}")
+        self._emit_console_line(f"[*] UDP Receiver started on port {BIND_PORT}", defer_while_input=False)
         scratch_buffer = bytearray(65536)
 
         while self.is_running:
@@ -390,7 +428,7 @@ class DMACore:
                         self._try_capture_rwbase_host_log(msg)
                         if "ALIVE_ACK" in msg or "DRIVER_ONLINE" in msg:
                             if not self.driver_online:
-                                print("[+] Driver is ONLINE.")
+                                self._emit_console_line("[+] Driver is ONLINE.")
                             self.driver_online = True
                             continue
 
@@ -398,7 +436,7 @@ class DMACore:
                             continue
 
                         if msg:
-                            print(f"\r[LOG] {msg}\n>> ", end="")
+                            self._emit_console_line(f"[LOG] {msg}")
                     except Exception:
                         pass
                     continue
@@ -438,7 +476,7 @@ class DMACore:
                     self.rwvg_stats["host_aggregate_frames"] += 1
                     self.rwvg_stats["host_aggregate_raw_bytes"] += host_agg["raw_size"]
                     if not self.host_aggregate_detected:
-                        print(
+                        self._emit_console_line(
                             "[+] Host-compat aggregate stream detected "
                             f"(players={host_agg['player_count']}, items={host_agg['item_count']})."
                         )
