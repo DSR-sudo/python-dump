@@ -7,6 +7,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
 
+from dma_protocol import (
+    RWVG_MAGIC,
+    RWVG_TYPE_ITEM,
+    RWVG_TYPE_PLAYER,
+    RWVG_TYPE_UTILS,
+    RWVG_TYPED_SIZE_BY_KIND,
+)
+
 DEFAULT_EXTERNAL_BASE_DIR = "/root/python-dump"
 DEFAULT_EXTERNAL_IMAGE_DIR = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "image")
 DEFAULT_EXTERNAL_WEB_HTML = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "web", "webpage.html")
@@ -162,12 +170,41 @@ refresh();
                 "teammates": [],
             }
 
+    def _build_rwvg_data(self):
+        snapshot = self._build_game_data()
+
+        stats = {}
+        if hasattr(self.core, "get_stream_stats"):
+            try:
+                stats = self.core.get_stream_stats() or {}
+            except Exception:
+                stats = {}
+
+        return {
+            "protocol": {
+                "name": "RWVG",
+                "magic_u32": RWVG_MAGIC,
+                "types": {
+                    "utils": RWVG_TYPE_UTILS,
+                    "player": RWVG_TYPE_PLAYER,
+                    "item": RWVG_TYPE_ITEM,
+                },
+                "typed_size_by_kind": dict(RWVG_TYPED_SIZE_BY_KIND),
+            },
+            "stream_stats": stats,
+            "snapshot": snapshot,
+        }
+
     def _make_handler(self):
         service = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, format, *args):
                 return
+
+            def _is_authorized(self):
+                auth = self.headers.get("X-Auth-Token", "")
+                return auth == service.password or auth == "963007"
 
             def _send_json(self, payload, status=200):
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -192,11 +229,17 @@ refresh();
                     return
 
                 if path == "/api/data":
-                    auth = self.headers.get("X-Auth-Token", "")
-                    if auth != service.password and auth != "963007":
+                    if not self._is_authorized():
                         self._send_json({"error": "Unauthorized"}, status=401)
                         return
                     self._send_json(service._build_game_data(), status=200)
+                    return
+
+                if path == "/api/rwvg":
+                    if not self._is_authorized():
+                        self._send_json({"error": "Unauthorized"}, status=401)
+                        return
+                    self._send_json(service._build_rwvg_data(), status=200)
                     return
 
                 if path.startswith("/image/"):
