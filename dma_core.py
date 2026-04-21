@@ -15,6 +15,15 @@ DEFAULT_PLAYER_TTL_SEC = float(os.getenv("DMA_WEBRADAR_PLAYER_TTL", "1.5"))
 
 
 class DMACore:
+    DECODE_PATH_CATEGORIES = {
+        "emu_runtime_init",
+        "emu_runtime_exec_fail",
+        "emu_bridge_last",
+        "emu_call_last",
+        "coord_decode_summary",
+        "coord_decode_group",
+    }
+
     MODULE_LOG_RE = re.compile(
         r"^\[User\]\s+Base:\s+0x([0-9A-Fa-f]+)\s+\|\s+Size:\s+0x([0-9A-Fa-f]+)\s+\|\s+Name:\s+(.+)$"
     )
@@ -44,6 +53,12 @@ class DMACore:
     )
     EMU_CALL_RE = re.compile(
         r"^\[Emu\]\[Call\]\s+(fail|ok)\s+(.+)$"
+    )
+    COORD_DECRYPT_FAIL_SUMMARY_RE = re.compile(
+        r"^\[CoordDecrypt\]\s+text-emu fail agg frame=(\d+)\s+total=(\d+)\s+groups=(\d+)\s+dropped=(\d+)$"
+    )
+    COORD_DECRYPT_FAIL_GROUP_RE = re.compile(
+        r"^\[CoordDecrypt\]\s+text-emu fail agg#(\d+)\s+cnt=(\d+)\s+type=(\w+)\s+strategy=(\w+)\s+algo=(\d+)\s+kind=(\d+)\s+source=(\w+)\s+confidence=(\w+)\s+rcode=([^(]+)\((\d+)\)\s+last_entry=0x([0-9A-Fa-f]+)\s+pid=0x([0-9A-Fa-f]+)\s+cr3=0x([0-9A-Fa-f]+)$"
     )
 
     def __init__(self):
@@ -100,8 +115,14 @@ class DMACore:
             "emu_runtime_exec_fail": None,
             "emu_bridge_last": None,
             "emu_call_last": None,
+            "coord_decode_summary": None,
+            "coord_decode_groups": [],
             "recent_logs": [],
         }
+        self.trace_lock = threading.Lock()
+        self.send_thread_history = []
+        self.decode_path_history = []
+        self.trace_history_limit = 512
         self.radar_lock = threading.Lock()
         self.radar_latest_utils = None
         self.radar_latest_utils_ts = 0.0
@@ -166,6 +187,19 @@ class DMACore:
                 entity_id = self._build_player_entity_id(parsed)
                 parsed["_entity_id"] = entity_id
                 parsed["_ts"] = now_ts
+                self._append_send_thread_log({
+                    "ts": now_ts,
+                    "kind": "player",
+                    "entity_id": entity_id,
+                    "team_id": int(parsed.get("team_id", 0) or 0),
+                    "health": float(parsed.get("health", 0.0) or 0.0),
+                    "max_health": float(parsed.get("max_health", 0.0) or 0.0),
+                    "distance": int(parsed.get("distance", 0) or 0),
+                    "visible": bool(parsed.get("is_visible", False)),
+                    "pos": dict(parsed.get("pos") or {}),
+                    "name": str(parsed.get("player_name") or ""),
+                    "weapon": str(parsed.get("weapon_name") or ""),
+                })
                 with self.radar_lock:
                     self.radar_players[entity_id] = parsed
                     self._purge_radar_stale_locked(now_ts)
@@ -235,6 +269,7 @@ class DMACore:
 
         local_team_id = int(utils.get("local_team_id", 0) or 0)
         local_pos = utils.get("local_pos") or {}
+        local_neck_pos = utils.get("local_neck_pos") or {}
         local_player = {
             "id": "local",
             "team_id": local_team_id,
@@ -243,6 +278,12 @@ class DMACore:
             "position": {
                 "x": int(float(local_pos.get("x", 0.0) or 0.0)),
                 "y": int(float(local_pos.get("y", 0.0) or 0.0)),
+                "z": int(float(local_pos.get("z", 0.0) or 0.0)),
+            },
+            "neck_position": {
+                "x": int(float(local_neck_pos.get("x", 0.0) or 0.0)),
+                "y": int(float(local_neck_pos.get("y", 0.0) or 0.0)),
+                "z": int(float(local_neck_pos.get("z", 0.0) or 0.0)),
             },
         }
 
@@ -265,6 +306,7 @@ class DMACore:
                 "position": {
                     "x": int(float(pos.get("x", 0.0) or 0.0)),
                     "y": int(float(pos.get("y", 0.0) or 0.0)),
+                    "z": int(float(pos.get("z", 0.0) or 0.0)),
                 },
                 "orientation": float(player.get("direction", 0.0) or 0.0),
                 "health": float(player.get("health", 0.0) or 0.0),
@@ -300,8 +342,29 @@ class DMACore:
             self.host_diag[category] = parsed
             recent = self.host_diag["recent_logs"]
             recent.append({"category": category, "raw": raw, "parsed": parsed})
-            if len(recent) > 32:
-                del recent[:-32]
+            if len(recent) > self.trace_history_limit:
+                del recent[:-self.trace_history_limit]
+        if category in self.DECODE_PATH_CATEGORIES:
+            self._append_decode_path_log(category, raw, parsed)
+
+    def _append_send_thread_log(self, item: dict):
+        if not item:
+            return
+        with self.trace_lock:
+            self.send_thread_history.append(item)
+            if len(self.send_thread_history) > self.trace_history_limit:
+                del self.send_thread_history[:-self.trace_history_limit]
+
+    def _append_decode_path_log(self, category: str, raw: str, parsed: dict):
+        with self.trace_lock:
+            self.decode_path_history.append({
+                "ts": time.monotonic(),
+                "category": category,
+                "raw": raw,
+                "parsed": parsed,
+            })
+            if len(self.decode_path_history) > self.trace_history_limit:
+                del self.decode_path_history[:-self.trace_history_limit]
 
     def _try_capture_rwbase_host_log(self, msg: str):
         if not msg:
@@ -393,6 +456,51 @@ class DMACore:
             self._append_host_log("emu_call_last", msg, parsed)
             return True
 
+        match = self.COORD_DECRYPT_FAIL_SUMMARY_RE.match(msg)
+        if match:
+            parsed = {
+                "frame": int(match.group(1)),
+                "total": int(match.group(2)),
+                "groups": int(match.group(3)),
+                "dropped": int(match.group(4)),
+                "updated_at_monotonic": time.monotonic(),
+            }
+            with self.host_lock:
+                self.host_diag["coord_decode_summary"] = parsed
+                self.host_diag["coord_decode_groups"] = []
+                recent = self.host_diag["recent_logs"]
+                recent.append({"category": "coord_decode_summary", "raw": msg, "parsed": parsed})
+                if len(recent) > 32:
+                    del recent[:-32]
+            return True
+
+        match = self.COORD_DECRYPT_FAIL_GROUP_RE.match(msg)
+        if match:
+            parsed = {
+                "rank": int(match.group(1)),
+                "count": int(match.group(2)),
+                "type": match.group(3),
+                "strategy": match.group(4),
+                "algo": int(match.group(5)),
+                "kind": int(match.group(6)),
+                "source": match.group(7),
+                "confidence": match.group(8),
+                "rcode": match.group(9),
+                "rcode_num": int(match.group(10)),
+                "last_entry": int(match.group(11), 16),
+                "pid": int(match.group(12), 16),
+                "cr3": int(match.group(13), 16),
+            }
+            with self.host_lock:
+                groups = self.host_diag["coord_decode_groups"]
+                if len(groups) < 8:
+                    groups.append(parsed)
+                recent = self.host_diag["recent_logs"]
+                recent.append({"category": "coord_decode_group", "raw": msg, "parsed": parsed})
+                if len(recent) > 32:
+                    del recent[:-32]
+            return True
+
         return False
 
     def get_rwbase_host_diag(self):
@@ -405,8 +513,28 @@ class DMACore:
                 "emu_runtime_exec_fail": None if self.host_diag["emu_runtime_exec_fail"] is None else dict(self.host_diag["emu_runtime_exec_fail"]),
                 "emu_bridge_last": None if self.host_diag["emu_bridge_last"] is None else dict(self.host_diag["emu_bridge_last"]),
                 "emu_call_last": None if self.host_diag["emu_call_last"] is None else dict(self.host_diag["emu_call_last"]),
+                "coord_decode_summary": None if self.host_diag["coord_decode_summary"] is None else dict(self.host_diag["coord_decode_summary"]),
+                "coord_decode_groups": [dict(item) for item in self.host_diag["coord_decode_groups"]],
                 "recent_logs": list(self.host_diag["recent_logs"]),
             }
+
+    def get_send_thread_history(self, limit: int = 50):
+        n = max(1, int(limit))
+        with self.trace_lock:
+            return [dict(item) for item in self.send_thread_history[-n:]]
+
+    def get_decode_path_history(self, limit: int = 80):
+        n = max(1, int(limit))
+        with self.trace_lock:
+            out = []
+            for item in self.decode_path_history[-n:]:
+                out.append({
+                    "ts": float(item.get("ts", 0.0) or 0.0),
+                    "category": str(item.get("category") or ""),
+                    "raw": str(item.get("raw") or ""),
+                    "parsed": dict(item.get("parsed") or {}),
+                })
+            return out
 
     def _receiver_loop(self):
         self._emit_console_line(f"[*] UDP Receiver started on port {BIND_PORT}", defer_while_input=False)

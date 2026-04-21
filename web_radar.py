@@ -180,6 +180,19 @@ refresh();
             except Exception:
                 stats = {}
 
+        decode_logs = []
+        send_logs = []
+        if hasattr(self.core, "get_decode_path_history"):
+            try:
+                decode_logs = self.core.get_decode_path_history(limit=120) or []
+            except Exception:
+                decode_logs = []
+        if hasattr(self.core, "get_send_thread_history"):
+            try:
+                send_logs = self.core.get_send_thread_history(limit=120) or []
+            except Exception:
+                send_logs = []
+
         return {
             "protocol": {
                 "name": "RWVG",
@@ -193,6 +206,10 @@ refresh();
             },
             "stream_stats": stats,
             "snapshot": snapshot,
+            "logs": {
+                "decode_path": decode_logs,
+                "send_thread_players": send_logs,
+            },
         }
 
     def _make_handler(self):
@@ -250,6 +267,14 @@ refresh();
                         self._send_json({"error": "Unauthorized"}, status=401)
                         return
                     self._send_json(service._build_rwvg_data(), status=200)
+                    return
+
+                if path == "/api/logs":
+                    if not self._is_authorized(query_token=query_token):
+                        self._send_json({"error": "Unauthorized"}, status=401)
+                        return
+                    payload = service._build_rwvg_data().get("logs", {})
+                    self._send_json(payload, status=200)
                     return
 
                 if path.startswith("/image/"):

@@ -60,14 +60,7 @@ def print_detailed_help():
         ("attach <PID>", "绑定目标进程并缓存 CR3。"),
         ("cr3 <PID>", "查询进程 CR3（用户/内核）与基址。"),
         ("modules <PID>", "按 CR3 路径枚举用户模块。"),
-        ("start_data_threads", "发送控制命令开启 GhostCore/RWbase 流式回传。"),
-        ("stop_data_threads", "发送控制命令关闭 GhostCore/RWbase 流式回传。"),
-        ("cpueaxh_ping", "发送 PINGPONG 控制命令并返回 CPUEAXH 引擎在线状态。"),
-        ("stream_stats", "查看接收线程维护的 RWbase/RWVG 流式统计。"),
-        ("stream_log [IntervalSec]", "按固定间隔流式打印 RWbase/RWVG 统计；数据本身由后台持续接收，Ctrl+C 停止。"),
-        ("rwbase_host [stats/watch/recent] [IntervalSec]", "查看按 RWbase 当前 host 日志协议解析后的结构化联调状态。"),
-        ("rwbase_stream <on/off/ping/stats/watch> [IntervalSec]", "RWbase 流式回传控制命令；on/off 开关回传，ping 查询 CPUEAXH，stats/watch 查看统计。"),
-        ("rwbase_data <on/off/ping/stats/watch> [IntervalSec]", "兼容别名，等价 rwbase_stream。"),
+        ("stream_log [on/off/ping/stats/watch/all/decode/send] [IntervalSec]", "统一流式入口：on/off/ping 控制；watch/all 同时看两条线；decode 仅看 CPUEAXH-RWBASE 解码链路；send 仅看发送线程人物数据。"),
         ("webradar <start/stop/status> [Port]", "启动/停止/查看网页雷达服务；token 写入 web/pwd.txt。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
         ("cache_gnames", "构建本地 FName 缓存。"),
@@ -259,6 +252,124 @@ class CommandHandler:
             f"zombie_non_ok={stats.get('zombie_ack_non_ok', 0)}, "
             f"zombie_last_ack={stats.get('zombie_last_ack')}"
         )
+
+    def _format_coord_brief(self):
+        snapshot = self.api.core.get_radar_snapshot() or {}
+        local = snapshot.get("local_player") or {}
+        local_pos = local.get("position") or {}
+        local_neck = local.get("neck_position") or {}
+        entities = snapshot.get("entities") or []
+
+        target = entities[0] if entities else None
+        if target is None:
+            return (
+                "coord: "
+                f"local=({local_pos.get('x', 0)},{local_pos.get('y', 0)},{local_pos.get('z', 0)}) "
+                f"neck=({local_neck.get('x', 0)},{local_neck.get('y', 0)},{local_neck.get('z', 0)}) "
+                f"players=0"
+            )
+
+        target_pos = target.get("position") or {}
+        return (
+            "coord: "
+            f"local=({local_pos.get('x', 0)},{local_pos.get('y', 0)},{local_pos.get('z', 0)}) "
+            f"target=({target_pos.get('x', 0)},{target_pos.get('y', 0)},{target_pos.get('z', 0)}) "
+            f"players={len(entities)} "
+            f"team={target.get('team_id', 0)} hp={int(float(target.get('health', 0.0) or 0.0))}"
+        )
+
+    def _format_decode_brief(self):
+        diag = self.api.core.get_rwbase_host_diag()
+        runtime = diag.get("emu_runtime_init")
+        runtime_fail = diag.get("emu_runtime_exec_fail")
+        decode_summary = diag.get("coord_decode_summary")
+        decode_groups = diag.get("coord_decode_groups") or []
+
+        parts = []
+        if runtime:
+            parts.append(f"runtime=0x{runtime.get('status', 0):08X}/ready={runtime.get('ready', 0)}")
+        else:
+            parts.append("runtime=n/a")
+
+        if runtime_fail:
+            parts.append(
+                f"last_fail=0x{runtime_fail.get('status', 0):08X}/exit={runtime_fail.get('exit', 0)}/exc={runtime_fail.get('exception', 0)}"
+            )
+
+        if decode_summary:
+            parts.append(
+                f"decode=frame{decode_summary.get('frame', 0)} total={decode_summary.get('total', 0)} drop={decode_summary.get('dropped', 0)}"
+            )
+            if decode_groups:
+                top = decode_groups[0]
+                parts.append(
+                    f"top={top.get('type', 'n/a')}:{top.get('count', 0)} kind={top.get('kind', 0)} rcode={top.get('rcode', 'n/a')}"
+                )
+        else:
+            parts.append("decode=n/a")
+
+        latest = None
+        if hasattr(self.api.core, "get_decode_path_history"):
+            history = self.api.core.get_decode_path_history(limit=1) or []
+            latest = history[-1] if history else None
+        if latest:
+            parts.append(f"last={latest.get('category', 'n/a')}")
+
+        return "decode_path: " + " ".join(parts)
+
+    def _format_send_thread_brief(self):
+        entries = []
+        if hasattr(self.api.core, "get_send_thread_history"):
+            entries = self.api.core.get_send_thread_history(limit=3) or []
+
+        if not entries:
+            return "send_thread: n/a"
+
+        parts = []
+        for item in entries:
+            pos = item.get("pos") or {}
+            parts.append(
+                f"{item.get('entity_id', 'n/a')}"
+                f"/t{item.get('team_id', 0)}"
+                f"/hp{int(float(item.get('health', 0.0) or 0.0))}"
+                f"/d{item.get('distance', 0)}"
+                f"/({int(float(pos.get('x', 0.0) or 0.0))},{int(float(pos.get('y', 0.0) or 0.0))},{int(float(pos.get('z', 0.0) or 0.0))})"
+            )
+        return "send_thread: " + " ; ".join(parts)
+
+    def _format_stream_focus(self):
+        return (
+            f"{self._format_stream_stats()} | "
+            f"{self._format_coord_brief()} | "
+            f"{self._format_decode_brief()} | "
+            f"{self._format_send_thread_brief()}"
+        )
+
+    def _build_stream_lines(self, mode: str):
+        selected = (mode or "all").lower()
+        lines = []
+        if selected in ("all", "watch"):
+            lines.append(self._format_stream_stats())
+            lines.append(self._format_decode_brief())
+            lines.append(self._format_send_thread_brief())
+            lines.append(self._format_coord_brief())
+            return lines
+        if selected == "decode":
+            lines.append(self._format_decode_brief())
+            return lines
+        if selected == "send":
+            lines.append(self._format_send_thread_brief())
+            lines.append(self._format_coord_brief())
+            return lines
+        if selected == "stats":
+            lines.append(self._format_stream_stats())
+            return lines
+        lines.append(self._format_stream_focus())
+        return lines
+
+    def _print_stream_lines(self, mode: str):
+        for line in self._build_stream_lines(mode):
+            log(line)
 
     def _format_rwbase_host_diag(self):
         diag = self.api.core.get_rwbase_host_diag()
@@ -739,15 +850,43 @@ class CommandHandler:
         log(f"cpueaxh_ping ACK=0x{ack:X}, cpueaxh={cpueaxh_state}.", level)
 
     def handle_stream_stats(self):
-        log(self._format_stream_stats())
+        log("stream_stats is deprecated; use 'stream_log stats'.", "WARN")
+        self._print_stream_lines("all")
 
     def handle_stream_log(self, args):
+        action = "watch"
+        rest = list(args)
+        if rest:
+            head = rest[0].lower()
+            if head in ("on", "off", "ping", "stats", "watch", "all", "decode", "send"):
+                action = head
+                rest = rest[1:]
+
+        if action == "on":
+            self.handle_start_data_threads()
+            return
+        if action == "off":
+            self.handle_stop_data_threads()
+            return
+        if action == "ping":
+            self.handle_cpueaxh_ping()
+            return
+        if action == "stats":
+            self._print_stream_lines("all")
+            return
+
+        mode = action
+        if mode == "watch":
+            mode = "all"
+        if mode not in ("all", "decode", "send"):
+            mode = "all"
+
         interval = 1.0
-        if args:
+        if rest:
             try:
-                interval = float(args[0])
+                interval = float(rest[0])
             except ValueError:
-                log("Usage: stream_log [IntervalSec]", "ERROR")
+                log("Usage: stream_log [on/off/ping/stats/watch/all/decode/send] [IntervalSec]", "ERROR")
                 return
 
         if interval <= 0:
@@ -755,12 +894,12 @@ class CommandHandler:
             return
 
         log(
-            "Watching RWbase/RWVG streaming stats. "
-            "This is a passive stream view, not ping-pong polling; incoming [LOG] packets are printed automatically. Ctrl+C stops this watcher."
+            f"Watching stream mode={mode} "
+            "This is passive view; incoming [LOG] packets are still printed automatically. Ctrl+C stops this watcher."
         )
         try:
             while True:
-                log(self._format_stream_stats())
+                self._print_stream_lines(mode)
                 time.sleep(interval)
         except KeyboardInterrupt:
             log("stream_log stopped.")
@@ -769,7 +908,8 @@ class CommandHandler:
         action = args[0].lower() if args else "stats"
 
         if action == "stats":
-            log(self._format_rwbase_host_diag())
+            log("rwbase_host stats is deprecated; use 'stream_log stats'.", "WARN")
+            self._print_stream_lines("decode")
             return
 
         if action == "recent":
@@ -794,10 +934,10 @@ class CommandHandler:
                 log("IntervalSec must be > 0.", "ERROR")
                 return
 
-            log("Watching parsed RWbase host diagnostics. Ctrl+C stops this watcher.")
+            log("rwbase_host watch is deprecated; use 'stream_log watch [IntervalSec]'.", "WARN")
             try:
                 while True:
-                    log(self._format_rwbase_host_diag())
+                    self._print_stream_lines("decode")
                     time.sleep(interval)
             except KeyboardInterrupt:
                 log("rwbase_host watch stopped.")
@@ -806,28 +946,12 @@ class CommandHandler:
         log("Usage: rwbase_host [stats/watch/recent] [IntervalSec]", "ERROR")
 
     def handle_rwbase_stream(self, args):
-        if not args:
-            log("Usage: rwbase_stream <on/off/ping/stats/watch> [IntervalSec]", "ERROR")
-            return
-
-        action = args[0].lower()
-        rest = args[1:]
-
-        if action == "on":
-            self.handle_start_data_threads()
-        elif action == "off":
-            self.handle_stop_data_threads()
-        elif action == "ping":
-            self.handle_cpueaxh_ping()
-        elif action == "stats":
-            self.handle_stream_stats()
-        elif action == "watch":
-            self.handle_stream_log(rest)
-        else:
-            log("Usage: rwbase_stream <on/off/ping/stats/watch> [IntervalSec]", "ERROR")
+        log("rwbase_stream is deprecated; use 'stream_log ...'.", "WARN")
+        self.handle_stream_log(args)
 
     def handle_rwbase_data(self, args):
-        self.handle_rwbase_stream(args)
+        log("rwbase_data is deprecated; use 'stream_log ...'.", "WARN")
+        self.handle_stream_log(args)
 
     def handle_webradar(self, args):
         action = args[0].lower() if args else "status"
