@@ -14,6 +14,42 @@ VERBOSE_EXPECTING_LOG = os.getenv("DMA_VERBOSE_EXPECTING", "0") == "1"
 DEFAULT_PLAYER_TTL_SEC = float(os.getenv("DMA_WEBRADAR_PLAYER_TTL", "1.5"))
 
 
+def _safe_float(value, default=0.0):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(parsed):
+        return float(default)
+    return parsed
+
+
+def _safe_int(value, default=0):
+    return int(_safe_float(value, default))
+
+
+def _safe_pos_dict(pos):
+    pos = pos or {}
+    return {
+        "x": _safe_int(pos.get("x", 0.0)),
+        "y": _safe_int(pos.get("y", 0.0)),
+        "z": _safe_int(pos.get("z", 0.0)),
+    }
+
+
+def _safe_wire_float(value, default=0.0):
+    return coerce_float32(value, default=default, allow_non_finite=True)
+
+
+def _safe_wire_pos_dict(pos):
+    pos = pos or {}
+    return {
+        "x": _safe_wire_float(pos.get("x", 0.0)),
+        "y": _safe_wire_float(pos.get("y", 0.0)),
+        "z": _safe_wire_float(pos.get("z", 0.0)),
+    }
+
+
 class DMACore:
     DECODE_PATH_CATEGORIES = {
         "emu_runtime_init",
@@ -192,11 +228,11 @@ class DMACore:
                     "kind": "player",
                     "entity_id": entity_id,
                     "team_id": int(parsed.get("team_id", 0) or 0),
-                    "health": float(parsed.get("health", 0.0) or 0.0),
-                    "max_health": float(parsed.get("max_health", 0.0) or 0.0),
+                    "health": _safe_wire_float(parsed.get("health", 0.0)),
+                    "max_health": _safe_wire_float(parsed.get("max_health", 0.0)),
                     "distance": int(parsed.get("distance", 0) or 0),
                     "visible": bool(parsed.get("is_visible", False)),
-                    "pos": dict(parsed.get("pos") or {}),
+                    "pos": _safe_wire_pos_dict(parsed.get("pos") or {}),
                     "name": str(parsed.get("player_name") or ""),
                     "weapon": str(parsed.get("weapon_name") or ""),
                 })
@@ -266,6 +302,7 @@ class DMACore:
             self._purge_radar_stale_locked(now_ts)
             utils = dict(self.radar_latest_utils or {})
             players = [dict(player) for player in self.radar_players.values()]
+            utils_ts = float(self.radar_latest_utils_ts or 0.0)
 
         local_team_id = int(utils.get("local_team_id", 0) or 0)
         local_pos = utils.get("local_pos") or {}
@@ -275,16 +312,8 @@ class DMACore:
             "team_id": local_team_id,
             "camp_id": 0,
             "yaw": self._calculate_local_yaw(utils.get("matrix")),
-            "position": {
-                "x": int(float(local_pos.get("x", 0.0) or 0.0)),
-                "y": int(float(local_pos.get("y", 0.0) or 0.0)),
-                "z": int(float(local_pos.get("z", 0.0) or 0.0)),
-            },
-            "neck_position": {
-                "x": int(float(local_neck_pos.get("x", 0.0) or 0.0)),
-                "y": int(float(local_neck_pos.get("y", 0.0) or 0.0)),
-                "z": int(float(local_neck_pos.get("z", 0.0) or 0.0)),
-            },
+            "position": _safe_pos_dict(local_pos),
+            "neck_position": _safe_pos_dict(local_neck_pos),
         }
 
         entities = []
@@ -303,14 +332,10 @@ class DMACore:
                 "name": player_name if player_name else f"Player_{entity_id}",
                 "type": "player",
                 "team_id": int(player.get("team_id", 0) or 0),
-                "position": {
-                    "x": int(float(pos.get("x", 0.0) or 0.0)),
-                    "y": int(float(pos.get("y", 0.0) or 0.0)),
-                    "z": int(float(pos.get("z", 0.0) or 0.0)),
-                },
-                "orientation": float(player.get("direction", 0.0) or 0.0),
-                "health": float(player.get("health", 0.0) or 0.0),
-                "max_health": float(player.get("max_health", 0.0) or 0.0),
+                "position": _safe_pos_dict(pos),
+                "orientation": _safe_float(player.get("direction", 0.0)),
+                "health": _safe_float(player.get("health", 0.0)),
+                "max_health": _safe_float(player.get("max_health", 0.0)),
             }
             entities.append(entity)
 
@@ -318,6 +343,12 @@ class DMACore:
                 teammates.append(dict(entity))
 
         return {
+            "meta": {
+                "utils_present": bool(utils),
+                "utils_age_ms": max(0, int((now_ts - utils_ts) * 1000.0)) if utils_ts > 0.0 else -1,
+                "player_count": len(entities),
+                "teammate_count": len(teammates),
+            },
             "local_player": local_player,
             "entities": entities,
             "teammates": teammates,

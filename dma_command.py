@@ -1,11 +1,12 @@
 ﻿import datetime
 import json
+import math
 import os
 import struct
 import time
 
 import ue_memory
-from dma_protocol import CTRL_ACK_CPUEAXH_ONLINE, CTRL_ACK_HANDLED
+from dma_protocol import CTRL_ACK_CPUEAXH_ONLINE, CTRL_ACK_HANDLED, format_float32
 from sdk_helper import SDKLoader
 from ue_generator import SDKGenerator
 from ue_scanner import UEScanner
@@ -27,6 +28,24 @@ READABLE_PROTECTS = {
     0x40,  # PAGE_EXECUTE_READWRITE
     0x80,  # PAGE_EXECUTE_WRITECOPY
 }
+
+
+def safe_float(value, default=0.0):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(parsed):
+        return float(default)
+    return parsed
+
+
+def safe_int(value, default=0):
+    return int(safe_float(value, default))
+
+
+def safe_float_text(value, default=0.0):
+    return format_float32(value if value is not None else default)
 
 def log(msg, level="INFO"):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -96,6 +115,7 @@ class CommandHandler:
         self.api = api
         self.ctx = UEContext()
         self.web_radar = WebRadarService(self.api.core)
+        self._last_local_pos = None
         try:
             self.sdk = SDKLoader()
             log("SDK JSONs loaded successfully.", "SUCCESS")
@@ -253,30 +273,52 @@ class CommandHandler:
             f"zombie_last_ack={stats.get('zombie_last_ack')}"
         )
 
-    def _format_coord_brief(self):
+    def _format_coord_lines(self):
         snapshot = self.api.core.get_radar_snapshot() or {}
+        meta = snapshot.get("meta") or {}
         local = snapshot.get("local_player") or {}
         local_pos = local.get("position") or {}
         local_neck = local.get("neck_position") or {}
         entities = snapshot.get("entities") or []
+        local_tuple = (
+            safe_int(local_pos.get("x", 0)),
+            safe_int(local_pos.get("y", 0)),
+            safe_int(local_pos.get("z", 0)),
+        )
+        utils_age_ms = int(meta.get("utils_age_ms", -1) or -1)
+        state = "init"
+        if self._last_local_pos is not None:
+            state = "changed" if local_tuple != self._last_local_pos else "steady"
+        self._last_local_pos = local_tuple
+        if utils_age_ms >= 1500:
+            state += "/stale"
+
+        lines = [
+            "coord.local: "
+            f"pos=({local_tuple[0]},{local_tuple[1]},{local_tuple[2]}) "
+            f"neck=({safe_int(local_neck.get('x', 0))},{safe_int(local_neck.get('y', 0))},{safe_int(local_neck.get('z', 0))}) "
+            f"team={local.get('team_id', 0)} yaw={safe_int(local.get('yaw', 0.0))} "
+            f"utils_age_ms={utils_age_ms} state={state}"
+        ]
 
         target = entities[0] if entities else None
         if target is None:
-            return (
-                "coord: "
-                f"local=({local_pos.get('x', 0)},{local_pos.get('y', 0)},{local_pos.get('z', 0)}) "
-                f"neck=({local_neck.get('x', 0)},{local_neck.get('y', 0)},{local_neck.get('z', 0)}) "
-                f"players=0"
+            lines.append(
+                "coord.target: "
+                f"players=0 utils_present={1 if meta.get('utils_present', False) else 0}"
             )
+            return lines
 
         target_pos = target.get("position") or {}
-        return (
-            "coord: "
-            f"local=({local_pos.get('x', 0)},{local_pos.get('y', 0)},{local_pos.get('z', 0)}) "
-            f"target=({target_pos.get('x', 0)},{target_pos.get('y', 0)},{target_pos.get('z', 0)}) "
+        lines.append(
+            "coord.target: "
             f"players={len(entities)} "
-            f"team={target.get('team_id', 0)} hp={int(float(target.get('health', 0.0) or 0.0))}"
+            f"id={target.get('id', 'n/a')} "
+            f"team={target.get('team_id', 0)} "
+            f"hp={safe_int(target.get('health', 0.0))} "
+            f"pos=({safe_int(target_pos.get('x', 0))},{safe_int(target_pos.get('y', 0))},{safe_int(target_pos.get('z', 0))})"
         )
+        return lines
 
     def _format_decode_brief(self):
         diag = self.api.core.get_rwbase_host_diag()
@@ -317,32 +359,33 @@ class CommandHandler:
 
         return "decode_path: " + " ".join(parts)
 
-    def _format_send_thread_brief(self):
+    def _format_send_thread_lines(self):
         entries = []
         if hasattr(self.api.core, "get_send_thread_history"):
             entries = self.api.core.get_send_thread_history(limit=3) or []
 
         if not entries:
-            return "send_thread: n/a"
+            return ["send_thread: n/a"]
 
-        parts = []
-        for item in entries:
+        lines = []
+        for index, item in enumerate(entries, 1):
             pos = item.get("pos") or {}
-            parts.append(
-                f"{item.get('entity_id', 'n/a')}"
-                f"/t{item.get('team_id', 0)}"
-                f"/hp{int(float(item.get('health', 0.0) or 0.0))}"
-                f"/d{item.get('distance', 0)}"
-                f"/({int(float(pos.get('x', 0.0) or 0.0))},{int(float(pos.get('y', 0.0) or 0.0))},{int(float(pos.get('z', 0.0) or 0.0))})"
+            lines.append(
+                f"send[{index}]: "
+                f"id={item.get('entity_id', 'n/a')} "
+                f"team={item.get('team_id', 0)} "
+                f"hp={safe_float_text(item.get('health', 0.0))} "
+                f"dist={item.get('distance', 0)} "
+                f"pos=({safe_float_text(pos.get('x', 0.0))},{safe_float_text(pos.get('y', 0.0))},{safe_float_text(pos.get('z', 0.0))})"
             )
-        return "send_thread: " + " ; ".join(parts)
+        return lines
 
     def _format_stream_focus(self):
         return (
             f"{self._format_stream_stats()} | "
-            f"{self._format_coord_brief()} | "
+            f"{' || '.join(self._format_coord_lines())} | "
             f"{self._format_decode_brief()} | "
-            f"{self._format_send_thread_brief()}"
+            f"{' || '.join(self._format_send_thread_lines())}"
         )
 
     def _build_stream_lines(self, mode: str):
@@ -351,15 +394,15 @@ class CommandHandler:
         if selected in ("all", "watch"):
             lines.append(self._format_stream_stats())
             lines.append(self._format_decode_brief())
-            lines.append(self._format_send_thread_brief())
-            lines.append(self._format_coord_brief())
+            lines.extend(self._format_send_thread_lines())
+            lines.extend(self._format_coord_lines())
             return lines
         if selected == "decode":
             lines.append(self._format_decode_brief())
             return lines
         if selected == "send":
-            lines.append(self._format_send_thread_brief())
-            lines.append(self._format_coord_brief())
+            lines.extend(self._format_send_thread_lines())
+            lines.extend(self._format_coord_lines())
             return lines
         if selected == "stats":
             lines.append(self._format_stream_stats())

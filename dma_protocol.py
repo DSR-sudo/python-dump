@@ -1,4 +1,5 @@
 ﻿import base64
+import math
 import os
 import struct
 
@@ -42,6 +43,7 @@ RWVG_TYPED_SIZE_BY_KIND = {
 RWVG_UTILS_FMT = "<16f3Bi3f3fiQfB4f2i"
 RWVG_PLAYER_FMT = "<2f2i18s18s18s32s32sQ3f3ffiiB18fi"
 RWVG_ITEM_FMT = "<Q3fii32s18siii"
+FLOAT32_TEXT_SIG_DIGITS = 9
 
 # RWbase host-compat aggregate payload layout (base64 wrapped, raw UDP payload):
 # [HostUtilsStruct][SIZE_T playerCount][HostSendPlayerStruct * N][SIZE_T itemCount][HostSendItemsStruct * M]
@@ -105,36 +107,61 @@ def _decode_c_string(raw: bytes) -> str:
     return raw.decode("utf-8", errors="ignore").strip()
 
 
+def coerce_float32(value, default=0.0, allow_non_finite=True):
+    try:
+        parsed = struct.unpack("<f", struct.pack("<f", float(value)))[0]
+    except (TypeError, ValueError, struct.error):
+        parsed = struct.unpack("<f", struct.pack("<f", float(default)))[0]
+    if (not allow_non_finite) and (not math.isfinite(parsed)):
+        return struct.unpack("<f", struct.pack("<f", float(default)))[0]
+    return parsed
+
+
+def format_float32(value, sig_digits: int = FLOAT32_TEXT_SIG_DIGITS):
+    parsed = coerce_float32(value, default=0.0, allow_non_finite=True)
+    if math.isnan(parsed):
+        return "nan"
+    if math.isinf(parsed):
+        return "-inf" if parsed < 0.0 else "inf"
+    if parsed == 0.0:
+        return "-0" if math.copysign(1.0, parsed) < 0.0 else "0"
+
+    digits = int(sig_digits) if sig_digits else FLOAT32_TEXT_SIG_DIGITS
+    if digits < 1:
+        digits = FLOAT32_TEXT_SIG_DIGITS
+    return format(parsed, f".{digits}g")
+
+
 def parse_rwvg_utils_payload(payload: bytes):
     if not payload or len(payload) != RWVG_TYPED_SIZE_BY_KIND[RWVG_TYPE_UTILS]:
         return None
 
     data = struct.unpack(RWVG_UTILS_FMT, payload)
     return {
-        "matrix": [float(v) for v in data[0:16]],
+        "matrix": [coerce_float32(v) for v in data[0:16]],
         "fight_mode": bool(data[16]),
         "home_show": bool(data[17]),
         "aim_bot": bool(data[18]),
         "local_team_id": int(data[19]),
         "local_neck_pos": {
-            "x": float(data[20]),
-            "y": float(data[21]),
-            "z": float(data[22]),
+            "x": coerce_float32(data[20]),
+            "y": coerce_float32(data[21]),
+            "z": coerce_float32(data[22]),
         },
         "local_pos": {
-            "x": float(data[23]),
-            "y": float(data[24]),
-            "z": float(data[25]),
+            "x": coerce_float32(data[23]),
+            "y": coerce_float32(data[24]),
+            "z": coerce_float32(data[25]),
         },
         "local_weapon_id": int(data[26]),
         "get_data_ptr": int(data[27]),
-        "local_weapon_speed": float(data[28]),
+        "local_weapon_speed": coerce_float32(data[28]),
         "pre_should_draw": bool(data[29]),
         "map_info": {
-            "x": float(data[30]),
-            "y": float(data[31]),
-            "w": float(data[32]),
-            "h": float(data[33]),
+            "x": coerce_float32(data[30]),
+            "y": coerce_float32(data[31]),
+            "w": coerce_float32(data[32]),
+            "h": coerce_float32(data[33]),
             "map_x": int(data[34]),
             "map_y": int(data[35]),
         },
@@ -150,14 +177,14 @@ def parse_rwvg_player_payload(payload: bytes):
     bones = []
     for idx in range(0, len(bones_raw), 3):
         bones.append({
-            "x": float(bones_raw[idx]),
-            "y": float(bones_raw[idx + 1]),
-            "z": float(bones_raw[idx + 2]),
+            "x": coerce_float32(bones_raw[idx]),
+            "y": coerce_float32(bones_raw[idx + 1]),
+            "z": coerce_float32(bones_raw[idx + 2]),
         })
 
     return {
-        "health": float(data[0]),
-        "max_health": float(data[1]),
+        "health": coerce_float32(data[0]),
+        "max_health": coerce_float32(data[1]),
         "armor_head": int(data[2]),
         "armor_body": int(data[3]),
         "class_name": _decode_c_string(data[4]),
@@ -167,16 +194,16 @@ def parse_rwvg_player_payload(payload: bytes):
         "bot_name": _decode_c_string(data[8]),
         "entity_ptr": int(data[9]),
         "pos": {
-            "x": float(data[10]),
-            "y": float(data[11]),
-            "z": float(data[12]),
+            "x": coerce_float32(data[10]),
+            "y": coerce_float32(data[11]),
+            "z": coerce_float32(data[12]),
         },
         "prediction": {
-            "x": float(data[13]),
-            "y": float(data[14]),
-            "z": float(data[15]),
+            "x": coerce_float32(data[13]),
+            "y": coerce_float32(data[14]),
+            "z": coerce_float32(data[15]),
         },
-        "direction": float(data[16]),
+        "direction": coerce_float32(data[16]),
         "distance": int(data[35]),
         "team_id": int(data[36]),
         "is_visible": bool(data[37]),
@@ -193,9 +220,9 @@ def parse_rwvg_item_payload(payload: bytes):
     return {
         "dead_box_type": int(data[0]),
         "pos": {
-            "x": float(data[1]),
-            "y": float(data[2]),
-            "z": float(data[3]),
+            "x": coerce_float32(data[1]),
+            "y": coerce_float32(data[2]),
+            "z": coerce_float32(data[3]),
         },
         "item_type": int(data[4]),
         "distance": int(data[5]),
@@ -304,3 +331,5 @@ def pack_stop_data_threads_req():
 
 def pack_pingpong_req():
     return _pack_request(CMD_PINGPONG)
+
+
