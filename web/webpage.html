@@ -324,19 +324,46 @@
         }
     }
 
+    const LOG_COLUMN_WIDTHS = Object.freeze({
+        category: 20,
+        entityId: 14,
+        teamId: 3,
+        health: 4,
+        distance: 5,
+        visible: 1,
+        position: 7,
+        type: 12,
+        rcode: 10,
+    });
+
+    function alignText(value, width) {
+        const text = String(value ?? 'n/a');
+        if (text.length <= width) return text.padEnd(width, ' ');
+        if (width <= 1) return '…';
+        return `${text.slice(0, width - 1)}…`;
+    }
+
+    function alignNumber(value, width) {
+        const parsed = Number(value);
+        const text = Number.isFinite(parsed) ? Math.trunc(parsed).toString() : '0';
+        if (text.length <= width) return text.padStart(width, ' ');
+        return text.slice(-width);
+    }
+
     function formatDecodeLogLine(item) {
         const parsed = item && item.parsed ? item.parsed : {};
         const category = item && item.category ? item.category : 'decode';
+        const categoryTag = `[${alignText(category, LOG_COLUMN_WIDTHS.category)}]`;
         if (category === 'coord_decode_summary') {
-            return `[${category}] frame=${parsed.frame ?? 0} total=${parsed.total ?? 0} groups=${parsed.groups ?? 0} dropped=${parsed.dropped ?? 0}`;
+            return `${categoryTag} frame=${alignNumber(parsed.frame ?? 0, 6)} total=${alignNumber(parsed.total ?? 0, 6)} groups=${alignNumber(parsed.groups ?? 0, 4)} dropped=${alignNumber(parsed.dropped ?? 0, 4)}`;
         }
         if (category === 'coord_decode_group') {
-            return `[${category}] rank=${parsed.rank ?? 0} cnt=${parsed.count ?? 0} type=${parsed.type ?? 'n/a'} kind=${parsed.kind ?? 0} rcode=${parsed.rcode ?? 'n/a'} algo=${parsed.algo ?? 0}`;
+            return `${categoryTag} rank=${alignNumber(parsed.rank ?? 0, 3)} cnt=${alignNumber(parsed.count ?? 0, 4)} type=${alignText(parsed.type ?? 'n/a', LOG_COLUMN_WIDTHS.type)} kind=${alignNumber(parsed.kind ?? 0, 3)} rcode=${alignText(parsed.rcode ?? 'n/a', LOG_COLUMN_WIDTHS.rcode)} algo=${alignNumber(parsed.algo ?? 0, 3)}`;
         }
         if (item && item.raw) {
-            return `[${category}] ${item.raw}`;
+            return `${categoryTag} ${item.raw}`;
         }
-        return `[${category}] ${JSON.stringify(parsed)}`;
+        return `${categoryTag} ${JSON.stringify(parsed)}`;
     }
 
     function formatSendLogLine(item) {
@@ -347,7 +374,16 @@
         const x = Math.floor(Number(pos.x || 0));
         const y = Math.floor(Number(pos.y || 0));
         const z = Math.floor(Number(pos.z || 0));
-        return `id=${obj.entity_id || 'n/a'} team=${obj.team_id || 0} hp=${hp}/${maxHp} d=${obj.distance || 0} vis=${obj.visible ? 1 : 0} pos=(${x},${y},${z})`;
+        const id = alignText(obj.entity_id || 'n/a', LOG_COLUMN_WIDTHS.entityId);
+        const team = alignNumber(obj.team_id || 0, LOG_COLUMN_WIDTHS.teamId);
+        const hpText = alignNumber(hp, LOG_COLUMN_WIDTHS.health);
+        const maxHpText = alignNumber(maxHp, LOG_COLUMN_WIDTHS.health);
+        const distance = alignNumber(obj.distance || 0, LOG_COLUMN_WIDTHS.distance);
+        const vis = alignNumber(obj.visible ? 1 : 0, LOG_COLUMN_WIDTHS.visible);
+        const px = alignNumber(x, LOG_COLUMN_WIDTHS.position);
+        const py = alignNumber(y, LOG_COLUMN_WIDTHS.position);
+        const pz = alignNumber(z, LOG_COLUMN_WIDTHS.position);
+        return `id=${id} team=${team} hp=${hpText}/${maxHpText} d=${distance} vis=${vis} pos=(${px},${py},${pz})`;
     }
 
     async function updateLogHistory() {
