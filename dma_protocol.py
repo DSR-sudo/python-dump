@@ -19,6 +19,7 @@ CMD_ENUM_USER_MODULES = 5
 CMD_START_DATA_THREADS = 13
 CMD_STOP_DATA_THREADS = 14
 CMD_PINGPONG = 15
+CMD_FIND_USER_PATTERN = 16
 
 CTRL_ACK_HANDLED = 1 << 0
 CTRL_ACK_CPUEAXH_ONLINE = 1 << 1
@@ -66,6 +67,9 @@ ZOMBIE_ACK_OK = 1
 # #pragma pack(pop)
 PACKET_DATA_CAP = 1024
 PACKET_FMT = "<IBQQI1024s"
+PATTERN_SECTION_NAME_CAP = 16
+PATTERN_BYTES_CAP = 256
+FIND_USER_PATTERN_WIRE_FMT = f"<{PATTERN_SECTION_NAME_CAP}sHH{PATTERN_BYTES_CAP}s{PATTERN_BYTES_CAP}s"
 
 
 def parse_packet_header(data: bytes):
@@ -331,5 +335,31 @@ def pack_stop_data_threads_req():
 
 def pack_pingpong_req():
     return _pack_request(CMD_PINGPONG)
+
+
+def pack_find_user_pattern_req(pid, section_name: str, pattern: bytes, mask: str):
+    pattern = bytes(pattern or b"")
+    mask_text = (mask or "")
+    section_text = "" if section_name in (None, "", "-") else str(section_name)
+    if not pattern or len(pattern) > PATTERN_BYTES_CAP:
+        raise ValueError(f"pattern length must be 1..{PATTERN_BYTES_CAP}")
+    if mask_text and len(mask_text) != len(pattern):
+        raise ValueError("mask length must equal pattern length")
+    if len(section_text.encode("ascii", errors="ignore")) >= PATTERN_SECTION_NAME_CAP:
+        raise ValueError(f"section name too long (max {PATTERN_SECTION_NAME_CAP - 1} ascii chars)")
+
+    section_bytes = section_text.encode("ascii", errors="ignore")[:PATTERN_SECTION_NAME_CAP - 1]
+    section_bytes = section_bytes.ljust(PATTERN_SECTION_NAME_CAP, b"\x00")
+    pattern_bytes = pattern.ljust(PATTERN_BYTES_CAP, b"\x00")
+    mask_bytes = mask_text.encode("ascii", errors="ignore")[:PATTERN_BYTES_CAP].ljust(PATTERN_BYTES_CAP, b"\x00")
+    wire = struct.pack(
+        FIND_USER_PATTERN_WIRE_FMT,
+        section_bytes,
+        len(pattern),
+        len(mask_text),
+        pattern_bytes,
+        mask_bytes,
+    )
+    return _pack_request(CMD_FIND_USER_PATTERN, value=pid, size=len(wire), data=wire)
 
 

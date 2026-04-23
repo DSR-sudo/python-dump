@@ -19,6 +19,7 @@ VERBOSE_EXPECTING_LOG = os.getenv("DMA_VERBOSE_EXPECTING", "0") == "1"
 DEFAULT_PLAYER_TTL_SEC = float(os.getenv("DMA_WEBRADAR_PLAYER_TTL", "1.5"))
 RWBASE_DECRYPT_LOG_ENABLED = os.getenv("RWBASE_DECRYPT_LOG", "0") == "1"
 RWBASE_DECRYPT_LOG_PREFIX = "[CoordDecryptDebug][B64] "
+COORD_RAW_LOG_PREFIX = "[COORDRAW][SEND] "
 RWBASE_DECRYPT_QUEUE_CAPACITY = 1024
 RWBASE_DECRYPT_FALLBACK_PATH = os.getenv(
     "RWBASE_DECRYPT_FALLBACK_PATH",
@@ -143,6 +144,13 @@ class DMACore:
             "recent": [],
         }
         self.decrypt_log_queue = queue.Queue(maxsize=RWBASE_DECRYPT_QUEUE_CAPACITY)
+        self.coord_raw_lock = threading.Lock()
+        self.coord_raw_diag = {
+            "stats": {
+                "total": 0,
+            },
+            "recent": [],
+        }
         self.trace_lock = threading.Lock()
         self.send_thread_history = []
         self.trace_history_limit = 512
@@ -483,9 +491,41 @@ class DMACore:
             })
         return True
 
+    def _try_capture_coord_raw_log(self, msg: str):
+        if not msg.startswith(COORD_RAW_LOG_PREFIX):
+            return False
+
+        body = msg[len(COORD_RAW_LOG_PREFIX):].strip()
+        fields = {}
+        for token in body.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            fields[key] = value
+
+        event = {
+            "pid": fields.get("pid", "n/a"),
+            "entity": fields.get("entity", "n/a"),
+            "identity": fields.get("identity", "n/a"),
+            "handler": fields.get("handler", "n/a"),
+            "flags": fields.get("flags", "n/a"),
+            "raw": fields.get("raw", ""),
+            "raw_text": body,
+            "ts_utc": _utc_iso8601_now(),
+        }
+        with self.coord_raw_lock:
+            self.coord_raw_diag["stats"]["total"] += 1
+            recent = self.coord_raw_diag["recent"]
+            recent.append(event)
+            if len(recent) > self.trace_history_limit:
+                del recent[:-self.trace_history_limit]
+        return True
+
     def _try_capture_rwbase_host_log(self, msg: str):
         if not msg:
             return False
+        if self._try_capture_coord_raw_log(msg):
+            return True
         return self._try_capture_rwbase_decrypt_log(msg)
 
     def get_rwbase_decrypt_diag(self):
@@ -495,6 +535,13 @@ class DMACore:
                 "stats": dict(self.decrypt_diag["stats"]),
                 "fail_kinds": dict(self.decrypt_diag["fail_kinds"]),
                 "recent": list(self.decrypt_diag["recent"]),
+            }
+
+    def get_coord_raw_diag(self):
+        with self.coord_raw_lock:
+            return {
+                "stats": dict(self.coord_raw_diag["stats"]),
+                "recent": list(self.coord_raw_diag["recent"]),
             }
 
     def get_send_thread_history(self, limit: int = 50):

@@ -85,3 +85,7 @@ class DMAApi:
     def ping_cpueaxh(self):
         payload = pack_pingpong_req()
         return self._request_u64(payload, retries=1)
+
+    def find_user_pattern(self, pid, section_name, pattern: bytes, mask: str):
+        payload = pack_find_user_pattern_req(pid, section_name, pattern, mask)
+        return self._request_u64(payload, retries=0, timeout=5.0)

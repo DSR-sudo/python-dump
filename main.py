@@ -46,6 +46,8 @@ def main():
                 handler.handle_dump_sdk(args)
             elif cmd == "modules":
                 handler.handle_modules(args)
+            elif cmd == "vt_fpat":
+                handler.handle_vt_fpat(args)
             elif cmd == "start_data_threads":
                 handler.handle_start_data_threads()
             elif cmd == "stop_data_threads":
@@ -58,6 +60,8 @@ def main():
                 handler.handle_stream_log(args)
             elif cmd == "rwbase_decrypt":
                 handler.handle_rwbase_decrypt(args)
+            elif cmd == "coord_raw":
+                handler.handle_coord_raw(args)
             elif cmd == "rwbase_stream":
                 handler.handle_rwbase_stream(args)
             elif cmd == "rwbase_data":

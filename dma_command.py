@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 import struct
 import time
 
@@ -79,7 +80,9 @@ def print_detailed_help():
         ("attach <PID>", "绑定目标进程并缓存 CR3。"),
         ("cr3 <PID>", "查询进程 CR3（用户/内核）与基址。"),
         ("modules <PID>", "按 CR3 路径枚举用户模块。"),
-        ("stream_log [on/off/ping/stats/watch/all/send/decrypt] [IntervalSec]", "统一流式入口：on/off/ping 控制；watch/all 看当前主链路；send 仅看发送线程人物数据；decrypt 仅看结构化解密日志。"),
+        ("vt_fpat [Section|-] <PatternBytes...>", "基于已 attach 的 PID，在目标进程主模块/可选节中匹配单个特征码并返回首个命中地址。"),
+        ("stream_log [on/off/ping/stats/watch/all/send/decrypt/raw] [IntervalSec]", "统一流式入口：on/off/ping 控制；watch/all 看当前主链路；send 仅看发送线程人物数据；decrypt 仅看结构化解密日志；raw 仅看 RAW 原始密文日志。"),
+        ("coord_raw [stats/recent/watch] [IntervalSec]", "查看 RWbase 发送的 RAW 原始密文日志。"),
         ("rwbase_decrypt [stats/recent/watch] [IntervalSec]", "查看 RWbase-CPUEAXH 结构化解密调试日志（需 RWBASE_DECRYPT_LOG=1）。"),
         ("webradar <start/stop/status> [Port]", "启动/停止/查看网页雷达服务；token 写入 web/pwd.txt。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
@@ -123,6 +126,29 @@ class CommandHandler:
         except Exception as e:
             self.sdk = None
             log(f"Failed to load SDK JSONs: {e}", "WARN")
+
+    def _parse_signature_pattern(self, pattern_text):
+        cleaned = pattern_text.replace("`", " ").replace(",", " " ).strip()
+        if not cleaned:
+            raise ValueError("empty pattern")
+
+        tokens = [token for token in re.split(r"\s+", cleaned) if token]
+        pattern = bytearray()
+        mask = []
+        for token in tokens:
+            upper = token.upper()
+            if upper in ("?", "??"):
+                pattern.append(0)
+                mask.append("?")
+                continue
+            if len(upper) != 2 or any(ch not in "0123456789ABCDEF" for ch in upper):
+                raise ValueError(f"invalid byte token: {token}")
+            pattern.append(int(upper, 16))
+            mask.append("x")
+
+        if not pattern:
+            raise ValueError("empty pattern")
+        return bytes(pattern), "".join(mask)
 
     def _is_readable_region(self, protect: int) -> bool:
         base = protect & 0xFF
@@ -380,11 +406,34 @@ class CommandHandler:
             )
         return lines
 
+    def _format_coord_raw_lines(self):
+        if not hasattr(self.api.core, "get_coord_raw_diag"):
+            return ["coord_raw: unsupported"]
+
+        diag = self.api.core.get_coord_raw_diag() or {}
+        stats = diag.get("stats") or {}
+        recent = diag.get("recent") or []
+        lines = [f"coord_raw: total={stats.get('total', 0)}"]
+        if recent:
+            item = recent[-1]
+            lines.append(
+                "coord_raw.last: "
+                f"ts={item.get('ts_utc', 'n/a')} "
+                f"pid={item.get('pid', 'n/a')} "
+                f"entity={item.get('entity', 'n/a')} "
+                f"identity={item.get('identity', 'n/a')} "
+                f"handler={item.get('handler', 'n/a')} "
+                f"flags={item.get('flags', 'n/a')} "
+                f"raw={item.get('raw', '')}"
+            )
+        return lines
+
     def _format_stream_focus(self):
         return (
             f"{self._format_stream_stats()} | "
             f"{' || '.join(self._format_coord_lines())} | "
             f"{' || '.join(self._format_decrypt_lines())} | "
+            f"{' || '.join(self._format_coord_raw_lines())} | "
             f"{' || '.join(self._format_send_thread_lines())}"
         )
 
@@ -394,6 +443,7 @@ class CommandHandler:
         if selected in ("all", "watch"):
             lines.append(self._format_stream_stats())
             lines.extend(self._format_decrypt_lines())
+            lines.extend(self._format_coord_raw_lines())
             lines.extend(self._format_send_thread_lines())
             lines.extend(self._format_coord_lines())
             return lines
@@ -403,6 +453,9 @@ class CommandHandler:
             return lines
         if selected == "decrypt":
             lines.extend(self._format_decrypt_lines())
+            return lines
+        if selected == "raw":
+            lines.extend(self._format_coord_raw_lines())
             return lines
         if selected == "stats":
             lines.append(self._format_stream_stats())
@@ -513,6 +566,48 @@ class CommandHandler:
             log("Command sent. Check [LOG] for module stream.", "SUCCESS")
         except ValueError:
             log("PID must be a number.", "ERROR")
+
+    def handle_vt_fpat(self, args):
+        if self.api.cached_pid == 0:
+            log("Run 'attach <PID>' first.", "ERROR")
+            return
+        if not args:
+            log("Usage: vt_fpat [Section|-] <PatternBytes...>", "ERROR")
+            return
+
+        section_name = ""
+        pattern_index = 0
+        if args[0] == "-" or args[0].startswith("."):
+            section_name = "" if args[0] == "-" else args[0]
+            pattern_index = 1
+        if len(args) <= pattern_index:
+            log("Usage: vt_fpat [Section|-] <PatternBytes...>", "ERROR")
+            return
+
+        pattern_text = " ".join(args[pattern_index:])
+        try:
+            pattern, mask = self._parse_signature_pattern(pattern_text)
+        except ValueError as exc:
+            log(f"Pattern parse failed: {exc}", "ERROR")
+            return
+
+        result = self.api.find_user_pattern(self.api.cached_pid, section_name, pattern, mask)
+        if result is None:
+            log("vt_fpat failed: no response.", "ERROR")
+            return
+
+        scope = section_name if section_name else "<module>"
+        if result == 0:
+            log(
+                f"Pattern not found. pid={self.api.cached_pid} scope={scope} len={len(pattern)}",
+                "WARN",
+            )
+            return
+
+        log(
+            f"Pattern hit. pid={self.api.cached_pid} scope={scope} len={len(pattern)} addr=0x{result:X}",
+            "SUCCESS",
+        )
 
     def handle_regions(self, args):
         if not args:
@@ -814,7 +909,7 @@ class CommandHandler:
         rest = list(args)
         if rest:
             head = rest[0].lower()
-            if head in ("on", "off", "ping", "stats", "watch", "all", "send", "decrypt"):
+            if head in ("on", "off", "ping", "stats", "watch", "all", "send", "decrypt", "raw"):
                 action = head
                 rest = rest[1:]
 
@@ -834,7 +929,7 @@ class CommandHandler:
         mode = action
         if mode == "watch":
             mode = "all"
-        if mode not in ("all", "send", "decrypt"):
+        if mode not in ("all", "send", "decrypt", "raw"):
             mode = "all"
 
         interval = 1.0
@@ -842,7 +937,7 @@ class CommandHandler:
             try:
                 interval = float(rest[0])
             except ValueError:
-                log("Usage: stream_log [on/off/ping/stats/watch/all/send/decrypt] [IntervalSec]", "ERROR")
+                log("Usage: stream_log [on/off/ping/stats/watch/all/send/decrypt/raw] [IntervalSec]", "ERROR")
                 return
 
         if interval <= 0:
@@ -905,6 +1000,49 @@ class CommandHandler:
             return
 
         log("Usage: rwbase_decrypt [stats/recent/watch] [IntervalSec]", "ERROR")
+
+    def handle_coord_raw(self, args):
+        if not hasattr(self.api.core, "get_coord_raw_diag"):
+            log("coord_raw is unsupported.", "ERROR")
+            return
+
+        action = args[0].lower() if args else "stats"
+        if action == "stats":
+            for line in self._format_coord_raw_lines():
+                log(line)
+            return
+
+        if action == "recent":
+            diag = self.api.core.get_coord_raw_diag() or {}
+            recent = diag.get("recent", [])
+            if not recent:
+                log("No coord raw logs captured yet.", "WARN")
+                return
+            for item in recent[-10:]:
+                log(item.get("raw_text", ""))
+            return
+
+        if action == "watch":
+            interval = 1.0
+            if len(args) >= 2:
+                try:
+                    interval = float(args[1])
+                except ValueError:
+                    log("Usage: coord_raw [stats/recent/watch] [IntervalSec]", "ERROR")
+                    return
+            if interval <= 0:
+                log("IntervalSec must be > 0.", "ERROR")
+                return
+            try:
+                while True:
+                    for line in self._format_coord_raw_lines():
+                        log(line)
+                    time.sleep(interval)
+            except KeyboardInterrupt:
+                log("coord_raw watch stopped.")
+            return
+
+        log("Usage: coord_raw [stats/recent/watch] [IntervalSec]", "ERROR")
 
     def handle_rwbase_stream(self, args):
         log("rwbase_stream is deprecated; use 'stream_log ...'.", "WARN")
