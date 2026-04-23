@@ -180,13 +180,13 @@ refresh();
             except Exception:
                 stats = {}
 
-        decode_logs = []
+        decrypt_logs = []
         send_logs = []
-        if hasattr(self.core, "get_decode_path_history"):
+        if hasattr(self.core, "get_rwbase_decrypt_diag"):
             try:
-                decode_logs = self.core.get_decode_path_history(limit=120) or []
+                decrypt_logs = (self.core.get_rwbase_decrypt_diag() or {}).get("recent", [])[-120:]
             except Exception:
-                decode_logs = []
+                decrypt_logs = []
         if hasattr(self.core, "get_send_thread_history"):
             try:
                 send_logs = self.core.get_send_thread_history(limit=120) or []
@@ -207,7 +207,7 @@ refresh();
             "stream_stats": stats,
             "snapshot": snapshot,
             "logs": {
-                "decode_path": decode_logs,
+                "decrypt": decrypt_logs,
                 "send_thread_players": send_logs,
             },
         }

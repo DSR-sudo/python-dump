@@ -1,9 +1,14 @@
+import base64
+import datetime
+import json
+import logging
 import socket
 import threading
 import time
 import os
 import re
 import math
+import queue
 from dma_protocol import *
 
 DEFAULT_EXPECTED_TRANSFER_BPS = 8 * 1024 * 1024  # 8 MB/s conservative baseline.
@@ -12,6 +17,19 @@ DEFAULT_IDLE_TIMEOUT_SEC = 2.5
 WAIT_SLICE_SEC = 0.2
 VERBOSE_EXPECTING_LOG = os.getenv("DMA_VERBOSE_EXPECTING", "0") == "1"
 DEFAULT_PLAYER_TTL_SEC = float(os.getenv("DMA_WEBRADAR_PLAYER_TTL", "1.5"))
+RWBASE_DECRYPT_LOG_ENABLED = os.getenv("RWBASE_DECRYPT_LOG", "0") == "1"
+RWBASE_DECRYPT_LOG_PREFIX = "[CoordDecryptDebug][B64] "
+RWBASE_DECRYPT_QUEUE_CAPACITY = 1024
+RWBASE_DECRYPT_FALLBACK_PATH = os.getenv(
+    "RWBASE_DECRYPT_FALLBACK_PATH",
+    "/var/log/rwbase/decrypt_fallback.log",
+)
+RWBASE_DECRYPT_FALLBACK_MAX_BYTES = 100 * 1024 * 1024
+RWBASE_DECRYPT_FALLBACK_RETENTION_DAYS = 7
+
+rwbase_decrypt_logger = logging.getLogger("rwbase_decrypt")
+rwbase_decrypt_logger.addHandler(logging.NullHandler())
+rwbase_decrypt_logger.setLevel(logging.DEBUG if RWBASE_DECRYPT_LOG_ENABLED else logging.CRITICAL)
 
 
 def _safe_float(value, default=0.0):
@@ -50,16 +68,11 @@ def _safe_wire_pos_dict(pos):
     }
 
 
-class DMACore:
-    DECODE_PATH_CATEGORIES = {
-        "emu_runtime_init",
-        "emu_runtime_exec_fail",
-        "emu_bridge_last",
-        "emu_call_last",
-        "coord_decode_summary",
-        "coord_decode_group",
-    }
+def _utc_iso8601_now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
+
+class DMACore:
     MODULE_LOG_RE = re.compile(
         r"^\[User\]\s+Base:\s+0x([0-9A-Fa-f]+)\s+\|\s+Size:\s+0x([0-9A-Fa-f]+)\s+\|\s+Name:\s+(.+)$"
     )
@@ -69,34 +82,6 @@ class DMACore:
     REGION_DONE_RE = re.compile(
         r"^\[UserRegion\]\s+Done\s+PID=([0-9A-Fa-fx]+)\s+Count=(\d+)$"
     )
-    TEST_OFFSETS_RE = re.compile(
-        r"^\[GameCore\]\[Test\]\[Offsets\]\s+uworld=(0x[0-9A-Fa-f]+)\s+fnames=(0x[0-9A-Fa-f]+)\s+lpp=(0x[0-9A-Fa-f]+)\s+pc=0x([0-9A-Fa-f]+)\s+pawn=0x([0-9A-Fa-f]+)\s+mesh=0x([0-9A-Fa-f]+)\s+bone=0x([0-9A-Fa-f]+)\s+c2w=0x([0-9A-Fa-f]+)\s+ps=0x([0-9A-Fa-f]+)\s+team=0x([0-9A-Fa-f]+)$"
-    )
-    TRACK_READY_RE = re.compile(
-        r"^\[GameCore\]\[Track\]\s+target ready pid=(0x[0-9A-Fa-f]+)\s+old=(0x[0-9A-Fa-f]+)\s+ucr3=(0x[0-9A-Fa-f]+)\s+kcr3=(0x[0-9A-Fa-f]+)\s+base=(0x[0-9A-Fa-f]+)\s+net=(\w+)$"
-    )
-    TEST_CHAIN_RE = re.compile(
-        r"^\[GameCore\]\[Test\]\[Chain\]\s+uworld=(0x[0-9A-Fa-f]+)\s+fnames=(0x[0-9A-Fa-f]+)\s+lpp=(0x[0-9A-Fa-f]+)\s+pc=(0x[0-9A-Fa-f]+)\s+pawn=(0x[0-9A-Fa-f]+)\s+ps=(0x[0-9A-Fa-f]+)\s+team=(-?\d+)\s+mesh=(0x[0-9A-Fa-f]+)\s+ack=0x([0-9A-Fa-f]+)$"
-    )
-    EMU_RUNTIME_INIT_RE = re.compile(
-        r"^\[Emu\]\[Runtime\]\s+initialize status=0x([0-9A-Fa-f]+)\s+ready=(\d+)$"
-    )
-    EMU_RUNTIME_EXEC_FAIL_RE = re.compile(
-        r"^\[Emu\]\[Runtime\]\s+execute-fail status=0x([0-9A-Fa-f]+)\s+exit=(\d+)\s+cpueaxh=(\d+)\s+exc=(\d+)\s+rip=(0x[0-9A-Fa-f]+)\s+cr3=(0x[0-9A-Fa-f]+)$"
-    )
-    EMU_BRIDGE_RE = re.compile(
-        r"^\[Emu\]\[Bridge\]\s+(dispatch-fail|guest-fail|guest-ok)\s+(.+)$"
-    )
-    EMU_CALL_RE = re.compile(
-        r"^\[Emu\]\[Call\]\s+(fail|ok)\s+(.+)$"
-    )
-    COORD_DECRYPT_FAIL_SUMMARY_RE = re.compile(
-        r"^\[CoordDecrypt\]\s+text-emu fail agg frame=(\d+)\s+total=(\d+)\s+groups=(\d+)\s+dropped=(\d+)$"
-    )
-    COORD_DECRYPT_FAIL_GROUP_RE = re.compile(
-        r"^\[CoordDecrypt\]\s+text-emu fail agg#(\d+)\s+cnt=(\d+)\s+type=(\w+)\s+strategy=(\w+)\s+algo=(\d+)\s+kind=(\d+)\s+source=(\w+)\s+confidence=(\w+)\s+rcode=([^(]+)\((\d+)\)\s+last_entry=0x([0-9A-Fa-f]+)\s+pid=0x([0-9A-Fa-f]+)\s+cr3=0x([0-9A-Fa-f]+)$"
-    )
-
     def __init__(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -142,22 +127,24 @@ class DMACore:
         self.region_entries = []
         self.region_enum_done = False
         self.region_enum_count = 0
-        self.host_lock = threading.Lock()
-        self.host_diag = {
-            "offsets": None,
-            "track_ready": None,
-            "chain": None,
-            "emu_runtime_init": None,
-            "emu_runtime_exec_fail": None,
-            "emu_bridge_last": None,
-            "emu_call_last": None,
-            "coord_decode_summary": None,
-            "coord_decode_groups": [],
-            "recent_logs": [],
+        self.decrypt_lock = threading.Lock()
+        self.decrypt_diag = {
+            "enabled": RWBASE_DECRYPT_LOG_ENABLED,
+            "stats": {
+                "total": 0,
+                "success": 0,
+                "fail": 0,
+                "queue_dropped": 0,
+                "decode_errors": 0,
+                "worker_errors": 0,
+                "last_perf_us": 0.0,
+            },
+            "fail_kinds": {},
+            "recent": [],
         }
+        self.decrypt_log_queue = queue.Queue(maxsize=RWBASE_DECRYPT_QUEUE_CAPACITY)
         self.trace_lock = threading.Lock()
         self.send_thread_history = []
-        self.decode_path_history = []
         self.trace_history_limit = 512
         self.radar_lock = threading.Lock()
         self.radar_latest_utils = None
@@ -173,6 +160,8 @@ class DMACore:
 
         threading.Thread(target=self._receiver_loop, daemon=True).start()
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+        if RWBASE_DECRYPT_LOG_ENABLED:
+            threading.Thread(target=self._decrypt_log_worker, daemon=True).start()
 
     def _emit_console_line(self, line: str, defer_while_input: bool = True):
         if not line:
@@ -368,16 +357,6 @@ class DMACore:
     def get_stream_stats(self):
         return dict(self.rwvg_stats)
 
-    def _append_host_log(self, category: str, raw: str, parsed: dict):
-        with self.host_lock:
-            self.host_diag[category] = parsed
-            recent = self.host_diag["recent_logs"]
-            recent.append({"category": category, "raw": raw, "parsed": parsed})
-            if len(recent) > self.trace_history_limit:
-                del recent[:-self.trace_history_limit]
-        if category in self.DECODE_PATH_CATEGORIES:
-            self._append_decode_path_log(category, raw, parsed)
-
     def _append_send_thread_log(self, item: dict):
         if not item:
             return
@@ -386,186 +365,142 @@ class DMACore:
             if len(self.send_thread_history) > self.trace_history_limit:
                 del self.send_thread_history[:-self.trace_history_limit]
 
-    def _append_decode_path_log(self, category: str, raw: str, parsed: dict):
-        with self.trace_lock:
-            self.decode_path_history.append({
-                "ts": time.monotonic(),
-                "category": category,
-                "raw": raw,
-                "parsed": parsed,
+    def _rotate_decrypt_fallback_if_needed(self):
+        path = RWBASE_DECRYPT_FALLBACK_PATH
+        if not path:
+            return
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        if os.path.exists(path) and os.path.getsize(path) >= RWBASE_DECRYPT_FALLBACK_MAX_BYTES:
+            rotated = f"{path}.{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+            os.replace(path, rotated)
+
+        cutoff = time.time() - (RWBASE_DECRYPT_FALLBACK_RETENTION_DAYS * 86400)
+        prefix = os.path.basename(path) + "."
+        for name in os.listdir(directory or "."):
+            full = os.path.join(directory, name) if directory else name
+            if not name.startswith(prefix):
+                continue
+            try:
+                if os.path.getmtime(full) < cutoff:
+                    os.remove(full)
+            except OSError:
+                continue
+
+    def _write_decrypt_fallback(self, payload: dict):
+        try:
+            self._rotate_decrypt_fallback_if_needed()
+            with open(RWBASE_DECRYPT_FALLBACK_PATH, "a", encoding="utf-8") as fp:
+                fp.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+        except OSError:
+            pass
+
+    def _record_decrypt_diag(self, event: dict, perf_us: float):
+        status = str(event.get("status") or "").lower()
+        fail_kind = str(event.get("fail_kind") or "")
+        compact = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        if rwbase_decrypt_logger.isEnabledFor(logging.DEBUG):
+            rwbase_decrypt_logger.debug(compact)
+
+        with self.decrypt_lock:
+            stats = self.decrypt_diag["stats"]
+            stats["total"] += 1
+            if status == "success":
+                stats["success"] += 1
+            elif status == "fail":
+                stats["fail"] += 1
+            stats["last_perf_us"] = perf_us
+            if fail_kind:
+                fail_kinds = self.decrypt_diag["fail_kinds"]
+                fail_kinds[fail_kind] = int(fail_kinds.get(fail_kind, 0)) + 1
+            recent = self.decrypt_diag["recent"]
+            recent.append({
+                "ts_utc": event.get("ts_utc"),
+                "stage": event.get("stage"),
+                "status": event.get("status"),
+                "entity": event.get("entity"),
+                "fail_kind": event.get("fail_kind"),
+                "perf_us": perf_us,
+                "raw": compact,
             })
-            if len(self.decode_path_history) > self.trace_history_limit:
-                del self.decode_path_history[:-self.trace_history_limit]
+            if len(recent) > self.trace_history_limit:
+                del recent[:-self.trace_history_limit]
+
+    def _decrypt_log_worker(self):
+        while self.is_running:
+            try:
+                event = self.decrypt_log_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            perf_begin = time.perf_counter()
+            try:
+                self._record_decrypt_diag(event, (time.perf_counter() - perf_begin) * 1_000_000.0)
+            except Exception as exc:
+                with self.decrypt_lock:
+                    self.decrypt_diag["stats"]["worker_errors"] += 1
+                self._write_decrypt_fallback({
+                    "ts_utc": _utc_iso8601_now(),
+                    "reason": "worker_error",
+                    "error": str(exc),
+                    "event": event,
+                })
+
+    def _try_capture_rwbase_decrypt_log(self, msg: str):
+        if not msg.startswith(RWBASE_DECRYPT_LOG_PREFIX):
+            return False
+        if not RWBASE_DECRYPT_LOG_ENABLED:
+            return True
+
+        perf_begin = time.perf_counter()
+        encoded = msg[len(RWBASE_DECRYPT_LOG_PREFIX):].strip()
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+            event = json.loads(decoded.decode("utf-8"))
+            event["_recv_ts_utc"] = _utc_iso8601_now()
+            event["_ingest_perf_us"] = (time.perf_counter() - perf_begin) * 1_000_000.0
+        except Exception as exc:
+            with self.decrypt_lock:
+                self.decrypt_diag["stats"]["decode_errors"] += 1
+            self._write_decrypt_fallback({
+                "ts_utc": _utc_iso8601_now(),
+                "reason": "decode_error",
+                "error": str(exc),
+                "raw": msg,
+            })
+            return True
+
+        try:
+            self.decrypt_log_queue.put_nowait(event)
+        except queue.Full:
+            with self.decrypt_lock:
+                self.decrypt_diag["stats"]["queue_dropped"] += 1
+            self._write_decrypt_fallback({
+                "ts_utc": _utc_iso8601_now(),
+                "reason": "queue_full",
+                "event": event,
+            })
+        return True
 
     def _try_capture_rwbase_host_log(self, msg: str):
         if not msg:
             return False
+        return self._try_capture_rwbase_decrypt_log(msg)
 
-        match = self.TEST_OFFSETS_RE.match(msg)
-        if match:
-            parsed = {
-                "uworld": int(match.group(1), 16),
-                "fnames": int(match.group(2), 16),
-                "local_player_ptr": int(match.group(3), 16),
-                "player_controller_offset": int(match.group(4), 16),
-                "acknowledged_pawn_offset": int(match.group(5), 16),
-                "mesh_offset": int(match.group(6), 16),
-                "bone_array_offset": int(match.group(7), 16),
-                "component_to_world_offset": int(match.group(8), 16),
-                "player_state_offset": int(match.group(9), 16),
-                "team_offset": int(match.group(10), 16),
-            }
-            self._append_host_log("offsets", msg, parsed)
-            return True
-
-        match = self.TRACK_READY_RE.match(msg)
-        if match:
-            parsed = {
-                "pid": int(match.group(1), 16),
-                "old_pid": int(match.group(2), 16),
-                "user_cr3": int(match.group(3), 16),
-                "kernel_cr3": int(match.group(4), 16),
-                "base": int(match.group(5), 16),
-                "network": match.group(6),
-            }
-            self._append_host_log("track_ready", msg, parsed)
-            return True
-
-        match = self.TEST_CHAIN_RE.match(msg)
-        if match:
-            parsed = {
-                "uworld": int(match.group(1), 16),
-                "fnames": int(match.group(2), 16),
-                "local_player_ptr": int(match.group(3), 16),
-                "player_controller": int(match.group(4), 16),
-                "pawn": int(match.group(5), 16),
-                "player_state": int(match.group(6), 16),
-                "team_id": int(match.group(7)),
-                "mesh": int(match.group(8), 16),
-                "acknowledged_pawn_offset": int(match.group(9), 16),
-            }
-            self._append_host_log("chain", msg, parsed)
-            return True
-
-        match = self.EMU_RUNTIME_INIT_RE.match(msg)
-        if match:
-            parsed = {
-                "status": int(match.group(1), 16),
-                "ready": int(match.group(2)),
-            }
-            self._append_host_log("emu_runtime_init", msg, parsed)
-            return True
-
-        match = self.EMU_RUNTIME_EXEC_FAIL_RE.match(msg)
-        if match:
-            parsed = {
-                "status": int(match.group(1), 16),
-                "exit": int(match.group(2)),
-                "cpueaxh": int(match.group(3)),
-                "exception": int(match.group(4)),
-                "rip": int(match.group(5), 16),
-                "cr3": int(match.group(6), 16),
-            }
-            self._append_host_log("emu_runtime_exec_fail", msg, parsed)
-            return True
-
-        match = self.EMU_BRIDGE_RE.match(msg)
-        if match:
-            parsed = {
-                "kind": match.group(1),
-                "details": match.group(2),
-            }
-            self._append_host_log("emu_bridge_last", msg, parsed)
-            return True
-
-        match = self.EMU_CALL_RE.match(msg)
-        if match:
-            parsed = {
-                "kind": match.group(1),
-                "details": match.group(2),
-            }
-            self._append_host_log("emu_call_last", msg, parsed)
-            return True
-
-        match = self.COORD_DECRYPT_FAIL_SUMMARY_RE.match(msg)
-        if match:
-            parsed = {
-                "frame": int(match.group(1)),
-                "total": int(match.group(2)),
-                "groups": int(match.group(3)),
-                "dropped": int(match.group(4)),
-                "updated_at_monotonic": time.monotonic(),
-            }
-            with self.host_lock:
-                self.host_diag["coord_decode_summary"] = parsed
-                self.host_diag["coord_decode_groups"] = []
-                recent = self.host_diag["recent_logs"]
-                recent.append({"category": "coord_decode_summary", "raw": msg, "parsed": parsed})
-                if len(recent) > 32:
-                    del recent[:-32]
-            return True
-
-        match = self.COORD_DECRYPT_FAIL_GROUP_RE.match(msg)
-        if match:
-            parsed = {
-                "rank": int(match.group(1)),
-                "count": int(match.group(2)),
-                "type": match.group(3),
-                "strategy": match.group(4),
-                "algo": int(match.group(5)),
-                "kind": int(match.group(6)),
-                "source": match.group(7),
-                "confidence": match.group(8),
-                "rcode": match.group(9),
-                "rcode_num": int(match.group(10)),
-                "last_entry": int(match.group(11), 16),
-                "pid": int(match.group(12), 16),
-                "cr3": int(match.group(13), 16),
-            }
-            with self.host_lock:
-                groups = self.host_diag["coord_decode_groups"]
-                if len(groups) < 8:
-                    groups.append(parsed)
-                recent = self.host_diag["recent_logs"]
-                recent.append({"category": "coord_decode_group", "raw": msg, "parsed": parsed})
-                if len(recent) > 32:
-                    del recent[:-32]
-            return True
-
-        return False
-
-    def get_rwbase_host_diag(self):
-        with self.host_lock:
+    def get_rwbase_decrypt_diag(self):
+        with self.decrypt_lock:
             return {
-                "offsets": None if self.host_diag["offsets"] is None else dict(self.host_diag["offsets"]),
-                "track_ready": None if self.host_diag["track_ready"] is None else dict(self.host_diag["track_ready"]),
-                "chain": None if self.host_diag["chain"] is None else dict(self.host_diag["chain"]),
-                "emu_runtime_init": None if self.host_diag["emu_runtime_init"] is None else dict(self.host_diag["emu_runtime_init"]),
-                "emu_runtime_exec_fail": None if self.host_diag["emu_runtime_exec_fail"] is None else dict(self.host_diag["emu_runtime_exec_fail"]),
-                "emu_bridge_last": None if self.host_diag["emu_bridge_last"] is None else dict(self.host_diag["emu_bridge_last"]),
-                "emu_call_last": None if self.host_diag["emu_call_last"] is None else dict(self.host_diag["emu_call_last"]),
-                "coord_decode_summary": None if self.host_diag["coord_decode_summary"] is None else dict(self.host_diag["coord_decode_summary"]),
-                "coord_decode_groups": [dict(item) for item in self.host_diag["coord_decode_groups"]],
-                "recent_logs": list(self.host_diag["recent_logs"]),
+                "enabled": bool(self.decrypt_diag["enabled"]),
+                "stats": dict(self.decrypt_diag["stats"]),
+                "fail_kinds": dict(self.decrypt_diag["fail_kinds"]),
+                "recent": list(self.decrypt_diag["recent"]),
             }
 
     def get_send_thread_history(self, limit: int = 50):
         n = max(1, int(limit))
         with self.trace_lock:
             return [dict(item) for item in self.send_thread_history[-n:]]
-
-    def get_decode_path_history(self, limit: int = 80):
-        n = max(1, int(limit))
-        with self.trace_lock:
-            out = []
-            for item in self.decode_path_history[-n:]:
-                out.append({
-                    "ts": float(item.get("ts", 0.0) or 0.0),
-                    "category": str(item.get("category") or ""),
-                    "raw": str(item.get("raw") or ""),
-                    "parsed": dict(item.get("parsed") or {}),
-                })
-            return out
 
     def _receiver_loop(self):
         self._emit_console_line(f"[*] UDP Receiver started on port {BIND_PORT}", defer_while_input=False)
@@ -584,14 +519,14 @@ class DMACore:
                         msg = scratch_buffer[1:nbytes].decode("utf-8", errors="ignore").strip()
                         self._try_capture_module_log(msg)
                         consumed_region_log = self._try_capture_region_log(msg)
-                        self._try_capture_rwbase_host_log(msg)
+                        consumed_host_log = self._try_capture_rwbase_host_log(msg)
                         if "ALIVE_ACK" in msg or "DRIVER_ONLINE" in msg:
                             if not self.driver_online:
                                 self._emit_console_line("[+] Driver is ONLINE.")
                             self.driver_online = True
                             continue
 
-                        if consumed_region_log:
+                        if consumed_region_log or consumed_host_log:
                             continue
 
                         if msg:

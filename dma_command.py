@@ -79,7 +79,8 @@ def print_detailed_help():
         ("attach <PID>", "绑定目标进程并缓存 CR3。"),
         ("cr3 <PID>", "查询进程 CR3（用户/内核）与基址。"),
         ("modules <PID>", "按 CR3 路径枚举用户模块。"),
-        ("stream_log [on/off/ping/stats/watch/all/decode/send] [IntervalSec]", "统一流式入口：on/off/ping 控制；watch/all 同时看两条线；decode 仅看 CPUEAXH-RWBASE 解码链路；send 仅看发送线程人物数据。"),
+        ("stream_log [on/off/ping/stats/watch/all/send/decrypt] [IntervalSec]", "统一流式入口：on/off/ping 控制；watch/all 看当前主链路；send 仅看发送线程人物数据；decrypt 仅看结构化解密日志。"),
+        ("rwbase_decrypt [stats/recent/watch] [IntervalSec]", "查看 RWbase-CPUEAXH 结构化解密调试日志（需 RWBASE_DECRYPT_LOG=1）。"),
         ("webradar <start/stop/status> [Port]", "启动/停止/查看网页雷达服务；token 写入 web/pwd.txt。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
         ("cache_gnames", "构建本地 FName 缓存。"),
@@ -320,45 +321,6 @@ class CommandHandler:
         )
         return lines
 
-    def _format_decode_brief(self):
-        diag = self.api.core.get_rwbase_host_diag()
-        runtime = diag.get("emu_runtime_init")
-        runtime_fail = diag.get("emu_runtime_exec_fail")
-        decode_summary = diag.get("coord_decode_summary")
-        decode_groups = diag.get("coord_decode_groups") or []
-
-        parts = []
-        if runtime:
-            parts.append(f"runtime=0x{runtime.get('status', 0):08X}/ready={runtime.get('ready', 0)}")
-        else:
-            parts.append("runtime=n/a")
-
-        if runtime_fail:
-            parts.append(
-                f"last_fail=0x{runtime_fail.get('status', 0):08X}/exit={runtime_fail.get('exit', 0)}/exc={runtime_fail.get('exception', 0)}"
-            )
-
-        if decode_summary:
-            parts.append(
-                f"decode=frame{decode_summary.get('frame', 0)} total={decode_summary.get('total', 0)} drop={decode_summary.get('dropped', 0)}"
-            )
-            if decode_groups:
-                top = decode_groups[0]
-                parts.append(
-                    f"top={top.get('type', 'n/a')}:{top.get('count', 0)} kind={top.get('kind', 0)} rcode={top.get('rcode', 'n/a')}"
-                )
-        else:
-            parts.append("decode=n/a")
-
-        latest = None
-        if hasattr(self.api.core, "get_decode_path_history"):
-            history = self.api.core.get_decode_path_history(limit=1) or []
-            latest = history[-1] if history else None
-        if latest:
-            parts.append(f"last={latest.get('category', 'n/a')}")
-
-        return "decode_path: " + " ".join(parts)
-
     def _format_send_thread_lines(self):
         entries = []
         if hasattr(self.api.core, "get_send_thread_history"):
@@ -380,11 +342,49 @@ class CommandHandler:
             )
         return lines
 
+    def _format_decrypt_lines(self):
+        if not hasattr(self.api.core, "get_rwbase_decrypt_diag"):
+            return ["decrypt: unsupported"]
+
+        diag = self.api.core.get_rwbase_decrypt_diag() or {}
+        if not diag.get("enabled", False):
+            return ["decrypt: disabled (set RWBASE_DECRYPT_LOG=1)"]
+
+        stats = diag.get("stats") or {}
+        recent = diag.get("recent") or []
+        top_kind = "n/a"
+        fail_kinds = diag.get("fail_kinds") or {}
+        if fail_kinds:
+            top_kind = max(fail_kinds.items(), key=lambda item: item[1])[0]
+
+        lines = [
+            "decrypt: "
+            f"total={stats.get('total', 0)} "
+            f"success={stats.get('success', 0)} "
+            f"fail={stats.get('fail', 0)} "
+            f"queue_drop={stats.get('queue_dropped', 0)} "
+            f"decode_err={stats.get('decode_errors', 0)} "
+            f"worker_err={stats.get('worker_errors', 0)} "
+            f"top_fail={top_kind} "
+            f"last_perf_us={safe_float_text(stats.get('last_perf_us', 0.0))}"
+        ]
+        if recent:
+            item = recent[-1]
+            lines.append(
+                "decrypt.last: "
+                f"ts={item.get('ts_utc', 'n/a')} "
+                f"stage={item.get('stage', 'n/a')} "
+                f"status={item.get('status', 'n/a')} "
+                f"entity={item.get('entity', 'n/a')} "
+                f"fail={item.get('fail_kind', 'n/a')}"
+            )
+        return lines
+
     def _format_stream_focus(self):
         return (
             f"{self._format_stream_stats()} | "
             f"{' || '.join(self._format_coord_lines())} | "
-            f"{self._format_decode_brief()} | "
+            f"{' || '.join(self._format_decrypt_lines())} | "
             f"{' || '.join(self._format_send_thread_lines())}"
         )
 
@@ -393,16 +393,16 @@ class CommandHandler:
         lines = []
         if selected in ("all", "watch"):
             lines.append(self._format_stream_stats())
-            lines.append(self._format_decode_brief())
+            lines.extend(self._format_decrypt_lines())
             lines.extend(self._format_send_thread_lines())
             lines.extend(self._format_coord_lines())
-            return lines
-        if selected == "decode":
-            lines.append(self._format_decode_brief())
             return lines
         if selected == "send":
             lines.extend(self._format_send_thread_lines())
             lines.extend(self._format_coord_lines())
+            return lines
+        if selected == "decrypt":
+            lines.extend(self._format_decrypt_lines())
             return lines
         if selected == "stats":
             lines.append(self._format_stream_stats())
@@ -413,93 +413,6 @@ class CommandHandler:
     def _print_stream_lines(self, mode: str):
         for line in self._build_stream_lines(mode):
             log(line)
-
-    def _format_rwbase_host_diag(self):
-        diag = self.api.core.get_rwbase_host_diag()
-
-        def fmt_hex(value):
-            if value is None:
-                return "n/a"
-            return f"0x{int(value):X}"
-
-        offsets = diag.get("offsets")
-        track = diag.get("track_ready")
-        chain = diag.get("chain")
-        runtime = diag.get("emu_runtime_init")
-        runtime_fail = diag.get("emu_runtime_exec_fail")
-        bridge = diag.get("emu_bridge_last")
-        call = diag.get("emu_call_last")
-
-        parts = []
-        if offsets:
-            parts.append(
-                "offsets:"
-                f" uworld={fmt_hex(offsets.get('uworld'))}"
-                f" fnames={fmt_hex(offsets.get('fnames'))}"
-                f" lpp={fmt_hex(offsets.get('local_player_ptr'))}"
-                f" ack=0x{offsets.get('acknowledged_pawn_offset', 0):X}"
-                f" mesh=0x{offsets.get('mesh_offset', 0):X}"
-                f" bone=0x{offsets.get('bone_array_offset', 0):X}"
-                f" team=0x{offsets.get('team_offset', 0):X}"
-            )
-        else:
-            parts.append("offsets: n/a")
-
-        if track:
-            parts.append(
-                "track:"
-                f" pid={fmt_hex(track.get('pid'))}"
-                f" ucr3={fmt_hex(track.get('user_cr3'))}"
-                f" kcr3={fmt_hex(track.get('kernel_cr3'))}"
-                f" base={fmt_hex(track.get('base'))}"
-                f" net={track.get('network', 'n/a')}"
-            )
-        else:
-            parts.append("track: n/a")
-
-        if chain:
-            parts.append(
-                "chain:"
-                f" uworld={fmt_hex(chain.get('uworld'))}"
-                f" fnames={fmt_hex(chain.get('fnames'))}"
-                f" pc={fmt_hex(chain.get('player_controller'))}"
-                f" pawn={fmt_hex(chain.get('pawn'))}"
-                f" ps={fmt_hex(chain.get('player_state'))}"
-                f" team={chain.get('team_id', 'n/a')}"
-                f" mesh={fmt_hex(chain.get('mesh'))}"
-            )
-        else:
-            parts.append("chain: n/a")
-
-        if runtime:
-            parts.append(
-                "runtime:"
-                f" init_status=0x{runtime.get('status', 0):08X}"
-                f" ready={runtime.get('ready', 0)}"
-            )
-        else:
-            parts.append("runtime: n/a")
-
-        if runtime_fail:
-            parts.append(
-                "runtime_fail:"
-                f" status=0x{runtime_fail.get('status', 0):08X}"
-                f" exit={runtime_fail.get('exit', 0)}"
-                f" exc={runtime_fail.get('exception', 0)}"
-                f" rip={fmt_hex(runtime_fail.get('rip'))}"
-            )
-
-        if bridge:
-            parts.append(f"bridge: {bridge.get('kind')} {bridge.get('details')}")
-        else:
-            parts.append("bridge: n/a")
-
-        if call:
-            parts.append(f"call: {call.get('kind')} {call.get('details')}")
-        else:
-            parts.append("call: n/a")
-
-        return " | ".join(parts)
 
     def handle_attach(self, args):
         if not args:
@@ -901,7 +814,7 @@ class CommandHandler:
         rest = list(args)
         if rest:
             head = rest[0].lower()
-            if head in ("on", "off", "ping", "stats", "watch", "all", "decode", "send"):
+            if head in ("on", "off", "ping", "stats", "watch", "all", "send", "decrypt"):
                 action = head
                 rest = rest[1:]
 
@@ -921,7 +834,7 @@ class CommandHandler:
         mode = action
         if mode == "watch":
             mode = "all"
-        if mode not in ("all", "decode", "send"):
+        if mode not in ("all", "send", "decrypt"):
             mode = "all"
 
         interval = 1.0
@@ -929,7 +842,7 @@ class CommandHandler:
             try:
                 interval = float(rest[0])
             except ValueError:
-                log("Usage: stream_log [on/off/ping/stats/watch/all/decode/send] [IntervalSec]", "ERROR")
+                log("Usage: stream_log [on/off/ping/stats/watch/all/send/decrypt] [IntervalSec]", "ERROR")
                 return
 
         if interval <= 0:
@@ -947,22 +860,28 @@ class CommandHandler:
         except KeyboardInterrupt:
             log("stream_log stopped.")
 
-    def handle_rwbase_host(self, args):
-        action = args[0].lower() if args else "stats"
+    def handle_rwbase_decrypt(self, args):
+        if not hasattr(self.api.core, "get_rwbase_decrypt_diag"):
+            log("RWbase decrypt debug is unsupported.", "ERROR")
+            return
 
+        action = args[0].lower() if args else "stats"
         if action == "stats":
-            log("rwbase_host stats is deprecated; use 'stream_log stats'.", "WARN")
-            self._print_stream_lines("decode")
+            for line in self._format_decrypt_lines():
+                log(line)
             return
 
         if action == "recent":
-            diag = self.api.core.get_rwbase_host_diag()
-            recent = diag.get("recent_logs", [])
+            diag = self.api.core.get_rwbase_decrypt_diag() or {}
+            if not diag.get("enabled", False):
+                log("RWbase decrypt debug is disabled (set RWBASE_DECRYPT_LOG=1).", "WARN")
+                return
+            recent = diag.get("recent", [])
             if not recent:
-                log("No parsed RWbase host logs captured yet.", "WARN")
+                log("No decrypt debug logs captured yet.", "WARN")
                 return
             for item in recent[-10:]:
-                log(f"{item.get('category')}: {item.get('raw')}")
+                log(item.get("raw", ""))
             return
 
         if action == "watch":
@@ -971,22 +890,21 @@ class CommandHandler:
                 try:
                     interval = float(args[1])
                 except ValueError:
-                    log("Usage: rwbase_host [stats/watch/recent] [IntervalSec]", "ERROR")
+                    log("Usage: rwbase_decrypt [stats/recent/watch] [IntervalSec]", "ERROR")
                     return
             if interval <= 0:
                 log("IntervalSec must be > 0.", "ERROR")
                 return
-
-            log("rwbase_host watch is deprecated; use 'stream_log watch [IntervalSec]'.", "WARN")
             try:
                 while True:
-                    self._print_stream_lines("decode")
+                    for line in self._format_decrypt_lines():
+                        log(line)
                     time.sleep(interval)
             except KeyboardInterrupt:
-                log("rwbase_host watch stopped.")
+                log("rwbase_decrypt watch stopped.")
             return
 
-        log("Usage: rwbase_host [stats/watch/recent] [IntervalSec]", "ERROR")
+        log("Usage: rwbase_decrypt [stats/recent/watch] [IntervalSec]", "ERROR")
 
     def handle_rwbase_stream(self, args):
         log("rwbase_stream is deprecated; use 'stream_log ...'.", "WARN")

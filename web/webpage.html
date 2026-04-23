@@ -60,8 +60,8 @@
         <div id="log-panel-title">RWBASE Stream Logs (History)</div>
         <div id="log-panel-body">
             <div class="log-col">
-                <div class="log-col-title">Decode Path (CPUEAXH/RWBASE)</div>
-                <pre id="decode-log-box" class="log-box">waiting decode logs...</pre>
+                <div class="log-col-title">Decrypt Logs (RWbase/CPUEAXH)</div>
+                <pre id="decode-log-box" class="log-box">waiting decrypt logs...</pre>
             </div>
             <div class="log-col">
                 <div class="log-col-title">Send Thread (Players)</div>
@@ -350,20 +350,13 @@
         return text.slice(-width);
     }
 
-    function formatDecodeLogLine(item) {
-        const parsed = item && item.parsed ? item.parsed : {};
-        const category = item && item.category ? item.category : 'decode';
-        const categoryTag = `[${alignText(category, LOG_COLUMN_WIDTHS.category)}]`;
-        if (category === 'coord_decode_summary') {
-            return `${categoryTag} frame=${alignNumber(parsed.frame ?? 0, 6)} total=${alignNumber(parsed.total ?? 0, 6)} groups=${alignNumber(parsed.groups ?? 0, 4)} dropped=${alignNumber(parsed.dropped ?? 0, 4)}`;
-        }
-        if (category === 'coord_decode_group') {
-            return `${categoryTag} rank=${alignNumber(parsed.rank ?? 0, 3)} cnt=${alignNumber(parsed.count ?? 0, 4)} type=${alignText(parsed.type ?? 'n/a', LOG_COLUMN_WIDTHS.type)} kind=${alignNumber(parsed.kind ?? 0, 3)} rcode=${alignText(parsed.rcode ?? 'n/a', LOG_COLUMN_WIDTHS.rcode)} algo=${alignNumber(parsed.algo ?? 0, 3)}`;
-        }
-        if (item && item.raw) {
-            return `${categoryTag} ${item.raw}`;
-        }
-        return `${categoryTag} ${JSON.stringify(parsed)}`;
+    function formatDecryptLogLine(item) {
+        const obj = item || {};
+        const stage = alignText(obj.stage || 'decrypt', LOG_COLUMN_WIDTHS.category);
+        const status = alignText(obj.status || 'n/a', LOG_COLUMN_WIDTHS.type);
+        const entity = alignText(obj.entity || 'n/a', LOG_COLUMN_WIDTHS.entityId);
+        const failKind = alignText(obj.fail_kind || 'n/a', LOG_COLUMN_WIDTHS.rcode);
+        return `[${stage}] status=${status} entity=${entity} fail=${failKind}`;
     }
 
     function formatSendLogLine(item) {
@@ -394,15 +387,15 @@
             if (response.status !== 200) return;
             const payload = await response.json();
 
-            const decode = Array.isArray(payload.decode_path) ? payload.decode_path : [];
+            const decrypt = Array.isArray(payload.decrypt) ? payload.decrypt : [];
             const send = Array.isArray(payload.send_thread_players) ? payload.send_thread_players : [];
 
-            const decodeLines = decode.slice(-36).map(formatDecodeLogLine);
+            const decodeLines = decrypt.slice(-36).map(formatDecryptLogLine);
             const sendLines = send.slice(-36).map(formatSendLogLine);
 
             const decodeBox = document.getElementById('decode-log-box');
             const sendBox = document.getElementById('send-log-box');
-            if (decodeBox) decodeBox.textContent = decodeLines.length ? decodeLines.join('\n') : 'no decode logs';
+            if (decodeBox) decodeBox.textContent = decodeLines.length ? decodeLines.join('\n') : 'no decrypt logs';
             if (sendBox) sendBox.textContent = sendLines.length ? sendLines.join('\n') : 'no send-thread player logs';
         } catch (error) {
             // Keep radar rendering unaffected even if log endpoint is temporarily unavailable.
