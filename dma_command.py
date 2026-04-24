@@ -300,18 +300,40 @@ class CommandHandler:
             f"zombie_last_ack={stats.get('zombie_last_ack')}"
         )
 
+    @staticmethod
+    def _format_position(pos):
+        source = pos or {}
+        return (
+            safe_int(source.get("x", 0)),
+            safe_int(source.get("y", 0)),
+            safe_int(source.get("z", 0)),
+        )
+
+    @staticmethod
+    def _distance_between(left, right):
+        lx, ly, lz = left
+        rx, ry, rz = right
+        return safe_int(math.sqrt((rx - lx) ** 2 + (ry - ly) ** 2 + (rz - lz) ** 2))
+
+    def _format_target_detail_line(self, index, target, local_tuple):
+        pos_tuple = self._format_position(target.get("position"))
+        distance = self._distance_between(local_tuple, pos_tuple)
+        return (
+            f"target[{index}]: "
+            f"id={target.get('id', 'n/a')} "
+            f"team={target.get('team_id', 0)} "
+            f"hp={safe_int(target.get('health', 0.0))}/{safe_int(target.get('max_health', 0.0))} "
+            f"pos=({pos_tuple[0]},{pos_tuple[1]},{pos_tuple[2]}) "
+            f"d={distance} yaw={safe_int(target.get('orientation', 0.0))}"
+        )
+
     def _format_coord_lines(self):
         snapshot = self.api.core.get_radar_snapshot() or {}
         meta = snapshot.get("meta") or {}
         local = snapshot.get("local_player") or {}
-        local_pos = local.get("position") or {}
         local_neck = local.get("neck_position") or {}
         entities = snapshot.get("entities") or []
-        local_tuple = (
-            safe_int(local_pos.get("x", 0)),
-            safe_int(local_pos.get("y", 0)),
-            safe_int(local_pos.get("z", 0)),
-        )
+        local_tuple = self._format_position(local.get("position"))
         utils_age_ms = int(meta.get("utils_age_ms", -1) or -1)
         state = "init"
         if self._last_local_pos is not None:
@@ -328,23 +350,20 @@ class CommandHandler:
             f"utils_age_ms={utils_age_ms} state={state}"
         ]
 
-        target = entities[0] if entities else None
-        if target is None:
+        if not entities:
             lines.append(
                 "coord.target: "
                 f"players=0 utils_present={1 if meta.get('utils_present', False) else 0}"
             )
             return lines
 
-        target_pos = target.get("position") or {}
         lines.append(
             "coord.target: "
             f"players={len(entities)} "
-            f"id={target.get('id', 'n/a')} "
-            f"team={target.get('team_id', 0)} "
-            f"hp={safe_int(target.get('health', 0.0))} "
-            f"pos=({safe_int(target_pos.get('x', 0))},{safe_int(target_pos.get('y', 0))},{safe_int(target_pos.get('z', 0))})"
+            f"utils_present={1 if meta.get('utils_present', False) else 0}"
         )
+        for index, target in enumerate(entities, start=1):
+            lines.append(self._format_target_detail_line(index, target, local_tuple))
         return lines
 
     def _format_send_thread_lines(self):

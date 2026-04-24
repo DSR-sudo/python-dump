@@ -26,7 +26,7 @@
         #auth-submit { padding: 6px 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
         #auth-error { color: red; font-size: 12px; margin-top: 5px; display: none; }
         #auth-container.hidden { display: none; }
-        #log-panel { position: fixed; right: 8px; bottom: 8px; width: 520px; max-width: 96vw; height: 38vh; background: rgba(0,0,0,0.75); border: 1px solid #444; border-radius: 6px; z-index: 120; display: flex; flex-direction: column; }
+        #log-panel { position: fixed; right: 8px; bottom: 8px; width: 780px; max-width: 96vw; height: 38vh; background: rgba(0,0,0,0.75); border: 1px solid #444; border-radius: 6px; z-index: 120; display: flex; flex-direction: column; }
         #log-panel-title { padding: 6px 8px; font-size: 12px; color: #ddd; border-bottom: 1px solid #333; }
         #log-panel-body { flex: 1; display: flex; gap: 6px; padding: 6px; min-height: 0; }
         .log-col { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -66,6 +66,10 @@
             <div class="log-col">
                 <div class="log-col-title">Send Thread (Players)</div>
                 <pre id="send-log-box" class="log-box">waiting send logs...</pre>
+            </div>
+            <div class="log-col">
+                <div class="log-col-title">Radar Entities (Current Snapshot)</div>
+                <pre id="entity-list-box" class="log-box">waiting radar snapshot...</pre>
             </div>
         </div>
     </div>
@@ -289,6 +293,7 @@
             if (forceUpdate || data.teammates.length !== teammates.length) updatePlayerButtons();
             if (pendingPlayerSelection !== null) { selectPlayer(pendingPlayerSelection); pendingPlayerSelection = null; }
             if (isFollowing) recenterView();
+            renderRadarEntitySummary(data);
             map.innerHTML = '';
             entitiesToRender.forEach(entityData => {
                 const { position: map2DPos, rotation: correctedOrientation } = getTransformedData(entityData, currentMap);
@@ -322,6 +327,50 @@
             console.error('获取游戏数据失败:', error); 
             document.getElementById('auth-container').classList.remove('hidden');
         }
+    }
+
+    function formatCoordValue(value) {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) return '0';
+        return Math.trunc(parsed).toString();
+    }
+
+    function formatPosition(pos) {
+        const source = pos || {};
+        return `(${formatCoordValue(source.x)},${formatCoordValue(source.y)},${formatCoordValue(source.z)})`;
+    }
+
+    function distance3d(left, right) {
+        const a = left || {};
+        const b = right || {};
+        const dx = Number(b.x || 0) - Number(a.x || 0);
+        const dy = Number(b.y || 0) - Number(a.y || 0);
+        const dz = Number(b.z || 0) - Number(a.z || 0);
+        return Math.trunc(Math.sqrt(dx * dx + dy * dy + dz * dz));
+    }
+
+    function formatRadarTargetLine(target, index, localPos) {
+        const item = target || {};
+        const hp = `${formatCoordValue(item.health)}/${formatCoordValue(item.max_health)}`;
+        const distance = distance3d(localPos, item.position);
+        return `target[${index}]: id=${item.id || 'n/a'} team=${item.team_id || 0} hp=${hp} pos=${formatPosition(item.position)} d=${distance} yaw=${formatCoordValue(item.orientation)}`;
+    }
+
+    function renderRadarEntitySummary(data) {
+        const box = document.getElementById('entity-list-box');
+        if (!box) return;
+        const snapshot = data || {};
+        const local = snapshot.local_player || {};
+        const targets = Array.isArray(snapshot.entities) ? snapshot.entities : [];
+        const meta = snapshot.meta || {};
+        const lines = [
+            `local: id=${local.id || 'local'} team=${local.team_id || 0} pos=${formatPosition(local.position)} neck=${formatPosition(local.neck_position)} yaw=${formatCoordValue(local.yaw)} utils_age_ms=${meta.utils_age_ms ?? 'n/a'}`,
+            `targets: ${targets.length}`
+        ];
+        targets.forEach((target, index) => {
+            lines.push(formatRadarTargetLine(target, index + 1, local.position));
+        });
+        box.textContent = lines.join('\n');
     }
 
     const LOG_COLUMN_WIDTHS = Object.freeze({
