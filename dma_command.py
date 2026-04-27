@@ -83,7 +83,7 @@ def print_detailed_help():
         ("vt_fpat [Section|-] <PatternBytes...>", "基于已 attach 的 PID，在目标进程主模块/可选节中匹配单个特征码并返回首个命中地址。"),
         ("stream_log [on/off/ping/stats/watch/all/send/decrypt/raw] [IntervalSec]", "统一流式入口：on/off/ping 控制；watch/all 看当前主链路；send 仅看发送线程人物数据；decrypt 仅看结构化解密日志；raw 仅看 RAW 原始密文日志。"),
         ("coord_raw [stats/recent/watch] [IntervalSec]", "查看 RWbase 发送的 RAW 原始密文日志。"),
-        ("rwbase_decrypt [stats/recent/watch] [IntervalSec]", "查看 RWbase-CPUEAXH 结构化解密调试日志（需 RWBASE_DECRYPT_LOG=1）。"),
+        ("rwbase_decrypt [stats/recent/watch] [IntervalSec]", "查看 RWbase-CPUEAXH 结构化解密调试日志（默认开启，可用 RWBASE_DECRYPT_LOG=0 关闭）。"),
         ("webradar <start/stop/status> [Port]", "启动/停止/查看网页雷达服务；token 写入 web/pwd.txt。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
         ("cache_gnames", "构建本地 FName 缓存。"),
@@ -393,7 +393,7 @@ class CommandHandler:
 
         diag = self.api.core.get_rwbase_decrypt_diag() or {}
         if not diag.get("enabled", False):
-            return ["decrypt: disabled (set RWBASE_DECRYPT_LOG=1)"]
+            return ["decrypt: disabled (set RWBASE_DECRYPT_LOG=1 or remove the RWBASE_DECRYPT_LOG=0 override)"]
 
         stats = diag.get("stats") or {}
         recent = diag.get("recent") or []
@@ -988,7 +988,7 @@ class CommandHandler:
         if action == "recent":
             diag = self.api.core.get_rwbase_decrypt_diag() or {}
             if not diag.get("enabled", False):
-                log("RWbase decrypt debug is disabled (set RWBASE_DECRYPT_LOG=1).", "WARN")
+                log("RWbase decrypt debug is disabled (set RWBASE_DECRYPT_LOG=1 or remove the RWBASE_DECRYPT_LOG=0 override).", "WARN")
                 return
             recent = diag.get("recent", [])
             if not recent:
