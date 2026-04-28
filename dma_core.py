@@ -10,6 +10,7 @@ import re
 import math
 import queue
 from dma_protocol import *
+from item_catalog import describe_item
 
 DEFAULT_EXPECTED_TRANSFER_BPS = 8 * 1024 * 1024  # 8 MB/s conservative baseline.
 DEFAULT_TRANSFER_GRACE_SEC = 5.0
@@ -240,8 +241,18 @@ class DMACore:
             self.rwvg_stats["item_frames"] += 1
             parsed = parse_rwvg_item_payload(typed_payload)
             if parsed is not None:
-                item_key = f"{parsed.get('dead_box_type', 0)}:{now_ts:.6f}"
+                item_key = self._build_item_entity_id(parsed, now_ts)
                 parsed["_ts"] = now_ts
+                parsed["_entity_id"] = item_key
+                self._append_send_thread_log({
+                    "ts": now_ts,
+                    "kind": "item",
+                    "entity_id": item_key,
+                    "item_type": int(parsed.get("item_type", 0) or 0),
+                    "dead_box_type": int(parsed.get("dead_box_type", 0) or 0),
+                    "distance": int(parsed.get("distance", 0) or 0),
+                    "pos": _safe_wire_pos_dict(parsed.get("pos") or {}),
+                })
                 with self.radar_lock:
                     self.radar_items[item_key] = parsed
                     self._purge_radar_stale_locked(now_ts)
@@ -260,6 +271,14 @@ class DMACore:
         player_name = str(player.get("player_name") or "")
         detective = str(player.get("detective") or "")
         return f"FALLBACK_{team_id}_{player_name}_{detective}"
+
+    def _build_item_entity_id(self, item: dict, now_ts: float) -> str:
+        pos = item.get("pos") or {}
+        item_type = int(item.get("item_type", 0) or 0)
+        dead_box_type = int(item.get("dead_box_type", 0) or 0)
+        x = int(_safe_float(pos.get("x", 0.0)))
+        y = int(_safe_float(pos.get("y", 0.0)))
+        return f"item:{item_type}:{dead_box_type}:{x}:{y}:{now_ts:.3f}"
 
     def _purge_radar_stale_locked(self, now_ts: float):
         cutoff = now_ts - max(self.radar_player_ttl_sec, 0.25)
@@ -299,6 +318,7 @@ class DMACore:
             self._purge_radar_stale_locked(now_ts)
             utils = dict(self.radar_latest_utils or {})
             players = [dict(player) for player in self.radar_players.values()]
+            items = [dict(item) for item in self.radar_items.values()]
             utils_ts = float(self.radar_latest_utils_ts or 0.0)
 
         local_team_id = int(utils.get("local_team_id", 0) or 0)
@@ -349,17 +369,38 @@ class DMACore:
             if (not is_ai) and local_team_id > 0 and entity["team_id"] == local_team_id:
                 teammates.append(dict(entity))
 
+        item_snapshots = []
+        for raw_item in items:
+            item = describe_item(raw_item)
+            item_snapshots.append({
+                "id": str(item.get("_entity_id") or ""),
+                "type": str(item.get("type") or "item"),
+                "item_type": int(item.get("item_type", 0) or 0),
+                "item_name": str(item.get("item_name") or ""),
+                "item_quality": int(item.get("item_quality", 0) or 0),
+                "item_quality_label": str(item.get("item_quality_label") or ""),
+                "item_quality_color": str(item.get("item_quality_color") or ""),
+                "item_money": int(item.get("item_money", 0) or 0),
+                "dead_box_type": int(item.get("dead_box_type", 0) or 0),
+                "dead_box_name": str(item.get("dead_box_name") or ""),
+                "distance": int(item.get("distance", 0) or 0),
+                "position": _safe_pos_dict(item.get("pos")),
+                "orientation": 0,
+            })
+
         return {
             "meta": {
                 "utils_present": bool(utils),
                 "utils_age_ms": max(0, int((now_ts - utils_ts) * 1000.0)) if utils_ts > 0.0 else -1,
                 "entity_count": len(entities),
+                "item_count": len(item_snapshots),
                 "player_count": actual_player_count,
                 "ai_count": ai_count,
                 "teammate_count": len(teammates),
             },
             "local_player": local_player,
             "entities": entities,
+            "items": item_snapshots,
             "teammates": teammates,
         }
 

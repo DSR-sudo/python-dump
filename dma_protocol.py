@@ -36,13 +36,13 @@ RWVG_TYPE_ITEM = 3
 # RWbase::GameCore typed payload sizes (pack(1) structs)
 RWVG_TYPED_SIZE_BY_KIND = {
     RWVG_TYPE_UTILS: 136,
-    RWVG_TYPE_PLAYER: 255,
+    RWVG_TYPE_PLAYER: 179,
     RWVG_TYPE_ITEM: 90,
 }
 
 # Mirrors RWbase::GameCore::GameCoreTypes.hpp with #pragma pack(push, 1)
 RWVG_UTILS_FMT = "<16f3Bi3f3fiQfB4f2i"
-RWVG_PLAYER_FMT = "<2f2i18s18s18s32s32sQ3f3ffiiB18fi"
+RWVG_PLAYER_FMT = "<2f2i18s18s18s32s32sQ3f3ffiiB"
 RWVG_ITEM_FMT = "<Q3fii32s18siii"
 FLOAT32_TEXT_SIG_DIGITS = 9
 
@@ -177,15 +177,6 @@ def parse_rwvg_player_payload(payload: bytes):
         return None
 
     data = struct.unpack(RWVG_PLAYER_FMT, payload)
-    bones_raw = data[17:35]
-    bones = []
-    for idx in range(0, len(bones_raw), 3):
-        bones.append({
-            "x": coerce_float32(bones_raw[idx]),
-            "y": coerce_float32(bones_raw[idx + 1]),
-            "z": coerce_float32(bones_raw[idx + 2]),
-        })
-
     return {
         "health": coerce_float32(data[0]),
         "max_health": coerce_float32(data[1]),
@@ -208,11 +199,9 @@ def parse_rwvg_player_payload(payload: bytes):
             "z": coerce_float32(data[15]),
         },
         "direction": coerce_float32(data[16]),
-        "distance": int(data[35]),
-        "team_id": int(data[36]),
-        "is_visible": bool(data[37]),
-        "bone_pos": bones,
-        "valid_flags": int(data[38]),
+        "distance": int(data[17]),
+        "team_id": int(data[18]),
+        "is_visible": bool(data[19]),
     }
 
 
