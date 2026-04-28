@@ -230,7 +230,7 @@ class DMACore:
                     "distance": int(parsed.get("distance", 0) or 0),
                     "visible": bool(parsed.get("is_visible", False)),
                     "pos": _safe_wire_pos_dict(parsed.get("pos") or {}),
-                    "name": str(parsed.get("player_name") or ""),
+                    "name": str(parsed.get("player_name") or parsed.get("bot_name") or ""),
                     "weapon": str(parsed.get("weapon_name") or ""),
                 })
                 with self.radar_lock:
@@ -315,19 +315,29 @@ class DMACore:
 
         entities = []
         teammates = []
+        actual_player_count = 0
+        ai_count = 0
         for player in players:
             class_name = str(player.get("class_name") or "")
-            is_actual_player = class_name != "AI"
-            if not class_name or not is_actual_player:
+            if not class_name:
                 continue
+
+            is_ai = class_name == "AI"
+            entity_type = "ai" if is_ai else "player"
+            if is_ai:
+                ai_count += 1
+            else:
+                actual_player_count += 1
 
             entity_id = str(player.get("_entity_id") or self._build_player_entity_id(player))
             player_name = str(player.get("player_name") or "")
+            bot_name = str(player.get("bot_name") or "")
             pos = player.get("pos") or {}
             entity = {
                 "id": entity_id,
-                "name": player_name if player_name else f"Player_{entity_id}",
-                "type": "player",
+                "name": bot_name if is_ai and bot_name else (player_name if player_name else f"{entity_type.title()}_{entity_id}"),
+                "type": entity_type,
+                "class_name": class_name,
                 "team_id": int(player.get("team_id", 0) or 0),
                 "position": _safe_pos_dict(pos),
                 "orientation": _safe_float(player.get("direction", 0.0)),
@@ -336,14 +346,16 @@ class DMACore:
             }
             entities.append(entity)
 
-            if local_team_id > 0 and entity["team_id"] == local_team_id:
+            if (not is_ai) and local_team_id > 0 and entity["team_id"] == local_team_id:
                 teammates.append(dict(entity))
 
         return {
             "meta": {
                 "utils_present": bool(utils),
                 "utils_age_ms": max(0, int((now_ts - utils_ts) * 1000.0)) if utils_ts > 0.0 else -1,
-                "player_count": len(entities),
+                "entity_count": len(entities),
+                "player_count": actual_player_count,
+                "ai_count": ai_count,
                 "teammate_count": len(teammates),
             },
             "local_player": local_player,
