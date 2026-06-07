@@ -11,6 +11,8 @@ from dma_protocol import (
     RWVG_MAGIC,
     RWVG_TYPE_ITEM,
     RWVG_TYPE_PLAYER,
+    RWVG_TYPE_ITEM_BATCH,
+    RWVG_TYPE_PLAYER_BATCH,
     RWVG_TYPE_UTILS,
     RWVG_TYPED_SIZE_BY_KIND,
 )
@@ -201,6 +203,18 @@ refresh();
                     "utils": RWVG_TYPE_UTILS,
                     "player": RWVG_TYPE_PLAYER,
                     "item": RWVG_TYPE_ITEM,
+                    "player_batch": RWVG_TYPE_PLAYER_BATCH,
+                    "item_batch": RWVG_TYPE_ITEM_BATCH,
+                },
+                "batch_types": {
+                    "player_batch": RWVG_TYPE_PLAYER_BATCH,
+                    "item_batch": RWVG_TYPE_ITEM_BATCH,
+                },
+                "batch_stats": {
+                    "player_batch_frames": int(stats.get("player_batch_frames", 0) or 0),
+                    "item_batch_frames": int(stats.get("item_batch_frames", 0) or 0),
+                    "player_batch_entities": int(stats.get("player_batch_entities", 0) or 0),
+                    "item_batch_entities": int(stats.get("item_batch_entities", 0) or 0),
                 },
                 "typed_size_by_kind": dict(RWVG_TYPED_SIZE_BY_KIND),
             },

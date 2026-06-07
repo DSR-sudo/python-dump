@@ -479,12 +479,28 @@
             const response = await fetch('/api/logs', { headers: { 'X-Auth-Token': password } });
             if (response.status !== 200) return;
             const payload = await response.json();
+            let rwvgPayload = null;
+            try {
+                const rwvgResponse = await fetch('/api/rwvg', { headers: { 'X-Auth-Token': password } });
+                if (rwvgResponse.status === 200) {
+                    rwvgPayload = await rwvgResponse.json();
+                }
+            } catch (error) {
+                rwvgPayload = null;
+            }
 
             const decrypt = Array.isArray(payload.decrypt) ? payload.decrypt : [];
             const send = Array.isArray(payload.send_thread_players) ? payload.send_thread_players : [];
+            const batchStats = (rwvgPayload && rwvgPayload.protocol && rwvgPayload.protocol.batch_stats) ? rwvgPayload.protocol.batch_stats : null;
+            const batchTypes = (rwvgPayload && rwvgPayload.protocol && rwvgPayload.protocol.types) ? rwvgPayload.protocol.types : null;
+            const playerBatchType = batchTypes ? batchTypes.player_batch : 4;
+            const itemBatchType = batchTypes ? batchTypes.item_batch : 5;
+            const batchHeader = batchStats
+                ? `rwvg batch stats: player_frames=${batchStats.player_batch_frames || 0} item_frames=${batchStats.item_batch_frames || 0} player_entities=${batchStats.player_batch_entities || 0} item_entities=${batchStats.item_batch_entities || 0} types=player_batch:${playerBatchType} item_batch:${itemBatchType}`
+                : 'rwvg batch stats: unavailable';
 
             const decodeLines = decrypt.slice(-36).map(formatDecryptLogLine);
-            const sendLines = send.slice(-36).map(formatSendLogLine);
+            const sendLines = [batchHeader, ...send.slice(-36).map(formatSendLogLine)];
 
             const decodeBox = document.getElementById('decode-log-box');
             const sendBox = document.getElementById('send-log-box');

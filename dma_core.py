@@ -104,6 +104,10 @@ class DMACore:
             "utils_frames": 0,
             "player_frames": 0,
             "item_frames": 0,
+            "player_batch_frames": 0,
+            "item_batch_frames": 0,
+            "player_batch_entities": 0,
+            "item_batch_entities": 0,
             "typed_bytes": 0,
             "host_aggregate_frames": 0,
             "host_aggregate_raw_bytes": 0,
@@ -205,6 +209,80 @@ class DMACore:
         if dropped > 0:
             print(f"[LOG] {dropped} background lines dropped while typing.")
 
+    def _record_player_radar(self, parsed: dict, now_ts: float):
+        entity_id = self._build_player_entity_id(parsed)
+        parsed["_entity_id"] = entity_id
+        parsed["_ts"] = now_ts
+        self._append_send_thread_log({
+            "ts": now_ts,
+            "kind": "player",
+            "entity_id": entity_id,
+            "team_id": int(parsed.get("team_id", 0) or 0),
+            "health": _safe_wire_float(parsed.get("health", 0.0)),
+            "max_health": _safe_wire_float(parsed.get("max_health", 0.0)),
+            "distance": int(parsed.get("distance", 0) or 0),
+            "visible": bool(parsed.get("is_visible", False)),
+            "pos": _safe_wire_pos_dict(parsed.get("pos") or {}),
+            "name": str(parsed.get("player_name") or parsed.get("bot_name") or ""),
+            "weapon": str(parsed.get("weapon_name") or ""),
+        })
+        with self.radar_lock:
+            self.radar_players[entity_id] = parsed
+            self._purge_radar_stale_locked(now_ts)
+
+    def _record_item_radar(self, parsed: dict, now_ts: float):
+        item_key = self._build_item_entity_id(parsed, now_ts)
+        parsed["_ts"] = now_ts
+        parsed["_entity_id"] = item_key
+        self._append_send_thread_log({
+            "ts": now_ts,
+            "kind": "item",
+            "entity_id": item_key,
+            "item_type": int(parsed.get("item_type", 0) or 0),
+            "dead_box_type": int(parsed.get("dead_box_type", 0) or 0),
+            "distance": int(parsed.get("distance", 0) or 0),
+            "pos": _safe_wire_pos_dict(parsed.get("pos") or {}),
+        })
+        with self.radar_lock:
+            self.radar_items[item_key] = parsed
+            self._purge_radar_stale_locked(now_ts)
+
+    def _handle_player_payload(self, typed_payload: bytes, now_ts: float) -> int:
+        parsed = parse_rwvg_player_payload(typed_payload)
+        if parsed is None:
+            return 0
+        self._record_player_radar(parsed, now_ts)
+        return 1
+
+    def _handle_item_payload(self, typed_payload: bytes, now_ts: float) -> int:
+        parsed = parse_rwvg_item_payload(typed_payload)
+        if parsed is None:
+            return 0
+        self._record_item_radar(parsed, now_ts)
+        return 1
+
+    def _handle_player_batch_payload(self, typed_payload: bytes, now_ts: float) -> int:
+        payloads = parse_rwvg_batch_payload(typed_payload, RWVG_TYPED_SIZE_BY_KIND[RWVG_TYPE_PLAYER])
+        if payloads is None:
+            return 0
+        self.rwvg_stats["player_batch_frames"] += 1
+        handled = 0
+        for payload in payloads:
+            handled += self._handle_player_payload(payload, now_ts)
+        self.rwvg_stats["player_batch_entities"] += handled
+        return handled
+
+    def _handle_item_batch_payload(self, typed_payload: bytes, now_ts: float) -> int:
+        payloads = parse_rwvg_batch_payload(typed_payload, RWVG_TYPED_SIZE_BY_KIND[RWVG_TYPE_ITEM])
+        if payloads is None:
+            return 0
+        self.rwvg_stats["item_batch_frames"] += 1
+        handled = 0
+        for payload in payloads:
+            handled += self._handle_item_payload(payload, now_ts)
+        self.rwvg_stats["item_batch_entities"] += handled
+        return handled
+
     def _handle_rwvg_typed_frame(self, typed_kind, typed_payload):
         now_ts = time.monotonic()
         if typed_kind == RWVG_TYPE_UTILS:
@@ -216,46 +294,14 @@ class DMACore:
                     self.radar_latest_utils_ts = now_ts
         elif typed_kind == RWVG_TYPE_PLAYER:
             self.rwvg_stats["player_frames"] += 1
-            parsed = parse_rwvg_player_payload(typed_payload)
-            if parsed is not None:
-                entity_id = self._build_player_entity_id(parsed)
-                parsed["_entity_id"] = entity_id
-                parsed["_ts"] = now_ts
-                self._append_send_thread_log({
-                    "ts": now_ts,
-                    "kind": "player",
-                    "entity_id": entity_id,
-                    "team_id": int(parsed.get("team_id", 0) or 0),
-                    "health": _safe_wire_float(parsed.get("health", 0.0)),
-                    "max_health": _safe_wire_float(parsed.get("max_health", 0.0)),
-                    "distance": int(parsed.get("distance", 0) or 0),
-                    "visible": bool(parsed.get("is_visible", False)),
-                    "pos": _safe_wire_pos_dict(parsed.get("pos") or {}),
-                    "name": str(parsed.get("player_name") or parsed.get("bot_name") or ""),
-                    "weapon": str(parsed.get("weapon_name") or ""),
-                })
-                with self.radar_lock:
-                    self.radar_players[entity_id] = parsed
-                    self._purge_radar_stale_locked(now_ts)
+            self._handle_player_payload(typed_payload, now_ts)
         elif typed_kind == RWVG_TYPE_ITEM:
             self.rwvg_stats["item_frames"] += 1
-            parsed = parse_rwvg_item_payload(typed_payload)
-            if parsed is not None:
-                item_key = self._build_item_entity_id(parsed, now_ts)
-                parsed["_ts"] = now_ts
-                parsed["_entity_id"] = item_key
-                self._append_send_thread_log({
-                    "ts": now_ts,
-                    "kind": "item",
-                    "entity_id": item_key,
-                    "item_type": int(parsed.get("item_type", 0) or 0),
-                    "dead_box_type": int(parsed.get("dead_box_type", 0) or 0),
-                    "distance": int(parsed.get("distance", 0) or 0),
-                    "pos": _safe_wire_pos_dict(parsed.get("pos") or {}),
-                })
-                with self.radar_lock:
-                    self.radar_items[item_key] = parsed
-                    self._purge_radar_stale_locked(now_ts)
+            self._handle_item_payload(typed_payload, now_ts)
+        elif typed_kind == RWVG_TYPE_PLAYER_BATCH:
+            self._handle_player_batch_payload(typed_payload, now_ts)
+        elif typed_kind == RWVG_TYPE_ITEM_BATCH:
+            self._handle_item_batch_payload(typed_payload, now_ts)
         self.rwvg_stats["typed_bytes"] += len(typed_payload)
 
         if not self.rwvg_stream_detected:
