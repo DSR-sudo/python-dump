@@ -283,15 +283,28 @@ class DMACore:
         self.rwvg_stats["item_batch_entities"] += handled
         return handled
 
+    def _start_current_rwvg_snapshot(self, parsed: dict, now_ts: float):
+        self._append_send_thread_log({
+            "ts": now_ts,
+            "kind": "local",
+            "entity_id": "local",
+            "team_id": int(parsed.get("local_team_id", 0) or 0),
+            "weapon_id": int(parsed.get("local_weapon_id", 0) or 0),
+            "pos": _safe_wire_pos_dict(parsed.get("local_pos") or {}),
+        })
+        with self.radar_lock:
+            self.radar_latest_utils = parsed
+            self.radar_latest_utils_ts = now_ts
+            self.radar_players = {}
+            self.radar_items = {}
+
     def _handle_rwvg_typed_frame(self, typed_kind, typed_payload):
         now_ts = time.monotonic()
         if typed_kind == RWVG_TYPE_UTILS:
             self.rwvg_stats["utils_frames"] += 1
             parsed = parse_rwvg_utils_payload(typed_payload)
             if parsed is not None:
-                with self.radar_lock:
-                    self.radar_latest_utils = parsed
-                    self.radar_latest_utils_ts = now_ts
+                self._start_current_rwvg_snapshot(parsed, now_ts)
         elif typed_kind == RWVG_TYPE_PLAYER:
             self.rwvg_stats["player_frames"] += 1
             self._handle_player_payload(typed_payload, now_ts)
