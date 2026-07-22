@@ -68,6 +68,8 @@ def main():
                 handler.handle_rwbase_data(args)
             elif cmd == "webradar":
                 handler.handle_webradar(args)
+            elif cmd == "actorkinds":
+                handler.handle_actorkinds(args)
             elif cmd == "dump_mem":
                 handler.handle_dump_mem(args)
             elif cmd == "regions":

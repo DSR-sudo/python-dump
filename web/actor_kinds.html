@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Actor 分类监控</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; background-color: #1a1a1a; color: #eee; overflow: auto; height: 100vh; width: 100vw; }
+        #top-controls { position: sticky; top: 0; background-color: #333; padding: 10px; z-index: 100; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        #top-controls input, #top-controls select { padding: 6px; border: none; border-radius: 4px; background-color: #1b1b1b; color: #eee; }
+        #top-controls input::placeholder { color: #888; }
+        .control-btn { flex: 0 0 auto; padding: 6px 12px; background-color: #555; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; }
+        .control-btn.active { background-color: #4CAF50; }
+        #auth-input { width: 120px; }
+        #auth-submit { padding: 6px 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        #status-bar { color: #aaa; font-size: 12px; margin-left: auto; }
+        #kind-summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; background-color: #222; border-bottom: 1px solid #333; }
+        .kind-pill { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 12px; background-color: #2c2c2c; border: 1px solid #3a3a3a; font-size: 11px; }
+        .kind-pill .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .kind-pill .count { font-weight: bold; }
+        .kind-pill.unknown { border-color: #f44336; }
+        #table-wrap { width: 100%; overflow: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border-bottom: 1px solid #2a2a2a; padding: 4px 8px; text-align: left; font-size: 12px; font-family: Consolas, monospace; }
+        th { position: sticky; top: 0; background-color: #2b2b2b; color: #ddd; z-index: 5; }
+        tr.kind-Unknown td { background-color: rgba(244, 67, 54, 0.18); color: #ffb4ad; }
+        tr:hover td { background-color: rgba(255, 255, 255, 0.05); }
+        #empty-state { padding: 40px; text-align: center; color: #888; font-size: 14px; }
+        #auth-error { color: red; font-size: 12px; display: none; }
+        .label { font-size: 11px; color: #aaa; margin-right: 2px; }
+    </style>
+</head>
+<body>
+    <div id="top-controls">
+        <span class="label">Token</span>
+        <input id="auth-input" type="text" placeholder="输入密码" autocomplete="off">
+        <button id="auth-submit">确认</button>
+        <span id="auth-error">密码错误</span>
+        <span class="label" style="margin-left:8px">GName</span>
+        <input id="filter-gname" type="text" placeholder="子串过滤(不区分大小写)" autocomplete="off" style="width:200px">
+        <span class="label">Kind</span>
+        <select id="filter-kind">
+            <option value="">全部</option>
+            <option value="Unknown">Unknown</option>
+            <option value="Player">Player</option>
+            <option value="Minion">Minion</option>
+            <option value="Boss">Boss</option>
+            <option value="Item">Item</option>
+            <option value="Container">Container</option>
+            <option value="DeadBox">DeadBox</option>
+            <option value="Box">Box</option>
+            <option value="AI">AI</option>
+        </select>
+        <span class="label">Entity</span>
+        <input id="filter-entity" type="text" placeholder="0x指针" autocomplete="off" style="width:140px">
+        <button id="refresh-btn" class="control-btn">刷新</button>
+        <label class="control-btn active"><input type="checkbox" id="auto-refresh" checked style="margin-right:4px">自动刷新</label>
+        <select id="interval-select" class="control-btn" style="background-color:#555;color:#fff">
+            <option value="1000">1s</option>
+            <option value="500" selected>0.5s</option>
+            <option value="2000">2s</option>
+            <option value="5000">5s</option>
+        </select>
+        <span id="status-bar">—</span>
+    </div>
+
+    <div id="kind-summary"></div>
+    <div id="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Entity</th>
+                    <th>ObjectId</th>
+                    <th>GName</th>
+                    <th>Kind</th>
+                    <th>Pos X</th>
+                    <th>Pos Y</th>
+                    <th>Pos Z</th>
+                </tr>
+            </thead>
+            <tbody id="actor-tbody"></tbody>
+        </table>
+        <div id="empty-state">等待数据…</div>
+    </div>
+
+    <script>
+    const KIND_ORDER = ["Unknown", "Player", "Minion", "Boss", "Item", "Container", "DeadBox", "Box", "AI"];
+    const KIND_COLORS = {
+        Unknown: "#9e9e9e", Player: "#2196f3", Minion: "#9c27b0", Boss: "#f44336",
+        Item: "#ffeb3b", Container: "#ff9800", DeadBox: "#795548", Box: "#4caf50", AI: "#00bcd4"
+    };
+    let lastData = { actors: [], has_data: false, kind_counts: {}, count: 0, frames: 0 };
+    let refreshTimer = null;
+    let firstLoad = true;
+
+    function getToken() {
+        const saved = localStorage.getItem('ak_token') || localStorage.getItem('authToken') || '';
+        const inputEl = document.getElementById('auth-input');
+        if (!inputEl.value && saved) inputEl.value = saved;
+        return (inputEl.value || '').trim();
+    }
+
+    function fmtNum(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return '0';
+        return Math.trunc(n).toString();
+    }
+    function fmtFloat(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return '0';
+        return n.toFixed(2);
+    }
+    function fmtEntity(ptr) {
+        const n = Number(ptr);
+        if (!Number.isFinite(n) || n === 0) return '—';
+        return '0x' + n.toString(16).toUpperCase();
+    }
+
+    function applyFilters(actors) {
+        const gnameQ = document.getElementById('filter-gname').value.trim().toLowerCase();
+        const kindQ = document.getElementById('filter-kind').value;
+        const entityQ = document.getElementById('filter-entity').value.trim().toLowerCase().replace(/^0x/, '');
+        return actors.filter(a => {
+            const gname = String(a.gname || '').toLowerCase();
+            if (gnameQ && gname.indexOf(gnameQ) === -1) return false;
+            if (kindQ && a.kind_name !== kindQ) return false;
+            if (entityQ) {
+                const e = Number(a.entity || 0).toString(16).toLowerCase();
+                if (e.indexOf(entityQ) === -1) return false;
+            }
+            return true;
+        });
+    }
+
+    function renderTable() {
+        const tbody = document.getElementById('actor-tbody');
+        const empty = document.getElementById('empty-state');
+        tbody.innerHTML = '';
+        if (!lastData.has_data) {
+            empty.style.display = 'block';
+            empty.textContent = '暂无扫描数据 — 驱动尚未发送 actor-scan 帧 (Type=6)';
+            return;
+        }
+        const rows = applyFilters(lastData.actors);
+        if (!rows.length) {
+            empty.style.display = 'block';
+            empty.textContent = '没有匹配过滤条件的 Actor（共 ' + lastData.actors.length + ' 条）';
+            return;
+        }
+        empty.style.display = 'none';
+        const frag = document.createDocumentFragment();
+        // 限制渲染行数，避免巨型表卡顿
+        const cap = 1000;
+        rows.slice(0, cap).forEach(a => {
+            const tr = document.createElement('tr');
+            tr.className = 'kind-' + (a.kind_name || 'Unknown');
+            const pos = a.pos || {};
+            tr.innerHTML =
+                '<td>' + fmtEntity(a.entity) + '</td>' +
+                '<td>' + fmtNum(a.object_id) + '</td>' +
+                '<td>' + escapeHtml(a.gname || '') + '</td>' +
+                '<td>' + escapeHtml(a.kind_name || 'Unknown') + '</td>' +
+                '<td>' + fmtFloat(pos.x) + '</td>' +
+                '<td>' + fmtFloat(pos.y) + '</td>' +
+                '<td>' + fmtFloat(pos.z) + '</td>';
+            frag.appendChild(tr);
+        });
+        tbody.appendChild(frag);
+        if (rows.length > cap) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = '<td colspan="7" style="color:#888">… 另有 ' + (rows.length - cap) + ' 条未渲染（请收紧过滤）</td>';
+            tbody.appendChild(tr);
+        }
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function renderSummary() {
+        const bar = document.getElementById('kind-summary');
+        const counts = lastData.kind_counts || {};
+        bar.innerHTML = '';
+        KIND_ORDER.forEach(k => {
+            const c = counts[k] || 0;
+            const pill = document.createElement('span');
+            pill.className = 'kind-pill' + (k === 'Unknown' ? ' unknown' : '');
+            pill.innerHTML = '<span class="dot" style="background:' + (KIND_COLORS[k] || '#888') + '"></span>' +
+                escapeHtml(k) + '<span class="count">' + c + '</span>';
+            bar.appendChild(pill);
+        });
+    }
+
+    function renderStatus() {
+        const el = document.getElementById('status-bar');
+        if (!lastData.has_data) {
+            el.textContent = '无数据 | 帧数=' + lastData.frames;
+            return;
+        }
+        el.textContent = 'Actor=' + lastData.count + ' | 最近一帧=' + lastData.last_count + ' | 帧数=' + lastData.frames;
+    }
+
+    async function refresh() {
+        const token = getToken();
+        if (!token) return;
+        try {
+            const r = await fetch('/api/actor_kinds', { headers: { 'X-Auth-Token': token } });
+            if (r.status === 401) {
+                document.getElementById('auth-error').style.display = 'inline';
+                return;
+            }
+            document.getElementById('auth-error').style.display = 'none';
+            const data = await r.json();
+            lastData = {
+                actors: data.actors || [],
+                has_data: !!data.has_data,
+                kind_counts: data.kind_counts || {},
+                count: data.count || 0,
+                last_count: data.last_count || 0,
+                frames: data.frames || 0
+            };
+            localStorage.setItem('ak_token', token);
+            renderSummary();
+            renderTable();
+            renderStatus();
+        } catch (e) {
+            document.getElementById('status-bar').textContent = '请求失败: ' + e;
+        }
+    }
+
+    function setupTimer() {
+        if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+        const on = document.getElementById('auto-refresh').checked;
+        if (!on) return;
+        const ms = parseInt(document.getElementById('interval-select').value, 10) || 1000;
+        refreshTimer = setInterval(refresh, ms);
+    }
+
+    // 过滤/刷新控件事件
+    document.getElementById('filter-gname').addEventListener('input', renderTable);
+    document.getElementById('filter-kind').addEventListener('change', renderTable);
+    document.getElementById('filter-entity').addEventListener('input', renderTable);
+    document.getElementById('refresh-btn').addEventListener('click', refresh);
+    document.getElementById('auto-refresh').addEventListener('change', setupTimer);
+    document.getElementById('interval-select').addEventListener('change', setupTimer);
+    document.getElementById('auth-submit').addEventListener('click', refresh);
+    document.getElementById('auth-input').addEventListener('keypress', e => { if (e.key === 'Enter') refresh(); });
+
+    getToken();
+    refresh();
+    setupTimer();
+    </script>
+</body>
+</html>

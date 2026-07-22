@@ -13,6 +13,7 @@ from ue_generator import SDKGenerator
 from ue_scanner import UEScanner
 from ue_types import FNameCache, FNameEntryArray_UE424, TUObjectArray
 from web_radar import WebRadarService
+from web_actor_kinds import WebActorKindsService
 
 DEFAULT_DUMP_CHUNK_SIZE = 0x10000  # 64KB
 DEFAULT_RETRY_CHUNK_SIZE = 0x1000  # 4KB (robust bad-page recovery)
@@ -85,6 +86,7 @@ def print_detailed_help():
         ("coord_raw [stats/recent/watch] [IntervalSec]", "查看 RWbase 发送的 RAW 原始密文日志。"),
         ("rwbase_decrypt [stats/recent/watch] [IntervalSec]", "查看 RWbase-CPUEAXH 结构化解密调试日志（默认开启，可用 RWBASE_DECRYPT_LOG=0 关闭）。"),
         ("webradar <start/stop/status> [Port]", "启动/停止/查看网页雷达服务；token 写入 web/pwd.txt。"),
+        ("actorkinds <start/stop/status> [Port]", "启动/停止/查看 Actor 分类监控服务(默认 8081)；列出所有扫描到的 Actor 及其 GName/Kind，支持过滤。token 复用 web/pwd.txt。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
         ("cache_gnames", "构建本地 FName 缓存。"),
         ("dump_sdk <ClassName>", "为指定类生成 C++ SDK 头文件。"),
@@ -119,6 +121,7 @@ class CommandHandler:
         self.api = api
         self.ctx = UEContext()
         self.web_radar = WebRadarService(self.api.core)
+        self.web_actor_kinds = WebActorKindsService(self.api.core)
         self._last_local_pos = None
         try:
             self.sdk = SDKLoader()
@@ -1103,14 +1106,51 @@ class CommandHandler:
 
         log("Usage: webradar <start/stop/status> [Port]", "ERROR")
 
+    def handle_actorkinds(self, args):
+        action = args[0].lower() if args else "status"
+
+        if action == "status":
+            status = self.web_actor_kinds.status()
+            state = "running" if status.get("running") else "stopped"
+            log(
+                f"ActorKinds {state} on 0.0.0.0:{status.get('port')} "
+                f"token={status.get('password')} pwd={status.get('pwd_path')}"
+            )
+            return
+
+        if action == "start":
+            port = None
+            if len(args) >= 2:
+                try:
+                    port = int(args[1])
+                except ValueError:
+                    log("Usage: actorkinds <start/stop/status> [Port]", "ERROR")
+                    return
+            ok, message = self.web_actor_kinds.start(port_override=port)
+            log(f"ActorKinds {message}", "SUCCESS" if ok else "ERROR")
+            return
+
+        if action == "stop":
+            ok, message = self.web_actor_kinds.stop()
+            level = "SUCCESS" if ok else "WARN"
+            log(f"ActorKinds {message}", level)
+            return
+
+        log("Usage: actorkinds <start/stop/status> [Port]", "ERROR")
+
     def shutdown(self):
         if not hasattr(self, "web_radar"):
             return
         status = self.web_radar.status()
-        if not status.get("running"):
-            return
-        ok, message = self.web_radar.stop()
-        log(f"WebRadar {message}", "SUCCESS" if ok else "WARN")
+        if status.get("running"):
+            ok, message = self.web_radar.stop()
+            log(f"WebRadar {message}", "SUCCESS" if ok else "WARN")
+        # 同步关闭 Actor 分类监控服务
+        if hasattr(self, "web_actor_kinds"):
+            ak_status = self.web_actor_kinds.status()
+            if ak_status.get("running"):
+                ok, message = self.web_actor_kinds.stop()
+                log(f"ActorKinds {message}", "SUCCESS" if ok else "WARN")
 
     def handle_dump_mem(self, args):
         if len(args) < 3:

@@ -108,6 +108,8 @@ class DMACore:
             "item_batch_frames": 0,
             "player_batch_entities": 0,
             "item_batch_entities": 0,
+            "actor_scan_frames": 0,
+            "actor_scan_entities": 0,
             "typed_bytes": 0,
             "host_aggregate_frames": 0,
             "host_aggregate_raw_bytes": 0,
@@ -165,6 +167,14 @@ class DMACore:
         self.radar_players = {}
         self.radar_items = {}
         self.radar_player_ttl_sec = DEFAULT_PLAYER_TTL_SEC
+        # Actor 分类转储 (Type=6) 快照：按 entity 指针去重，保留最近若干条
+        self.actor_scan_lock = threading.Lock()
+        self.actor_scan_entities = {}        # entity 指针 -> 解析后的 record dict
+        self.actor_scan_order = []           # 保持插入顺序，便于按时间近似倒序展示
+        self.actor_scan_max_entities = 2000  # 与 RWVG_ACTOR_SCAN_MAX_RECORDS 保持同量级
+        self.actor_scan_last_ts = 0.0        # 最近一帧的 monotonic 时间戳
+        self.actor_scan_last_count = 0       # 最近一帧解析到的记录数
+        self.actor_scan_frames = 0           # 累计收到的 Type=6 帧数
         self.console_lock = threading.Lock()
         self.console_input_active = False
         self.console_deferred_lines = []
@@ -283,6 +293,61 @@ class DMACore:
         self.rwvg_stats["item_batch_entities"] += handled
         return handled
 
+    def _handle_actor_scan_payload(self, typed_payload: bytes, now_ts: float) -> int:
+        # 解析 Type=6 Actor 分类转储帧，按 entity 指针去重后写入快照。
+        parsed = parse_rwvg_actor_scan_payload(typed_payload)
+        if parsed is None:
+            return 0
+
+        records = parsed.get("records") or []
+        self.rwvg_stats["actor_scan_frames"] += 1
+        self.rwvg_stats["actor_scan_entities"] += len(records)
+        self.actor_scan_frames += 1
+        self.actor_scan_last_count = len(records)
+        self.actor_scan_last_ts = now_ts
+
+        with self.actor_scan_lock:
+            order = self.actor_scan_order
+            entities = self.actor_scan_entities
+            for record in records:
+                entity = int(record.get("entity", 0) or 0)
+                stamped = dict(record)
+                stamped["_ts"] = now_ts
+                if entity in entities:
+                    # 已存在：刷新值并提到队首（移动到末尾，表示最近更新）
+                    order.remove(entity)
+                entities[entity] = stamped
+                order.append(entity)
+
+            # 超过容量上限：按最早插入顺序裁剪
+            overflow = len(order) - self.actor_scan_max_entities
+            if overflow > 0:
+                evicted = order[:overflow]
+                del order[:overflow]
+                for entity in evicted:
+                    entities.pop(entity, None)
+
+        return len(records)
+
+    def get_actor_scan_snapshot(self, limit: int = 2000):
+        # 返回最近的 Actor 扫描快照（按 entity 指针去重后的列表），供 WebActorKindsService 使用。
+        with self.actor_scan_lock:
+            order = list(self.actor_scan_order)
+            entities = self.actor_scan_entities
+
+        n = max(0, int(limit))
+        # 最近的（队尾）排在前面
+        selected = order[-n:] if n else list(order)
+        selected.reverse()
+        return {
+            "actors": [dict(entities[entity]) for entity in selected if entity in entities],
+            "count": len(entities),
+            "frames": int(self.actor_scan_frames),
+            "last_ts": float(self.actor_scan_last_ts or 0.0),
+            "last_count": int(self.actor_scan_last_count),
+            "has_data": bool(entities),
+        }
+
     def _start_current_rwvg_snapshot(self, parsed: dict, now_ts: float):
         self._append_send_thread_log({
             "ts": now_ts,
@@ -315,6 +380,8 @@ class DMACore:
             self._handle_player_batch_payload(typed_payload, now_ts)
         elif typed_kind == RWVG_TYPE_ITEM_BATCH:
             self._handle_item_batch_payload(typed_payload, now_ts)
+        elif typed_kind == RWVG_TYPE_ACTOR_SCAN:
+            self._handle_actor_scan_payload(typed_payload, now_ts)
         self.rwvg_stats["typed_bytes"] += len(typed_payload)
 
         if not self.rwvg_stream_detected:
