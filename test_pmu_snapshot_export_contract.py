@@ -32,3 +32,21 @@ def test_binary_transport_reports_not_ready_and_preserves_log_packet_type():
     assert "kPacketTypeData = 0x02" in internal
     assert "return STATUS_DEVICE_NOT_READY" in transport
     assert "kPacketTypeLog" in transport
+
+
+def test_empty_level_actors_are_skipped_without_hiding_invalid_array_addresses():
+    traversal = (PMU / "src" / "Core" / "ActorScan" / "ActorTraversal.cpp").read_text(encoding="utf-8")
+    stats = (PMU / "src" / "Core" / "ActorScan" / "ActorScanStats.hpp").read_text(encoding="utf-8")
+    scan_level = traversal[traversal.index("NTSTATUS ScanLevel("):traversal.index("void LogScanSummary")]
+    scan_levels = traversal[traversal.index("NTSTATUS ScanLevels("):traversal.index("namespace Dkom")]
+
+    assert "if (*request.Count == 0)" in traversal
+    assert "if (*request.Array == 0)" in traversal
+    assert "return STATUS_INVALID_ADDRESS" in traversal
+    assert "headerStatus == STATUS_NOT_FOUND" in scan_level
+    assert "++request.Stats->EmptyLevelsSkipped" in scan_level
+    assert "return STATUS_SUCCESS" in scan_level
+    assert "if (!NT_SUCCESS(headerStatus))" in scan_levels
+    assert "return headerStatus" in scan_levels
+    assert "emptyLevelsSkipped=%lu" in traversal
+    assert "ULONG EmptyLevelsSkipped;" in stats

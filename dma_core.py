@@ -16,11 +16,13 @@ DEFAULT_EXPECTED_TRANSFER_BPS = 8 * 1024 * 1024  # 8 MB/s conservative baseline.
 DEFAULT_TRANSFER_GRACE_SEC = 5.0
 DEFAULT_IDLE_TIMEOUT_SEC = 2.5
 WAIT_SLICE_SEC = 0.2
+HEARTBEAT_INTERVAL_SEC = 1.0
 VERBOSE_EXPECTING_LOG = os.getenv("DMA_VERBOSE_EXPECTING", "0") == "1"
 DEFAULT_PLAYER_TTL_SEC = float(os.getenv("DMA_WEBRADAR_PLAYER_TTL", "1.5"))
 RWBASE_DECRYPT_LOG_ENABLED = os.getenv("RWBASE_DECRYPT_LOG", "1").strip().lower() not in ("0", "false", "off", "no")
 RWBASE_DECRYPT_LOG_PREFIX = "[CoordDecryptDebug][B64] "
 COORD_RAW_LOG_PREFIX = "[COORDRAW][SEND] "
+DRIVER_LOG_IDENTITY_PREFIXES = ("[PMU]", "[DB]", "ALIVE_ACK", "DRIVER_ONLINE")
 RWBASE_DECRYPT_QUEUE_CAPACITY = 1024
 RWBASE_DECRYPT_FALLBACK_PATH = os.getenv(
     "RWBASE_DECRYPT_FALLBACK_PATH",
@@ -97,6 +99,8 @@ class DMACore:
 
         self.is_running = True
         self.driver_online = False
+        self.driver_endpoint_lock = threading.Lock()
+        self.driver_endpoint = (DRIVER_IP, DRIVER_PORT)
         self.seq = 0
         self.rwvg_stream_detected = False
         self.host_aggregate_detected = False
@@ -789,21 +793,66 @@ class DMACore:
         with self.trace_lock:
             return [dict(item) for item in self.send_thread_history[-n:]]
 
+    def get_driver_endpoint(self):
+        with self.driver_endpoint_lock:
+            return self.driver_endpoint
+
+    def send_to_driver(self, payload):
+        return self.sock.sendto(payload, self.get_driver_endpoint())
+
+    def _learn_driver_endpoint(self, address):
+        endpoint = self._normalize_driver_endpoint(address)
+        if endpoint is None:
+            return
+        with self.driver_endpoint_lock:
+            changed = endpoint != self.driver_endpoint
+            self.driver_endpoint = endpoint
+        if changed:
+            self._emit_console_line(f"[+] Driver endpoint learned: {endpoint[0]}:{endpoint[1]}")
+
+    @staticmethod
+    def _normalize_driver_endpoint(address):
+        if not isinstance(address, tuple) or len(address) < 2:
+            return None
+        host, port = address[0], address[1]
+        if not isinstance(host, str) or not isinstance(port, int) or not 1 <= port <= 65535:
+            return None
+        try:
+            socket.inet_aton(host)
+        except OSError:
+            return None
+        return host, port
+
+    @staticmethod
+    def _is_driver_bootstrap_datagram(datagram):
+        if len(datagram) < 2:
+            return False
+        if datagram[0] == PACKET_TYPE_LOG:
+            message = bytes(datagram[1:]).decode("utf-8", errors="ignore").strip()
+            return message.startswith(DRIVER_LOG_IDENTITY_PREFIXES)
+        if datagram[0] != PACKET_TYPE_DATA:
+            return False
+        return try_parse_rwvg_typed_payload(datagram[1:]) is not None
+
     def _receiver_loop(self):
         self._emit_console_line(f"[*] UDP Receiver started on port {BIND_PORT}", defer_while_input=False)
         scratch_buffer = bytearray(65536)
 
         while self.is_running:
             try:
-                nbytes = self.sock.recv_into(scratch_buffer)
+                nbytes, source_address = self.sock.recvfrom_into(scratch_buffer)
                 if nbytes < 1:
                     continue
 
-                pkt_type = scratch_buffer[0]
+                datagram = scratch_buffer[:nbytes]
+                if self._is_driver_bootstrap_datagram(datagram):
+                    self._learn_driver_endpoint(source_address)
+
+                pkt_type = datagram[0]
 
                 if pkt_type == PACKET_TYPE_LOG:
                     try:
-                        msg = scratch_buffer[1:nbytes].decode("utf-8", errors="ignore").strip()
+                        msg = datagram[1:].decode("utf-8", errors="ignore").strip()
                         self._try_capture_module_log(msg)
                         consumed_region_log = self._try_capture_region_log(msg)
                         consumed_host_log = self._try_capture_rwbase_host_log(msg)
@@ -823,7 +872,7 @@ class DMACore:
                     continue
 
                 if pkt_type == PACKET_TYPE_DATA:
-                    payload = scratch_buffer[1:nbytes]
+                    payload = datagram[1:]
                     typed_parsed = try_parse_rwvg_typed_payload(payload)
                     if typed_parsed is not None:
                         typed_kind, typed_payload = typed_parsed
@@ -852,7 +901,7 @@ class DMACore:
                         self.rwvg_stats["dropped_data_packets"] += 1
                     continue
 
-                host_agg = try_parse_host_aggregate_payload(scratch_buffer[:nbytes])
+                host_agg = try_parse_host_aggregate_payload(datagram)
                 if host_agg is not None:
                     self.rwvg_stats["host_aggregate_frames"] += 1
                     self.rwvg_stats["host_aggregate_raw_bytes"] += host_agg["raw_size"]
@@ -936,12 +985,15 @@ class DMACore:
     def _heartbeat_loop(self):
         while self.is_running:
             try:
-                payload = b"HELO".ljust(32, b"\x00")
-                self.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
-                self.seq += 1
-                time.sleep(1.0)
+                self._send_heartbeat()
+                time.sleep(HEARTBEAT_INTERVAL_SEC)
             except Exception:
                 pass
+
+    def _send_heartbeat(self):
+        payload = b"HELO".ljust(32, b"\x00")
+        self.send_to_driver(payload)
+        self.seq += 1
 
     def request_bytes(self, payload, size, timeout=3.0):
         with self.lock:
@@ -967,7 +1019,7 @@ class DMACore:
             self.last_data_ts = start_ts
             self.expected_size = size
 
-            self.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
+            self.send_to_driver(payload)
 
             requested_timeout = max(float(timeout), 1.0)
             transfer_budget = (size / DEFAULT_EXPECTED_TRANSFER_BPS) + DEFAULT_TRANSFER_GRACE_SEC
