@@ -2,6 +2,16 @@ import base64
 import math
 import struct
 
+from rwvg_actor_snapshot import (
+    RWVG_ACTOR_SNAPSHOT_HEADER_FMT,
+    RWVG_ACTOR_SNAPSHOT_HEADER_SIZE,
+    RWVG_ACTOR_SNAPSHOT_MAX_CLASS_NAME_BYTES,
+    RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT,
+    RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE,
+    RWVG_ACTOR_SNAPSHOT_VERSION,
+    parse_rwvg_actor_scan_payload as _parse_actor_snapshot_payload,
+)
+
 # RWbase typed game stream header:
 # struct PacketHeader { ULONG Magic; ULONG Type; ULONG Size; }
 RWVG_MAGIC = 0x47564352  # "RWVG"
@@ -298,6 +308,8 @@ def parse_rwvg_actor_scan_payload(payload: bytes):
         return None
 
     record_count, record_version = struct.unpack_from(RWVG_ACTOR_SCAN_HEADER_FMT, payload, 0)
+    if record_version == RWVG_ACTOR_SNAPSHOT_VERSION:
+        return _parse_actor_snapshot_payload(payload)
     if record_version != RWVG_ACTOR_SCAN_VERSION:
         return None
     if record_count < 0 or record_count > RWVG_ACTOR_SCAN_MAX_RECORDS:

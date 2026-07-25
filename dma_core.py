@@ -171,10 +171,18 @@ class DMACore:
         self.actor_scan_lock = threading.Lock()
         self.actor_scan_entities = {}        # entity 指针 -> 解析后的 record dict
         self.actor_scan_order = []           # 保持插入顺序，便于按时间近似倒序展示
-        self.actor_scan_max_entities = 2000  # 与 RWVG_ACTOR_SCAN_MAX_RECORDS 保持同量级
         self.actor_scan_last_ts = 0.0        # 最近一帧的 monotonic 时间戳
         self.actor_scan_last_count = 0       # 最近一帧解析到的记录数
         self.actor_scan_frames = 0           # 累计收到的 Type=6 帧数
+        self.actor_scan_snapshot_id = None
+        self.actor_scan_fragment_count = 0
+        self.actor_scan_received_fragments = set()
+        self.actor_scan_total_record_count = 0
+        self.actor_scan_complete = False
+        self.actor_scan_dropped_late_fragments = 0
+        self.actor_scan_duplicate_fragments = 0
+        self.actor_scan_invalid_fragments = 0
+        self.actor_scan_last_status = "awaiting_snapshot"
         self.console_lock = threading.Lock()
         self.console_input_active = False
         self.console_deferred_lines = []
@@ -294,58 +302,111 @@ class DMACore:
         return handled
 
     def _handle_actor_scan_payload(self, typed_payload: bytes, now_ts: float) -> int:
-        # 解析 Type=6 Actor 分类转储帧，按 entity 指针去重后写入快照。
         parsed = parse_rwvg_actor_scan_payload(typed_payload)
         if parsed is None:
             return 0
 
+        if int(parsed.get("version", 0)) == 2:
+            return self._accept_actor_snapshot_v2(parsed, now_ts)
+        return self._accept_actor_snapshot_v1(parsed, now_ts)
+
+    def _accept_actor_snapshot_v1(self, parsed: dict, now_ts: float) -> int:
         records = parsed.get("records") or []
-        self.rwvg_stats["actor_scan_frames"] += 1
-        self.rwvg_stats["actor_scan_entities"] += len(records)
-        self.actor_scan_frames += 1
-        self.actor_scan_last_count = len(records)
-        self.actor_scan_last_ts = now_ts
-
         with self.actor_scan_lock:
-            order = self.actor_scan_order
-            entities = self.actor_scan_entities
-            for record in records:
-                entity = int(record.get("entity", 0) or 0)
-                stamped = dict(record)
-                stamped["_ts"] = now_ts
-                if entity in entities:
-                    # 已存在：刷新值并提到队首（移动到末尾，表示最近更新）
-                    order.remove(entity)
-                entities[entity] = stamped
-                order.append(entity)
-
-            # 超过容量上限：按最早插入顺序裁剪
-            overflow = len(order) - self.actor_scan_max_entities
-            if overflow > 0:
-                evicted = order[:overflow]
-                del order[:overflow]
-                for entity in evicted:
-                    entities.pop(entity, None)
-
+            self.actor_scan_snapshot_id = None
+            self.actor_scan_fragment_count = 1
+            self.actor_scan_received_fragments = {0}
+            self.actor_scan_total_record_count = len(records)
+            self.actor_scan_complete = True
+            self.actor_scan_last_status = "legacy_v1_complete"
+            self._merge_actor_snapshot_records(records, now_ts)
+        self._record_actor_snapshot_frame(len(records), now_ts)
         return len(records)
 
-    def get_actor_scan_snapshot(self, limit: int = 2000):
-        # 返回最近的 Actor 扫描快照（按 entity 指针去重后的列表），供 WebActorKindsService 使用。
+    def _accept_actor_snapshot_v2(self, parsed: dict, now_ts: float) -> int:
+        snapshot_id = int(parsed["snapshot_id"])
+        fragment_index = int(parsed["fragment_index"])
+        with self.actor_scan_lock:
+            if self._is_older_actor_snapshot(snapshot_id):
+                self.actor_scan_dropped_late_fragments += 1
+                self.actor_scan_last_status = "dropped_late_fragment"
+                return 0
+            if self.actor_scan_snapshot_id != snapshot_id:
+                self._start_actor_snapshot(parsed, now_ts)
+            if not self._has_matching_actor_snapshot_shape(parsed):
+                self.actor_scan_invalid_fragments += 1
+                self.actor_scan_last_status = "invalid_fragment_metadata"
+                return 0
+            if fragment_index in self.actor_scan_received_fragments:
+                self.actor_scan_duplicate_fragments += 1
+                self.actor_scan_last_status = "duplicate_fragment"
+                return 0
+            records = parsed.get("records") or []
+            self.actor_scan_received_fragments.add(fragment_index)
+            self._merge_actor_snapshot_records(records, now_ts)
+            self.actor_scan_complete = len(self.actor_scan_received_fragments) == self.actor_scan_fragment_count
+            self.actor_scan_last_status = "complete" if self.actor_scan_complete else "partial"
+        self._record_actor_snapshot_frame(len(records), now_ts)
+        return len(records)
+
+    def _is_older_actor_snapshot(self, snapshot_id: int) -> bool:
+        return self.actor_scan_snapshot_id is not None and snapshot_id < self.actor_scan_snapshot_id
+
+    def _start_actor_snapshot(self, parsed: dict, now_ts: float):
+        self.actor_scan_snapshot_id = int(parsed["snapshot_id"])
+        self.actor_scan_fragment_count = int(parsed["fragment_count"])
+        self.actor_scan_received_fragments = set()
+        self.actor_scan_total_record_count = int(parsed["total_record_count"])
+        self.actor_scan_complete = False
+        self.actor_scan_last_status = "partial"
+        self.actor_scan_last_ts = now_ts
+        self.actor_scan_last_count = 0
+        self.actor_scan_entities = {}
+        self.actor_scan_order = []
+
+    def _has_matching_actor_snapshot_shape(self, parsed: dict) -> bool:
+        return (
+            self.actor_scan_fragment_count == int(parsed["fragment_count"])
+            and self.actor_scan_total_record_count == int(parsed["total_record_count"])
+        )
+
+    def _merge_actor_snapshot_records(self, records: list, now_ts: float):
+        for record in records:
+            actor_address = int(record.get("actor_address", record.get("entity", 0)) or 0)
+            if actor_address not in self.actor_scan_entities:
+                self.actor_scan_order.append(actor_address)
+            stamped = dict(record)
+            stamped["_ts"] = now_ts
+            self.actor_scan_entities[actor_address] = stamped
+
+    def _record_actor_snapshot_frame(self, record_count: int, now_ts: float):
+        self.rwvg_stats["actor_scan_frames"] += 1
+        self.rwvg_stats["actor_scan_entities"] += record_count
+        self.actor_scan_frames += 1
+        self.actor_scan_last_count = record_count
+        self.actor_scan_last_ts = now_ts
+
+    def get_actor_scan_snapshot(self):
         with self.actor_scan_lock:
             order = list(self.actor_scan_order)
-            entities = self.actor_scan_entities
-
-        n = max(0, int(limit))
-        # 最近的（队尾）排在前面
-        selected = order[-n:] if n else list(order)
-        selected.reverse()
+            entities = dict(self.actor_scan_entities)
         return {
-            "actors": [dict(entities[entity]) for entity in selected if entity in entities],
+            "actors": [dict(entities[entity]) for entity in order if entity in entities],
             "count": len(entities),
             "frames": int(self.actor_scan_frames),
             "last_ts": float(self.actor_scan_last_ts or 0.0),
             "last_count": int(self.actor_scan_last_count),
-            "has_data": bool(entities),
+            "has_data": self.actor_scan_snapshot_id is not None or bool(entities),
+            "version": 2 if self.actor_scan_snapshot_id is not None else 1,
+            "snapshot_id": self.actor_scan_snapshot_id,
+            "fragment_count": int(self.actor_scan_fragment_count),
+            "received_fragments": len(self.actor_scan_received_fragments),
+            "total_record_count": int(self.actor_scan_total_record_count),
+            "complete": bool(self.actor_scan_complete),
+            "status": str(self.actor_scan_last_status),
+            "dropped_late_fragments": int(self.actor_scan_dropped_late_fragments),
+            "duplicate_fragments": int(self.actor_scan_duplicate_fragments),
+            "invalid_fragments": int(self.actor_scan_invalid_fragments),
         }
 
     def _start_current_rwvg_snapshot(self, parsed: dict, now_ts: float):

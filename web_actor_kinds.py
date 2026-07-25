@@ -134,12 +134,24 @@ th, td { border: 1px solid #333; padding: 4px 8px; text-align: left; font-size: 
     def _build_actor_kinds_data(self):
         # 旧驱动尚未发送 Type=6 帧时，core.get_actor_scan_snapshot 仍会返回 has_data=False 的空快照，
         # 前端据此提示“驱动未发送 actor-scan 帧”，而不是报错。
-        snapshot = {"actors": [], "count": 0, "frames": 0, "last_ts": 0.0, "last_count": 0, "has_data": False}
+        snapshot = {
+            "actors": [], "count": 0, "frames": 0, "last_ts": 0.0,
+            "last_count": 0, "has_data": False, "version": 0,
+            "snapshot_id": None, "fragment_count": 0, "received_fragments": 0,
+            "total_record_count": 0, "complete": False, "status": "awaiting_snapshot",
+            "dropped_late_fragments": 0, "duplicate_fragments": 0, "invalid_fragments": 0,
+        }
         if hasattr(self.core, "get_actor_scan_snapshot"):
             try:
                 snapshot = self.core.get_actor_scan_snapshot() or snapshot
             except Exception:
-                snapshot = {"actors": [], "count": 0, "frames": 0, "last_ts": 0.0, "last_count": 0, "has_data": False}
+                snapshot = {
+                    "actors": [], "count": 0, "frames": 0, "last_ts": 0.0,
+                    "last_count": 0, "has_data": False, "version": 0,
+                    "snapshot_id": None, "fragment_count": 0, "received_fragments": 0,
+                    "total_record_count": 0, "complete": False, "status": "snapshot_error",
+                    "dropped_late_fragments": 0, "duplicate_fragments": 0, "invalid_fragments": 0,
+                }
 
         # Kind 计数汇总：Unknown/Player/Minion/Boss/Item/Container/DeadBox/Box/AI
         kind_counts = {}
@@ -155,6 +167,16 @@ th, td { border: 1px solid #333; padding: 4px 8px; text-align: left; font-size: 
             "last_ts": float(snapshot.get("last_ts", 0.0) or 0.0),
             "last_count": int(snapshot.get("last_count", 0) or 0),
             "kind_counts": kind_counts,
+            "version": int(snapshot.get("version", 0) or 0),
+            "snapshot_id": snapshot.get("snapshot_id"),
+            "fragment_count": int(snapshot.get("fragment_count", 0) or 0),
+            "received_fragments": int(snapshot.get("received_fragments", 0) or 0),
+            "total_record_count": int(snapshot.get("total_record_count", 0) or 0),
+            "complete": bool(snapshot.get("complete")),
+            "status": str(snapshot.get("status", "awaiting_snapshot")),
+            "dropped_late_fragments": int(snapshot.get("dropped_late_fragments", 0) or 0),
+            "duplicate_fragments": int(snapshot.get("duplicate_fragments", 0) or 0),
+            "invalid_fragments": int(snapshot.get("invalid_fragments", 0) or 0),
         }
 
     # ---- HTTP handler ---------------------------------------------------------
