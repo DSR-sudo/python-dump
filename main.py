@@ -1,14 +1,20 @@
 # main.py
+import atexit
 import time
+from pathlib import Path
 from dma_core import DMACore
 from dma_api import DMAApi
 from dma_command import CommandHandler, log, print_banner, print_detailed_help
+from session_log import SessionLog
 
 def main():
+    session_log = SessionLog.start(Path(__file__).resolve().parent)
+    atexit.register(session_log.close)
+    print(f"[+] Session log: {session_log.path}")
     print_banner()
     
     # 1. 初始化 DMA 通信
-    core = DMACore() #
+    core = DMACore(session_log=session_log) #
     api = DMAApi(core) #
 
     log("Waiting for DMA Driver connection...")

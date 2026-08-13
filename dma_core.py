@@ -9,6 +9,7 @@ import os
 import re
 import math
 import queue
+from actor_snapshot_radar import build_radar_snapshot
 from dma_protocol import *
 from item_catalog import describe_item
 
@@ -86,7 +87,8 @@ class DMACore:
     REGION_DONE_RE = re.compile(
         r"^\[UserRegion\]\s+Done\s+PID=([0-9A-Fa-fx]+)\s+Count=(\d+)$"
     )
-    def __init__(self):
+    def __init__(self, session_log=None):
+        self.session_log = session_log
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(("0.0.0.0", BIND_PORT))
@@ -198,7 +200,12 @@ class DMACore:
         if RWBASE_DECRYPT_LOG_ENABLED:
             threading.Thread(target=self._decrypt_log_worker, daemon=True).start()
 
-    def _emit_console_line(self, line: str, defer_while_input: bool = True):
+    def _emit_console_line(
+        self,
+        line: str,
+        defer_while_input: bool = True,
+        write_to_session: bool = True,
+    ):
         if not line:
             return
 
@@ -209,6 +216,9 @@ class DMACore:
                 else:
                     self.console_deferred_dropped += 1
                 return
+        if not write_to_session and self.session_log is not None:
+            self.session_log.write_console_only(f"{line}\n")
+            return
         print(line)
 
     def begin_console_input(self):
@@ -227,9 +237,19 @@ class DMACore:
             self.console_deferred_dropped = 0
 
         for line in deferred:
-            print(line)
+            self._write_deferred_console_line(line)
         if dropped > 0:
             print(f"[LOG] {dropped} background lines dropped while typing.")
+
+    def _write_deferred_console_line(self, line: str):
+        if self.session_log is None:
+            print(line)
+            return
+        self.session_log.write_console_only(f"{line}\n")
+
+    def _write_received_log(self, message: str):
+        if self.session_log is not None:
+            self.session_log.write_received_log(message)
 
     def _record_player_radar(self, parsed: dict, now_ts: float):
         entity_id = self._build_player_entity_id(parsed)
@@ -504,6 +524,10 @@ class DMACore:
         return yaw_deg
 
     def get_radar_snapshot(self):
+        actor_snapshot = self.get_actor_scan_snapshot()
+        if actor_snapshot["has_data"]:
+            return build_radar_snapshot(actor_snapshot, self._get_snapshot_local_player())
+
         now_ts = time.monotonic()
         with self.radar_lock:
             self._purge_radar_stale_locked(now_ts)
@@ -593,6 +617,20 @@ class DMACore:
             "entities": entities,
             "items": item_snapshots,
             "teammates": teammates,
+        }
+
+    def _get_snapshot_local_player(self):
+        with self.radar_lock:
+            utils = dict(self.radar_latest_utils or {})
+        if not utils:
+            return None
+        return {
+            "id": "local",
+            "team_id": int(utils.get("local_team_id", 0) or 0),
+            "camp_id": 0,
+            "yaw": self._calculate_local_yaw(utils.get("matrix")),
+            "position": _safe_pos_dict(utils.get("local_pos")),
+            "neck_position": _safe_pos_dict(utils.get("local_neck_pos")),
         }
 
     def _handle_zombie_ack_packet(self, payload):
@@ -853,6 +891,7 @@ class DMACore:
                 if pkt_type == PACKET_TYPE_LOG:
                     try:
                         msg = datagram[1:].decode("utf-8", errors="ignore").strip()
+                        self._write_received_log(msg)
                         self._try_capture_module_log(msg)
                         consumed_region_log = self._try_capture_region_log(msg)
                         consumed_host_log = self._try_capture_rwbase_host_log(msg)
@@ -866,7 +905,10 @@ class DMACore:
                             continue
 
                         if msg:
-                            self._emit_console_line(f"[LOG] {msg}")
+                            self._emit_console_line(
+                                f"[LOG] {msg}",
+                                write_to_session=False,
+                            )
                     except Exception:
                         pass
                     continue

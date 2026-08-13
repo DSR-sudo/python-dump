@@ -307,7 +307,7 @@
                 const entityType = entityData.type || 'player';
                 const isAi = entityType === 'ai';
                 const isTeammate = !isAi && entityData.team_id === localPlayer?.team_id;
-                const isDead = entityData.health <= 0;
+                const isDead = entityData.has_health === true && Number(entityData.health) <= 0;
                 if (isTeammate) {
                     const isSelf = entityData.id === localPlayer?.id;
                     let isSelected = (selectedPlayerId === null || selectedPlayerId === '') ? isSelf : (entityData.id == selectedPlayerId);
@@ -321,7 +321,7 @@
                     if (isDead) { body.classList.add('dead'); body.style.borderColor = teamColor; }
                     else { body.style.backgroundColor = teamColor; body.style.borderColor = 'black'; body.textContent = entityData.team_id; }
                 }
-                if (!isDead) {
+                if (!isDead && entityData.has_orientation !== false) {
                     const direction = document.createElement('div');
                     direction.className = 'entity-direction';
                     direction.style.transform = `translateX(-50%) rotate(${correctedOrientation}deg)`;
