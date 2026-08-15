@@ -177,6 +177,8 @@ class DMACore:
         self.actor_scan_lock = threading.Lock()
         self.actor_scan_entities = {}        # entity 指针 -> 解析后的 record dict
         self.actor_scan_order = []           # 保持插入顺序，便于按时间近似倒序展示
+        self.actor_scan_local_view = {}
+        self.actor_scan_version = RWVG_ACTOR_SNAPSHOT_VERSION
         self.actor_scan_last_ts = 0.0        # 最近一帧的 monotonic 时间戳
         self.actor_scan_last_count = 0       # 最近一帧解析到的记录数
         self.actor_scan_frames = 0           # 累计收到的 Type=6 帧数
@@ -330,24 +332,9 @@ class DMACore:
         if parsed is None:
             return 0
 
-        if int(parsed.get("version", 0)) == 2:
-            return self._accept_actor_snapshot_v2(parsed, now_ts)
-        return self._accept_actor_snapshot_v1(parsed, now_ts)
+        return self._accept_actor_snapshot(parsed, now_ts)
 
-    def _accept_actor_snapshot_v1(self, parsed: dict, now_ts: float) -> int:
-        records = parsed.get("records") or []
-        with self.actor_scan_lock:
-            self.actor_scan_snapshot_id = None
-            self.actor_scan_fragment_count = 1
-            self.actor_scan_received_fragments = {0}
-            self.actor_scan_total_record_count = len(records)
-            self.actor_scan_complete = True
-            self.actor_scan_last_status = "legacy_v1_complete"
-            self._merge_actor_snapshot_records(records, now_ts)
-        self._record_actor_snapshot_frame(len(records), now_ts)
-        return len(records)
-
-    def _accept_actor_snapshot_v2(self, parsed: dict, now_ts: float) -> int:
+    def _accept_actor_snapshot(self, parsed: dict, now_ts: float) -> int:
         snapshot_id = int(parsed["snapshot_id"])
         fragment_index = int(parsed["fragment_index"])
         with self.actor_scan_lock:
@@ -377,6 +364,8 @@ class DMACore:
         return self.actor_scan_snapshot_id is not None and snapshot_id < self.actor_scan_snapshot_id
 
     def _start_actor_snapshot(self, parsed: dict, now_ts: float):
+        self.actor_scan_version = int(parsed["version"])
+        self.actor_scan_local_view = dict(parsed.get("local_view") or {})
         self.actor_scan_snapshot_id = int(parsed["snapshot_id"])
         self.actor_scan_fragment_count = int(parsed["fragment_count"])
         self.actor_scan_received_fragments = set()
@@ -392,6 +381,18 @@ class DMACore:
         return (
             self.actor_scan_fragment_count == int(parsed["fragment_count"])
             and self.actor_scan_total_record_count == int(parsed["total_record_count"])
+            and self._local_view_identity(self.actor_scan_local_view)
+            == self._local_view_identity(parsed.get("local_view"))
+        )
+
+    @staticmethod
+    def _local_view_identity(view: dict | None) -> tuple[int, ...]:
+        source = view or {}
+        diagnostics = source.get("diagnostics") or {}
+        return (
+            int(source.get("local_pawn", 0) or 0), int(source.get("yaw_bits", 0) or 0),
+            int(source.get("valid_fields", 0) or 0), int(diagnostics.get("attempts", 0) or 0),
+            int(diagnostics.get("failures", 0) or 0), int(diagnostics.get("first_failure", 0) or 0),
         )
 
     def _merge_actor_snapshot_records(self, records: list, now_ts: float):
@@ -414,6 +415,8 @@ class DMACore:
         with self.actor_scan_lock:
             order = list(self.actor_scan_order)
             entities = dict(self.actor_scan_entities)
+            local_view = dict(self.actor_scan_local_view)
+            version = int(self.actor_scan_version)
         return {
             "actors": [dict(entities[entity]) for entity in order if entity in entities],
             "count": len(entities),
@@ -421,7 +424,8 @@ class DMACore:
             "last_ts": float(self.actor_scan_last_ts or 0.0),
             "last_count": int(self.actor_scan_last_count),
             "has_data": self.actor_scan_snapshot_id is not None or bool(entities),
-            "version": 2 if self.actor_scan_snapshot_id is not None else 1,
+            "version": version,
+            "local_view": local_view,
             "snapshot_id": self.actor_scan_snapshot_id,
             "fragment_count": int(self.actor_scan_fragment_count),
             "received_fragments": len(self.actor_scan_received_fragments),

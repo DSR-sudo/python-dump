@@ -1,5 +1,6 @@
-"""RWVG Type=6 actor snapshot protocol versions."""
+"""RWVG Type=6 actor snapshot protocol."""
 
+import math
 import struct
 
 
@@ -25,23 +26,16 @@ RWVG_ACTOR_KIND_NAMES = {
     RWVG_ACTOR_KIND_AI: "AI",
 }
 
-RWVG_ACTOR_SCAN_VERSION = 1
-RWVG_ACTOR_SCAN_HEADER_FMT = "<HH"
-RWVG_ACTOR_SCAN_HEADER_SIZE = struct.calcsize(RWVG_ACTOR_SCAN_HEADER_FMT)
-RWVG_ACTOR_SCAN_RECORD_FIXED_FMT = "<QIBH"
-RWVG_ACTOR_SCAN_RECORD_FIXED_SIZE = struct.calcsize(RWVG_ACTOR_SCAN_RECORD_FIXED_FMT)
-RWVG_ACTOR_SCAN_POS_FMT = "<3f"
-RWVG_ACTOR_SCAN_POS_SIZE = struct.calcsize(RWVG_ACTOR_SCAN_POS_FMT)
-RWVG_ACTOR_SCAN_RECORD_MIN_SIZE = RWVG_ACTOR_SCAN_RECORD_FIXED_SIZE + RWVG_ACTOR_SCAN_POS_SIZE
-RWVG_ACTOR_SCAN_MAX_RECORDS = 2000
-RWVG_ACTOR_SCAN_MAX_GNAME_BYTES = 512
-
-RWVG_ACTOR_SNAPSHOT_VERSION = 2
-RWVG_ACTOR_SNAPSHOT_HEADER_FMT = "<HHIIII"
+RWVG_ACTOR_SNAPSHOT_VERSION = 3
+RWVG_ACTOR_SNAPSHOT_PREFIX_FMT = "<HH"
+RWVG_ACTOR_SNAPSHOT_PREFIX_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_PREFIX_FMT)
+RWVG_ACTOR_SNAPSHOT_HEADER_FMT = "<HHIIIIQIIIIi"
 RWVG_ACTOR_SNAPSHOT_HEADER_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_HEADER_FMT)
 RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<QIBBQQQIIIBQiIIHIIIi"
 RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT)
 RWVG_ACTOR_SNAPSHOT_MAX_CLASS_NAME_BYTES = 64
+RWVG_ACTOR_SNAPSHOT_VIEW_HAS_LOCAL_PAWN = 1 << 0
+RWVG_ACTOR_SNAPSHOT_VIEW_HAS_CONTROL_ROTATION_YAW = 1 << 1
 
 
 def _float_from_bits(bits: int) -> float:
@@ -52,38 +46,7 @@ def _kind_name(kind: int) -> str:
     return RWVG_ACTOR_KIND_NAMES.get(int(kind), "Unknown")
 
 
-def _parse_v1(payload: bytes, record_count: int):
-    if record_count > RWVG_ACTOR_SCAN_MAX_RECORDS:
-        return None
-
-    offset = RWVG_ACTOR_SCAN_HEADER_SIZE
-    records = []
-    for _ in range(record_count):
-        if offset + RWVG_ACTOR_SCAN_RECORD_MIN_SIZE > len(payload):
-            return None
-        entity, object_id, kind, gname_len = struct.unpack_from(
-            RWVG_ACTOR_SCAN_RECORD_FIXED_FMT, payload, offset
-        )
-        offset += RWVG_ACTOR_SCAN_RECORD_FIXED_SIZE
-        if gname_len > RWVG_ACTOR_SCAN_MAX_GNAME_BYTES:
-            return None
-        if offset + gname_len + RWVG_ACTOR_SCAN_POS_SIZE > len(payload):
-            return None
-        gname = payload[offset:offset + gname_len].decode("utf-8", errors="ignore")
-        offset += gname_len
-        pos_x, pos_y, pos_z = struct.unpack_from(RWVG_ACTOR_SCAN_POS_FMT, payload, offset)
-        offset += RWVG_ACTOR_SCAN_POS_SIZE
-        records.append({
-            "entity": int(entity), "actor_address": int(entity), "object_id": int(object_id),
-            "kind": int(kind), "kind_name": _kind_name(kind), "gname": gname,
-            "class_name": gname, "pos": {"x": pos_x, "y": pos_y, "z": pos_z},
-        })
-    if offset != len(payload):
-        return None
-    return {"records": records, "record_count": record_count, "version": RWVG_ACTOR_SCAN_VERSION}
-
-
-def _parse_v2_record(payload: bytes, offset: int):
+def _parse_record(payload: bytes, offset: int):
     end = offset + RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE
     if end > len(payload):
         return None
@@ -119,39 +82,53 @@ def _parse_v2_record(payload: bytes, offset: int):
     return record, class_name_end
 
 
-def _parse_v2(payload: bytes, record_count: int):
-    if len(payload) < RWVG_ACTOR_SNAPSHOT_HEADER_SIZE:
-        return None
-    (_, version, snapshot_id, fragment_index, fragment_count,
-     total_record_count) = struct.unpack_from(RWVG_ACTOR_SNAPSHOT_HEADER_FMT, payload, 0)
-    if version != RWVG_ACTOR_SNAPSHOT_VERSION or fragment_count == 0 or fragment_index >= fragment_count:
-        return None
-    if total_record_count == 0 and (record_count != 0 or fragment_count != 1):
-        return None
-    offset = RWVG_ACTOR_SNAPSHOT_HEADER_SIZE
+def _parse_snapshot_records(payload: bytes, offset: int, record_count: int):
     records = []
     for _ in range(record_count):
-        parsed = _parse_v2_record(payload, offset)
+        parsed = _parse_record(payload, offset)
         if parsed is None:
             return None
         record, offset = parsed
         records.append(record)
-    if offset != len(payload):
+    return records if offset == len(payload) else None
+
+
+def _parse_snapshot(payload: bytes, record_count: int):
+    if len(payload) < RWVG_ACTOR_SNAPSHOT_HEADER_SIZE:
         return None
+    (ignored_count, version, snapshot_id, fragment_index, fragment_count, total_record_count,
+     local_pawn, yaw_bits, view_fields, attempts, failures,
+     first_failure) = struct.unpack_from(RWVG_ACTOR_SNAPSHOT_HEADER_FMT, payload, 0)
+    if ignored_count != record_count or fragment_count == 0 or fragment_index >= fragment_count:
+        return None
+    if total_record_count == 0 and (record_count != 0 or fragment_count != 1):
+        return None
+    records = _parse_snapshot_records(payload, RWVG_ACTOR_SNAPSHOT_HEADER_SIZE, record_count)
+    if records is None:
+        return None
+    yaw = _float_from_bits(yaw_bits)
+    has_yaw = bool(view_fields & RWVG_ACTOR_SNAPSHOT_VIEW_HAS_CONTROL_ROTATION_YAW)
     return {
         "records": records, "record_count": int(record_count), "version": int(version),
         "snapshot_id": int(snapshot_id), "fragment_index": int(fragment_index),
         "fragment_count": int(fragment_count), "total_record_count": int(total_record_count),
+        "local_view": {
+            "local_pawn": int(local_pawn), "local_pawn_hex": f"0x{local_pawn:X}",
+            "yaw_bits": int(yaw_bits), "yaw": yaw if math.isfinite(yaw) else None,
+            "valid_fields": int(view_fields),
+            "has_local_pawn": bool(view_fields & RWVG_ACTOR_SNAPSHOT_VIEW_HAS_LOCAL_PAWN),
+            "has_yaw": has_yaw and math.isfinite(yaw),
+            "diagnostics": {
+                "attempts": int(attempts), "failures": int(failures),
+                "first_failure": int(first_failure),
+            },
+        },
     }
 
 
 def parse_rwvg_actor_scan_payload(payload: bytes):
-    """Parse legacy V1 or fragmented V2 Type=6 payloads."""
-    if not payload or len(payload) < RWVG_ACTOR_SCAN_HEADER_SIZE:
+    """Parse the sole Type=6 actor snapshot layout."""
+    if not payload or len(payload) < RWVG_ACTOR_SNAPSHOT_PREFIX_SIZE:
         return None
-    record_count, version = struct.unpack_from(RWVG_ACTOR_SCAN_HEADER_FMT, payload, 0)
-    if version == RWVG_ACTOR_SCAN_VERSION:
-        return _parse_v1(payload, record_count)
-    if version == RWVG_ACTOR_SNAPSHOT_VERSION:
-        return _parse_v2(payload, record_count)
-    return None
+    record_count, version = struct.unpack_from(RWVG_ACTOR_SNAPSHOT_PREFIX_FMT, payload, 0)
+    return _parse_snapshot(payload, record_count) if version == RWVG_ACTOR_SNAPSHOT_VERSION else None

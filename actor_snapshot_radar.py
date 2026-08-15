@@ -9,12 +9,16 @@ POSITION_FIELD = 1 << 3
 TEAM_FIELD = 1 << 4
 HEALTH_FIELD = 1 << 5
 MAX_HEALTH_FIELD = 1 << 6
+VIEW_LOCAL_PAWN_FIELD = 1 << 0
+VIEW_CONTROL_ROTATION_YAW_FIELD = 1 << 1
 ITEM_KINDS = frozenset(("Item", "Container", "DeadBox", "Box"))
 AI_KINDS = frozenset(("AI", "Minion", "Boss"))
 
 
 def build_radar_snapshot(actor_snapshot: dict[str, Any], local_player: dict[str, Any] | None) -> dict[str, Any]:
     entities, items = _map_records(actor_snapshot.get("actors") or [])
+    snapshot_local_player = _local_player_from_snapshot(entities, actor_snapshot.get("local_view"))
+    resolved_local_player = snapshot_local_player or local_player
     return {
         "meta": {
             "source": f"actor_snapshot_v{int(actor_snapshot.get('version', 0) or 0)}",
@@ -25,12 +29,36 @@ def build_radar_snapshot(actor_snapshot: dict[str, Any], local_player: dict[str,
             "snapshot_complete": bool(actor_snapshot.get("complete")),
             "utils_present": local_player is not None,
             "utils_age_ms": -1,
+            "type6_view_present": snapshot_local_player is not None,
         },
-        "local_player": local_player,
+        "local_player": resolved_local_player,
         "entities": entities,
         "items": items,
         "teammates": [],
     }
+
+
+def _local_player_from_snapshot(
+    entities: list[dict[str, Any]], local_view: Any,
+) -> dict[str, Any] | None:
+    view = local_view if isinstance(local_view, dict) else {}
+    view_fields = int(view.get("valid_fields", 0) or 0)
+    required_fields = VIEW_LOCAL_PAWN_FIELD | VIEW_CONTROL_ROTATION_YAW_FIELD
+    if view_fields & required_fields != required_fields or not bool(view.get("has_yaw")):
+        return None
+    local_pawn = int(view.get("local_pawn", 0) or 0)
+    local_id = f"0x{local_pawn:X}"
+    for index, entity in enumerate(entities):
+        if entity.get("id") != local_id:
+            continue
+        yaw = float(view["yaw"])
+        entities[index] = {**entity, "orientation": yaw, "has_orientation": True}
+        return {
+            "id": local_id, "team_id": int(entity.get("team_id", 0) or 0),
+            "camp_id": 0, "yaw": yaw, "position": dict(entity["position"]),
+            "neck_position": dict(entity["position"]),
+        }
+    return None
 
 
 def _map_records(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

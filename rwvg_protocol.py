@@ -3,6 +3,16 @@ import math
 import struct
 
 from rwvg_actor_snapshot import (
+    RWVG_ACTOR_KIND_AI,
+    RWVG_ACTOR_KIND_BOSS,
+    RWVG_ACTOR_KIND_BOX,
+    RWVG_ACTOR_KIND_CONTAINER,
+    RWVG_ACTOR_KIND_DEADBOX,
+    RWVG_ACTOR_KIND_ITEM,
+    RWVG_ACTOR_KIND_MINION,
+    RWVG_ACTOR_KIND_NAMES,
+    RWVG_ACTOR_KIND_PLAYER,
+    RWVG_ACTOR_KIND_UNKNOWN,
     RWVG_ACTOR_SNAPSHOT_HEADER_FMT,
     RWVG_ACTOR_SNAPSHOT_HEADER_SIZE,
     RWVG_ACTOR_SNAPSHOT_MAX_CLASS_NAME_BYTES,
@@ -37,75 +47,6 @@ RWVG_TYPED_SIZE_BY_KIND = {
     # RWVG_TYPE_ACTOR_SCAN 故意不在此表：记录是变长的，无法用一个固定 Size 校验。
     # try_parse_rwvg_typed_payload 对未登记类型会回退到“仅按 Size 校验”的宽松路径。
 }
-
-# ----------------------------------------------------------------------------
-# Actor 分类转储 (Type=6) 字节布局 — 供 C++ 驱动侧实现匹配的编码器。
-#
-# 一个 Type=6 帧 = [PacketHeader(12B)] + [ActorScanHeader(4B)] + N 条 ActorScanRecord
-#
-#   PacketHeader (复用所有 typed 帧的通用头):
-#       ULONG Magic   = 0x47564352  ("RWVG", 小端)
-#       ULONG Type    = 6           (RWVG_TYPE_ACTOR_SCAN)
-#       ULONG Size    = sizeof(ActorScanHeader) + sum(sizeof(每条 record))
-#
-#   ActorScanHeader (4B, pack(1)):
-#       UINT16 record_count   = N  (本帧内的 Actor 记录数，可为 0)
-#       UINT16 record_version = 1  (布局版本号；解析侧按版本号决定字段，当前固定 1)
-#
-#   每条 ActorScanRecord (变长，pack(1)):
-#       UINT64 entity     = UObject 指针（实体句柄/地址）
-#       UINT32 objectId   = UObject 的 ObjectID/FNameIndex
-#       UINT8  kind       = 分类码（见 RWVG_ACTOR_KIND_* 枚举）
-#       UINT16 gname_len  = GName 字符串字节数（UTF-8 字节数，不含结尾 '\0'）
-#       CHAR   gname[gname_len] = GName 文本（UTF-8，不带结尾 '\0'）
-#       FLOAT  pos_x      = 3D 世界坐标 x (float32, 小端)
-#       FLOAT  pos_y      = 3D 世界坐标 y (float32, 小端)
-#       FLOAT  pos_z      = 3D 世界坐标 z (float32, 小端)
-#
-#   定长部分大小 = 8(entity) + 4(objectId) + 1(kind) + 2(gname_len) + 12(pos) = 27 字节
-#   单条总大小   = 27 + gname_len
-#
-#   kind 取值（与前端 Kind 下拉、Python 侧 RWVG_ACTOR_KIND_NAMES 一一对应）:
-#       0=Unknown, 1=Player, 2=Minion, 3=Boss, 4=Item,
-#       5=Container, 6=DeadBox, 7=Box, 8=AI
-# ----------------------------------------------------------------------------
-RWVG_ACTOR_KIND_UNKNOWN = 0
-RWVG_ACTOR_KIND_PLAYER = 1
-RWVG_ACTOR_KIND_MINION = 2
-RWVG_ACTOR_KIND_BOSS = 3
-RWVG_ACTOR_KIND_ITEM = 4
-RWVG_ACTOR_KIND_CONTAINER = 5
-RWVG_ACTOR_KIND_DEADBOX = 6
-RWVG_ACTOR_KIND_BOX = 7
-RWVG_ACTOR_KIND_AI = 8
-
-RWVG_ACTOR_KIND_NAMES = {
-    RWVG_ACTOR_KIND_UNKNOWN: "Unknown",
-    RWVG_ACTOR_KIND_PLAYER: "Player",
-    RWVG_ACTOR_KIND_MINION: "Minion",
-    RWVG_ACTOR_KIND_BOSS: "Boss",
-    RWVG_ACTOR_KIND_ITEM: "Item",
-    RWVG_ACTOR_KIND_CONTAINER: "Container",
-    RWVG_ACTOR_KIND_DEADBOX: "DeadBox",
-    RWVG_ACTOR_KIND_BOX: "Box",
-    RWVG_ACTOR_KIND_AI: "AI",
-}
-
-# ActorScanRecord 定长部分: "<QIB" = entity(u64)+objectId(u32)+kind(u8)，随后紧跟 gname_len(u16)
-RWVG_ACTOR_SCAN_RECORD_FIXED_FMT = "<QIBH"
-RWVG_ACTOR_SCAN_RECORD_FIXED_SIZE = struct.calcsize(RWVG_ACTOR_SCAN_RECORD_FIXED_FMT)  # = 15
-RWVG_ACTOR_SCAN_POS_FMT = "<3f"
-RWVG_ACTOR_SCAN_POS_SIZE = struct.calcsize(RWVG_ACTOR_SCAN_POS_FMT)  # = 12
-# 单条记录的定长字节总数（不含 GName 文本）= 15 + 12 = 27
-RWVG_ACTOR_SCAN_RECORD_MIN_SIZE = RWVG_ACTOR_SCAN_RECORD_FIXED_SIZE + RWVG_ACTOR_SCAN_POS_SIZE
-# ActorScanHeader 大小
-RWVG_ACTOR_SCAN_HEADER_FMT = "<HH"
-RWVG_ACTOR_SCAN_HEADER_SIZE = struct.calcsize(RWVG_ACTOR_SCAN_HEADER_FMT)  # = 4
-RWVG_ACTOR_SCAN_VERSION = 1
-# 单帧内 Actor 记录数上限（防失控/畸形帧，与 web_actor_kinds 的快照容量保持一致量级）
-RWVG_ACTOR_SCAN_MAX_RECORDS = 2000
-# 单条 GName 文本字节上限（防畸形长度）
-RWVG_ACTOR_SCAN_MAX_GNAME_BYTES = 512
 
 # Mirrors RWbase::GameCore::GameCoreTypes.hpp with #pragma pack(push, 1)
 RWVG_UTILS_FMT = "<16f3Bi3f3fiQfB4f2i"
@@ -294,72 +235,8 @@ def parse_rwvg_item_payload(payload: bytes):
 
 
 def parse_rwvg_actor_scan_payload(payload: bytes):
-    """
-    解析 Type=6 Actor 分类转储帧的 typed payload（已剥除 12B PacketHeader 之后的部分）。
-
-    布局见模块顶部注释：
-        ActorScanHeader(4B: record_count(u16) + record_version(u16))
-        后随 record_count 条变长 ActorScanRecord
-
-    返回 dict: {"records": [...], "record_count": int, "version": int}
-    解析失败（长度不匹配/越界/版本不符）返回 None。
-    """
-    if not payload or len(payload) < RWVG_ACTOR_SCAN_HEADER_SIZE:
-        return None
-
-    record_count, record_version = struct.unpack_from(RWVG_ACTOR_SCAN_HEADER_FMT, payload, 0)
-    if record_version == RWVG_ACTOR_SNAPSHOT_VERSION:
-        return _parse_actor_snapshot_payload(payload)
-    if record_version != RWVG_ACTOR_SCAN_VERSION:
-        return None
-    if record_count < 0 or record_count > RWVG_ACTOR_SCAN_MAX_RECORDS:
-        return None
-
-    offset = RWVG_ACTOR_SCAN_HEADER_SIZE
-    records = []
-    for _ in range(record_count):
-        if offset + RWVG_ACTOR_SCAN_RECORD_MIN_SIZE > len(payload):
-            return None
-
-        entity, object_id, kind, gname_len = struct.unpack_from(
-            RWVG_ACTOR_SCAN_RECORD_FIXED_FMT, payload, offset
-        )
-        offset += RWVG_ACTOR_SCAN_RECORD_FIXED_SIZE
-
-        if gname_len > RWVG_ACTOR_SCAN_MAX_GNAME_BYTES:
-            return None
-        if offset + gname_len + RWVG_ACTOR_SCAN_POS_SIZE > len(payload):
-            return None
-
-        gname_bytes = payload[offset:offset + gname_len]
-        offset += gname_len
-
-        pos_x, pos_y, pos_z = struct.unpack_from(RWVG_ACTOR_SCAN_POS_FMT, payload, offset)
-        offset += RWVG_ACTOR_SCAN_POS_SIZE
-
-        gname = gname_bytes.decode("utf-8", errors="ignore")
-        records.append({
-            "entity": int(entity),
-            "object_id": int(object_id),
-            "kind": int(kind),
-            "kind_name": RWVG_ACTOR_KIND_NAMES.get(int(kind), "Unknown"),
-            "gname": gname,
-            "pos": {
-                "x": coerce_float32(pos_x),
-                "y": coerce_float32(pos_y),
-                "z": coerce_float32(pos_z),
-            },
-        })
-
-    # 末尾若仍有残留字节，视为布局不匹配，避免静默吃掉多余数据。
-    if offset != len(payload):
-        return None
-
-    return {
-        "records": records,
-        "record_count": int(record_count),
-        "version": int(record_version),
-    }
+    """Parse the sole Type=6 actor snapshot layout."""
+    return _parse_actor_snapshot_payload(payload)
 
 
 def parse_zombie_control_ack(payload: bytes):
