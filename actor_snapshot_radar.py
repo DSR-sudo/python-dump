@@ -9,6 +9,8 @@ POSITION_FIELD = 1 << 3
 TEAM_FIELD = 1 << 4
 HEALTH_FIELD = 1 << 5
 MAX_HEALTH_FIELD = 1 << 6
+WEAPON_FIELD = 1 << 7
+HERO_FIELD = 1 << 8
 VIEW_LOCAL_PAWN_FIELD = 1 << 0
 VIEW_CONTROL_ROTATION_YAW_FIELD = 1 << 1
 ITEM_KINDS = frozenset(("Item", "Container", "DeadBox", "Box"))
@@ -115,6 +117,8 @@ def _entity(
     has_team = not has_valid_fields or bool(valid_fields & TEAM_FIELD)
     has_health = not has_valid_fields or bool(valid_fields & HEALTH_FIELD)
     has_max_health = not has_valid_fields or bool(valid_fields & MAX_HEALTH_FIELD)
+    has_weapon = not has_valid_fields or bool(valid_fields & WEAPON_FIELD)
+    has_hero = not has_valid_fields or bool(valid_fields & HERO_FIELD)
     return {
         "id": entity_id,
         "name": class_name,
@@ -129,5 +133,13 @@ def _entity(
         "max_health": float(record.get("max_health", 0.0) or 0.0) if has_max_health else None,
         "has_health": has_health,
         "has_max_health": has_max_health,
+        "weapon_id": int(record.get("weapon_id", 0) or 0) if has_weapon else None,
+        "weapon_id_hex": str(record.get("weapon_id_hex") or "0x0") if has_weapon else None,
+        "weapon_name": str(record.get("weapon_name") or "") if has_weapon else None,
+        "hero_id": int(record.get("hero_id", 0) or 0) if has_hero else None,
+        "hero_id_hex": str(record.get("hero_id_hex") or "0x0") if has_hero else None,
+        "hero_name": str(record.get("hero_name") or "") if has_hero else None,
+        "has_weapon": has_weapon,
+        "has_hero": has_hero,
         "source_kind": kind,
     }

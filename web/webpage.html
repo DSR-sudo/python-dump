@@ -17,6 +17,8 @@
         .entity-body { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 1px solid white; display: flex; justify-content: center; align-items: center; font-size: 8px; font-weight: bold; color: white; top: 50%; left: 50%; transform: translate(-50%, -50%); }
         .entity-direction { position: absolute; width: 1.5px; height: 12px; background-color: white; left: 50%; bottom: 50%; transform-origin: center bottom; }
         .entity-body.dead { width: 10px; height: 10px; background-color: transparent !important; border-width: 1.5px; }
+        .entity-health-ring { position: absolute; width: 22px; height: 22px; border-radius: 50%; top: 50%; left: 50%; transform: translate(-50%, -50%); background: conic-gradient(var(--health-color) calc(var(--health-ratio) * 1turn), rgba(255,255,255,0.18) 0); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); pointer-events: none; }
+        .entity-info { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); white-space: nowrap; color: #fff; text-shadow: 0 1px 2px #000; font-size: 9px; line-height: 11px; pointer-events: none; }
         .item-body { width: 10px; height: 10px; border-radius: 2px; border: 1px solid #222; background-color: #ffeb3b; color: #111; font-size: 7px; }
         .teammate { background-color: green; }
         .white-player { background-color: white; border-color: black; color: black; }
@@ -27,15 +29,6 @@
         #auth-submit { padding: 6px 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
         #auth-error { color: red; font-size: 12px; margin-top: 5px; display: none; }
         #auth-container.hidden { display: none; }
-        #log-panel { position: fixed; right: 8px; bottom: 8px; width: 780px; max-width: 96vw; height: 38vh; background: rgba(0,0,0,0.75); border: 1px solid #444; border-radius: 6px; z-index: 120; display: flex; flex-direction: column; }
-        #log-panel-title { padding: 6px 8px; font-size: 12px; color: #ddd; border-bottom: 1px solid #333; }
-        #log-panel-body { flex: 1; display: flex; gap: 6px; padding: 6px; min-height: 0; }
-        .log-col { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-        .log-col-title { font-size: 11px; color: #bdbdbd; margin-bottom: 4px; }
-        .log-box { flex: 1; margin: 0; padding: 6px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: rgba(20,20,20,0.95); border: 1px solid #2f2f2f; border-radius: 4px; font-family: Consolas, monospace; font-size: 11px; line-height: 1.35; color: #d9d9d9; }
-        @media (max-width: 900px) {
-            #log-panel { left: 8px; right: 8px; width: auto; height: 34vh; }
-        }
     </style>
 </head>
 <body>
@@ -57,24 +50,6 @@
     <div id="map-container">
         <div id="map"></div>
     </div>
-    <div id="log-panel">
-        <div id="log-panel-title">RWBASE Stream Logs (History)</div>
-        <div id="log-panel-body">
-            <div class="log-col">
-                <div class="log-col-title">Decrypt Logs (RWbase/CPUEAXH)</div>
-                <pre id="decode-log-box" class="log-box">waiting decrypt logs...</pre>
-            </div>
-            <div class="log-col">
-                <div class="log-col-title">Send Thread (Players)</div>
-                <pre id="send-log-box" class="log-box">waiting send logs...</pre>
-            </div>
-            <div class="log-col">
-                <div class="log-col-title">Radar Entities (Current Snapshot)</div>
-                <pre id="entity-list-box" class="log-box">waiting radar snapshot...</pre>
-            </div>
-        </div>
-    </div>
-
     <script>
     const mapDimensions = {
         "db.png":  { width: 1244, height: 956 },
@@ -169,6 +144,11 @@
     }
 
     function getTeamColor(team_id) { const colors = [ 'rgba(80, 80, 255, 1)', 'rgba(255, 160, 80, 1)', 'rgba(180, 80, 255, 1)', 'rgba(160, 100, 60, 1)', 'rgba(255, 220, 80, 1)', 'rgba(80, 220, 220, 1)', 'rgba(180, 80, 80, 1)', 'rgba(120, 80, 180, 1)', 'rgba(220, 120, 80, 1)', 'rgba(255, 160, 160, 1)', 'rgba(160, 160, 255, 1)', 'rgba(255, 200, 160, 1)', 'rgba(200, 160, 255, 1)', 'rgba(200, 150, 100, 1)', 'rgba(255, 240, 160, 1)', 'rgba(160, 240, 240, 1)', 'rgba(240, 160, 160, 1)', 'rgba(200, 160, 200, 1)', 'rgba(240, 200, 160, 1)', ]; return colors[team_id] || 'rgba(128, 128, 128, 1)'; }
+    function readableCatalogName(value, fallback) {
+        const text = String(value || '');
+        if (!text) return fallback;
+        return text.replace(/\(\d+\)$/, '');
+    }
 
     let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1;
     var entitiesToRender = [];
@@ -296,7 +276,6 @@
             if (forceUpdate || data.teammates.length !== teammates.length) updatePlayerButtons();
             if (pendingPlayerSelection !== null) { selectPlayer(pendingPlayerSelection); pendingPlayerSelection = null; }
             if (isFollowing) recenterView();
-            renderRadarEntitySummary(data);
             map.innerHTML = '';
             entitiesToRender.forEach(entityData => {
                 const { position: map2DPos, rotation: correctedOrientation } = getTransformedData(entityData, currentMap);
@@ -308,6 +287,19 @@
                 const isAi = entityType === 'ai';
                 const isTeammate = !isAi && entityData.team_id === localPlayer?.team_id;
                 const isDead = entityData.has_health === true && Number(entityData.health) <= 0;
+                const health = Number(entityData.health);
+                const maxHealth = Number(entityData.max_health);
+                const hasHealth = entityData.has_health !== false && entityData.has_max_health !== false
+                    && Number.isFinite(health)
+                    && Number.isFinite(maxHealth) && maxHealth > 0;
+                if (hasHealth) {
+                    const healthRing = document.createElement('div');
+                    const healthRatio = Math.max(0, Math.min(1, health / maxHealth));
+                    healthRing.className = 'entity-health-ring';
+                    healthRing.style.setProperty('--health-ratio', healthRatio.toString());
+                    healthRing.style.setProperty('--health-color', healthRatio > 0.5 ? '#54d66a' : (healthRatio > 0.25 ? '#f4c542' : '#ef5350'));
+                    container.appendChild(healthRing);
+                }
                 if (isTeammate) {
                     const isSelf = entityData.id === localPlayer?.id;
                     let isSelected = (selectedPlayerId === null || selectedPlayerId === '') ? isSelf : (entityData.id == selectedPlayerId);
@@ -328,6 +320,13 @@
                     container.appendChild(direction);
                 }
                 container.appendChild(body);
+                const info = document.createElement('div');
+                info.className = 'entity-info';
+                const hpText = hasHealth ? `${Math.max(0, Math.round(health))}/${Math.round(maxHealth)}` : 'HP ?';
+                const heroText = entityData.has_hero === false ? '?' : readableCatalogName(entityData.hero_name, '未知探员');
+                const weaponText = entityData.has_weapon === false ? '?' : readableCatalogName(entityData.weapon_name, '未知武器');
+                info.textContent = `HP ${hpText} H ${heroText} W ${weaponText}`;
+                container.appendChild(info);
                 container.style.left = `${map2DPos.x}px`;
                 container.style.top = `${map2DPos.y}px`;
                 map.appendChild(container);
@@ -337,40 +336,6 @@
             console.error('获取游戏数据失败:', error);
             document.getElementById('auth-container').classList.remove('hidden');
         }
-    }
-
-    function formatCoordValue(value) {
-        const parsed = Number(value);
-        if (!Number.isFinite(parsed)) return '0';
-        return Math.trunc(parsed).toString();
-    }
-
-    function formatPosition(pos) {
-        const source = pos || {};
-        return `(${formatCoordValue(source.x)},${formatCoordValue(source.y)},${formatCoordValue(source.z)})`;
-    }
-
-    function distance3d(left, right) {
-        const a = left || {};
-        const b = right || {};
-        const dx = Number(b.x || 0) - Number(a.x || 0);
-        const dy = Number(b.y || 0) - Number(a.y || 0);
-        const dz = Number(b.z || 0) - Number(a.z || 0);
-        return Math.trunc(Math.sqrt(dx * dx + dy * dy + dz * dz));
-    }
-
-    function formatRadarTargetLine(target, index, localPos) {
-        const item = target || {};
-        const hp = `${formatCoordValue(item.health)}/${formatCoordValue(item.max_health)}`;
-        const distance = distance3d(localPos, item.position);
-        return `target[${index}]: type=${item.type || 'player'} id=${item.id || 'n/a'} name=${item.name || 'n/a'} team=${item.team_id || 0} hp=${hp} pos=${formatPosition(item.position)} d=${distance} yaw=${formatCoordValue(item.orientation)}`;
-    }
-
-    function formatRadarItemLine(target, index, localPos) {
-        const item = target || {};
-        const distance = Number.isFinite(Number(item.distance)) ? Math.trunc(Number(item.distance)) : distance3d(localPos, item.position);
-        const label = item.dead_box_name || item.item_name || 'item';
-        return `item[${index}]: type=${item.type || 'item'} id=${item.id || 'n/a'} name=${label} dead_box=${item.dead_box_type || 0} quality=${item.item_quality_label || 'n/a'} pos=${formatPosition(item.position)} d=${distance}`;
     }
 
     function renderRadarItemMarker(itemData) {
@@ -386,129 +351,6 @@
         container.style.left = `${map2DPos.x}px`;
         container.style.top = `${map2DPos.y}px`;
         map.appendChild(container);
-    }
-
-    function renderRadarEntitySummary(data) {
-        const box = document.getElementById('entity-list-box');
-        if (!box) return;
-        const snapshot = data || {};
-        const local = snapshot.local_player || {};
-        const targets = Array.isArray(snapshot.entities) ? snapshot.entities : [];
-        const items = Array.isArray(snapshot.items) ? snapshot.items : [];
-        const meta = snapshot.meta || {};
-        const lines = [
-            `local: id=${local.id || 'local'} team=${local.team_id || 0} pos=${formatPosition(local.position)} neck=${formatPosition(local.neck_position)} yaw=${formatCoordValue(local.yaw)} utils_age_ms=${meta.utils_age_ms ?? 'n/a'}`,
-            `targets: ${targets.length} items: ${items.length}`
-        ];
-        targets.forEach((target, index) => {
-            lines.push(formatRadarTargetLine(target, index + 1, local.position));
-        });
-        items.forEach((target, index) => {
-            lines.push(formatRadarItemLine(target, index + 1, local.position));
-        });
-        box.textContent = lines.join('\n');
-    }
-
-    const LOG_COLUMN_WIDTHS = Object.freeze({
-        category: 20,
-        entityId: 14,
-        teamId: 3,
-        health: 4,
-        distance: 5,
-        visible: 1,
-        position: 7,
-        type: 12,
-        rcode: 10,
-    });
-
-    function alignText(value, width) {
-        const text = String(value ?? 'n/a');
-        if (text.length <= width) return text.padEnd(width, ' ');
-        if (width <= 1) return '…';
-        return `${text.slice(0, width - 1)}…`;
-    }
-
-    function alignNumber(value, width) {
-        const parsed = Number(value);
-        const text = Number.isFinite(parsed) ? Math.trunc(parsed).toString() : '0';
-        if (text.length <= width) return text.padStart(width, ' ');
-        return text.slice(-width);
-    }
-
-    function formatDecryptLogLine(item) {
-        const obj = item || {};
-        const stage = alignText(obj.stage || 'decrypt', LOG_COLUMN_WIDTHS.category);
-        const status = alignText(obj.status || 'n/a', LOG_COLUMN_WIDTHS.type);
-        const entity = alignText(obj.entity || 'n/a', LOG_COLUMN_WIDTHS.entityId);
-        const failKind = alignText(obj.fail_kind || 'n/a', LOG_COLUMN_WIDTHS.rcode);
-        return `[${stage}] status=${status} entity=${entity} fail=${failKind}`;
-    }
-
-    function formatSendLogLine(item) {
-        const obj = item || {};
-        const pos = obj.pos || {};
-        if (obj.kind === 'item') {
-            const id = alignText(obj.entity_id || 'n/a', LOG_COLUMN_WIDTHS.entityId);
-            const distance = alignNumber(obj.distance || 0, LOG_COLUMN_WIDTHS.distance);
-            const px = alignNumber(pos.x || 0, LOG_COLUMN_WIDTHS.position);
-            const py = alignNumber(pos.y || 0, LOG_COLUMN_WIDTHS.position);
-            const pz = alignNumber(pos.z || 0, LOG_COLUMN_WIDTHS.position);
-            return `item=${id} type=${alignNumber(obj.item_type || 0, 3)} dead=${alignText(obj.dead_box_type || 0, 8)} d=${distance} pos=(${px},${py},${pz})`;
-        }
-        const hp = Math.floor(Number(obj.health || 0));
-        const maxHp = Math.floor(Number(obj.max_health || 0));
-        const x = Math.floor(Number(pos.x || 0));
-        const y = Math.floor(Number(pos.y || 0));
-        const z = Math.floor(Number(pos.z || 0));
-        const id = alignText(obj.entity_id || 'n/a', LOG_COLUMN_WIDTHS.entityId);
-        const team = alignNumber(obj.team_id || 0, LOG_COLUMN_WIDTHS.teamId);
-        const hpText = alignNumber(hp, LOG_COLUMN_WIDTHS.health);
-        const maxHpText = alignNumber(maxHp, LOG_COLUMN_WIDTHS.health);
-        const distance = alignNumber(obj.distance || 0, LOG_COLUMN_WIDTHS.distance);
-        const vis = alignNumber(obj.visible ? 1 : 0, LOG_COLUMN_WIDTHS.visible);
-        const px = alignNumber(x, LOG_COLUMN_WIDTHS.position);
-        const py = alignNumber(y, LOG_COLUMN_WIDTHS.position);
-        const pz = alignNumber(z, LOG_COLUMN_WIDTHS.position);
-        return `id=${id} team=${team} hp=${hpText}/${maxHpText} d=${distance} vis=${vis} pos=(${px},${py},${pz})`;
-    }
-
-    async function updateLogHistory() {
-        try {
-            const password = (document.getElementById('auth-input').value || '').trim();
-            if (!password) return;
-            const response = await fetch('/api/logs', { headers: { 'X-Auth-Token': password } });
-            if (response.status !== 200) return;
-            const payload = await response.json();
-            let rwvgPayload = null;
-            try {
-                const rwvgResponse = await fetch('/api/rwvg', { headers: { 'X-Auth-Token': password } });
-                if (rwvgResponse.status === 200) {
-                    rwvgPayload = await rwvgResponse.json();
-                }
-            } catch (error) {
-                rwvgPayload = null;
-            }
-
-            const decrypt = Array.isArray(payload.decrypt) ? payload.decrypt : [];
-            const send = Array.isArray(payload.send_thread_players) ? payload.send_thread_players : [];
-            const batchStats = (rwvgPayload && rwvgPayload.protocol && rwvgPayload.protocol.batch_stats) ? rwvgPayload.protocol.batch_stats : null;
-            const batchTypes = (rwvgPayload && rwvgPayload.protocol && rwvgPayload.protocol.types) ? rwvgPayload.protocol.types : null;
-            const playerBatchType = batchTypes ? batchTypes.player_batch : 4;
-            const itemBatchType = batchTypes ? batchTypes.item_batch : 5;
-            const batchHeader = batchStats
-                ? `rwvg batch stats: player_frames=${batchStats.player_batch_frames || 0} item_frames=${batchStats.item_batch_frames || 0} player_entities=${batchStats.player_batch_entities || 0} item_entities=${batchStats.item_batch_entities || 0} types=player_batch:${playerBatchType} item_batch:${itemBatchType}`
-                : 'rwvg batch stats: unavailable';
-
-            const decodeLines = decrypt.slice(-36).map(formatDecryptLogLine);
-            const sendLines = [batchHeader, ...send.slice(-36).map(formatSendLogLine)];
-
-            const decodeBox = document.getElementById('decode-log-box');
-            const sendBox = document.getElementById('send-log-box');
-            if (decodeBox) decodeBox.textContent = decodeLines.length ? decodeLines.join('\n') : 'no decrypt logs';
-            if (sendBox) sendBox.textContent = sendLines.length ? sendLines.join('\n') : 'no send-thread player logs';
-        } catch (error) {
-            // Keep radar rendering unaffected even if log endpoint is temporarily unavailable.
-        }
     }
 
     function recenterView() {
@@ -550,17 +392,12 @@
     selectMap(currentMap);
     updateGameData(true);
     setInterval(updateGameData, 50);
-    updateLogHistory();
-    setInterval(updateLogHistory, 300);
-
     document.getElementById('auth-submit').addEventListener('click', () => {
         updateGameData(true);
-        updateLogHistory();
     });
     document.getElementById('auth-input').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
             updateGameData(true);
-            updateLogHistory();
         }
     });
     </script>

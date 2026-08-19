@@ -3,6 +3,8 @@
 import math
 import struct
 
+from id_catalog import hero_name, weapon_name
+
 
 RWVG_ACTOR_KIND_UNKNOWN = 0
 RWVG_ACTOR_KIND_PLAYER = 1
@@ -26,12 +28,12 @@ RWVG_ACTOR_KIND_NAMES = {
     RWVG_ACTOR_KIND_AI: "AI",
 }
 
-RWVG_ACTOR_SNAPSHOT_VERSION = 3
+RWVG_ACTOR_SNAPSHOT_VERSION = 4
 RWVG_ACTOR_SNAPSHOT_PREFIX_FMT = "<HH"
 RWVG_ACTOR_SNAPSHOT_PREFIX_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_PREFIX_FMT)
 RWVG_ACTOR_SNAPSHOT_HEADER_FMT = "<HHIIIIQIIIIi"
 RWVG_ACTOR_SNAPSHOT_HEADER_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_HEADER_FMT)
-RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<QIBBQQQIIIBQiIIHIIIi"
+RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<QIBBQQQIIIBQiIIHQIIIi"
 RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT)
 RWVG_ACTOR_SNAPSHOT_MAX_CLASS_NAME_BYTES = 64
 RWVG_ACTOR_SNAPSHOT_VIEW_HAS_LOCAL_PAWN = 1 << 0
@@ -60,7 +62,7 @@ def _parse_record(payload: bytes, offset: int):
     class_name = payload[end:class_name_end].decode("utf-8", errors="ignore")
     (actor_address, object_id, kind, _, mesh, root_component, player_state,
      pos_x, pos_y, pos_z, position_source, last_db_position_tsc, team_id,
-     health_bits, max_health_bits, weapon_id, valid_fields, attempts, failures,
+     health_bits, max_health_bits, weapon_id, hero_id, valid_fields, attempts, failures,
      first_failure) = values
     record = {
         "entity": int(actor_address), "actor_address": int(actor_address),
@@ -76,6 +78,9 @@ def _parse_record(payload: bytes, offset: int):
         "team_id": int(team_id), "health_bits": int(health_bits),
         "max_health_bits": int(max_health_bits), "health": _float_from_bits(health_bits),
         "max_health": _float_from_bits(max_health_bits), "weapon_id": int(weapon_id),
+        "weapon_id_hex": f"0x{weapon_id:X}", "hero_id": int(hero_id),
+        "hero_id_hex": f"0x{hero_id:X}",
+        "weapon_name": weapon_name(weapon_id), "hero_name": hero_name(hero_id),
         "valid_fields": int(valid_fields),
         "diagnostics": {"attempts": int(attempts), "failures": int(failures), "first_failure": int(first_failure)},
     }

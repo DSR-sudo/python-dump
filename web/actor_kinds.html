@@ -77,6 +77,9 @@
                     <th>Pos X</th>
                     <th>Pos Y</th>
                     <th>Pos Z</th>
+                    <th>Health</th>
+                    <th>HeroId</th>
+                    <th>WeaponId</th>
                     <th>Details</th>
                 </tr>
             </thead>
@@ -116,6 +119,15 @@
         const n = Number(ptr);
         if (!Number.isFinite(n) || n === 0) return '—';
         return '0x' + n.toString(16).toUpperCase();
+    }
+    function readableCatalogName(value, fallback) {
+        const text = String(value || '');
+        if (!text) return fallback;
+        return text.replace(/\(\d+\)$/, '');
+    }
+    function hasField(actor, bit) {
+        return !Object.prototype.hasOwnProperty.call(actor, 'valid_fields')
+            || (Number(actor.valid_fields || 0) & bit) !== 0;
     }
 
     function applyFilters(actors) {
@@ -167,7 +179,12 @@
                 position_bits: a.position_bits || {}, position_source: a.position_source || 0,
                 last_db_position_tsc: a.last_db_position_tsc || 0, team_id: a.team_id || 0,
                 health_bits: a.health_bits || 0, max_health_bits: a.max_health_bits || 0,
-                weapon_id: a.weapon_id || 0, valid_fields: a.valid_fields || 0,
+                weapon_id: a.weapon_id || 0, weapon_id_hex: a.weapon_id_hex || '',
+                weapon_name: a.weapon_name || '',
+                hero_id: a.hero_id || 0, hero_id_hex: a.hero_id_hex || '',
+                hero_name: a.hero_name || '',
+                health: a.health, max_health: a.max_health,
+                valid_fields: a.valid_fields || 0,
                 diagnostics: a.diagnostics || {}
             };
             tr.innerHTML =
@@ -178,6 +195,9 @@
                 '<td>' + fmtFloat(pos.x) + '</td>' +
                 '<td>' + fmtFloat(pos.y) + '</td>' +
                 '<td>' + fmtFloat(pos.z) + '</td>' +
+                '<td>' + (hasField(a, 1 << 5) && hasField(a, 1 << 6) ? fmtFloat(a.health) + '/' + fmtFloat(a.max_health) : '?') + '</td>' +
+                '<td>' + escapeHtml(hasField(a, 1 << 8) ? readableCatalogName(a.hero_name, '未知探员') + ' [' + (a.hero_id_hex || fmtEntity(a.hero_id)) + ']' : '?') + '</td>' +
+                '<td>' + escapeHtml(hasField(a, 1 << 7) ? readableCatalogName(a.weapon_name, '未知武器') + ' [' + (a.weapon_id_hex || fmtNum(a.weapon_id)) + ']' : '?') + '</td>' +
                 '<td><details><summary>Full fields</summary><pre>' +
                 escapeHtml(JSON.stringify(details, null, 2)) + '</pre></details></td>';
             frag.appendChild(tr);

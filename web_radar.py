@@ -14,8 +14,10 @@ from dma_protocol import (
     RWVG_TYPE_ITEM_BATCH,
     RWVG_TYPE_PLAYER_BATCH,
     RWVG_TYPE_UTILS,
+    RWVG_TYPE_ACTOR_SCAN,
     RWVG_TYPED_SIZE_BY_KIND,
 )
+from rwvg_actor_snapshot import RWVG_ACTOR_SNAPSHOT_VERSION
 
 DEFAULT_EXTERNAL_BASE_DIR = "/root/python-dump"
 DEFAULT_EXTERNAL_IMAGE_DIR = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "image")
@@ -205,6 +207,7 @@ refresh();
                     "item": RWVG_TYPE_ITEM,
                     "player_batch": RWVG_TYPE_PLAYER_BATCH,
                     "item_batch": RWVG_TYPE_ITEM_BATCH,
+                    "actor_scan": RWVG_TYPE_ACTOR_SCAN,
                 },
                 "batch_types": {
                     "player_batch": RWVG_TYPE_PLAYER_BATCH,
@@ -217,6 +220,7 @@ refresh();
                     "item_batch_entities": int(stats.get("item_batch_entities", 0) or 0),
                 },
                 "typed_size_by_kind": dict(RWVG_TYPED_SIZE_BY_KIND),
+                "actor_snapshot_version": RWVG_ACTOR_SNAPSHOT_VERSION,
             },
             "stream_stats": stats,
             "snapshot": snapshot,

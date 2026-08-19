@@ -326,6 +326,8 @@ class CommandHandler:
             f"id={target.get('id', 'n/a')} "
             f"team={target.get('team_id', 0)} "
             f"hp={safe_int(target.get('health', 0.0))}/{safe_int(target.get('max_health', 0.0))} "
+            f"hero={target.get('hero_name') or target.get('hero_id_hex', target.get('hero_id', '?'))} "
+            f"weapon={target.get('weapon_name') or target.get('weapon_id_hex', target.get('weapon_id', '?'))} "
             f"pos=({pos_tuple[0]},{pos_tuple[1]},{pos_tuple[2]}) "
             f"d={distance} yaw={safe_int(target.get('orientation', 0.0))}"
         )
