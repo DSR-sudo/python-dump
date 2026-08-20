@@ -18,8 +18,13 @@ ITEM_KINDS = frozenset(("Item", "Container", "DeadBox", "Box"))
 AI_KINDS = frozenset(("AI", "Minion", "Boss"))
 
 
-def build_radar_snapshot(actor_snapshot: dict[str, Any], local_player: dict[str, Any] | None) -> dict[str, Any]:
-    entities, items = _map_records(actor_snapshot.get("actors") or [])
+def build_radar_snapshot(
+    actor_snapshot: dict[str, Any],
+    local_player: dict[str, Any] | None,
+    fallback_items: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    entities, snapshot_items = _map_records(actor_snapshot.get("actors") or [])
+    items = _merge_items(snapshot_items, fallback_items or [])
     snapshot_local_player = _local_player_from_snapshot(entities, actor_snapshot.get("local_view"))
     resolved_local_player = snapshot_local_player or local_player
     return {
@@ -74,6 +79,21 @@ def _map_records(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], l
         if item is not None:
             items.append(item)
     return entities, items
+
+
+def _merge_items(
+    snapshot_items: list[dict[str, Any]], fallback_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in [*snapshot_items, *fallback_items]:
+        entity_id = str(item.get("id") or "")
+        if entity_id and entity_id in seen_ids:
+            continue
+        if entity_id:
+            seen_ids.add(entity_id)
+        merged.append(dict(item))
+    return merged
 
 
 def _map_record(record: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:

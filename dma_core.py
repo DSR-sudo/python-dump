@@ -530,7 +530,11 @@ class DMACore:
     def get_radar_snapshot(self):
         actor_snapshot = self.get_actor_scan_snapshot()
         if actor_snapshot["has_data"]:
-            return build_radar_snapshot(actor_snapshot, self._get_snapshot_local_player())
+            return build_radar_snapshot(
+                actor_snapshot,
+                self._get_snapshot_local_player(),
+                self._get_item_radar_snapshots(),
+            )
 
         now_ts = time.monotonic()
         with self.radar_lock:
@@ -588,24 +592,7 @@ class DMACore:
             if (not is_ai) and local_team_id > 0 and entity["team_id"] == local_team_id:
                 teammates.append(dict(entity))
 
-        item_snapshots = []
-        for raw_item in items:
-            item = describe_item(raw_item)
-            item_snapshots.append({
-                "id": str(item.get("_entity_id") or ""),
-                "type": str(item.get("type") or "item"),
-                "item_type": int(item.get("item_type", 0) or 0),
-                "item_name": str(item.get("item_name") or ""),
-                "item_quality": int(item.get("item_quality", 0) or 0),
-                "item_quality_label": str(item.get("item_quality_label") or ""),
-                "item_quality_color": str(item.get("item_quality_color") or ""),
-                "item_money": int(item.get("item_money", 0) or 0),
-                "dead_box_type": int(item.get("dead_box_type", 0) or 0),
-                "dead_box_name": str(item.get("dead_box_name") or ""),
-                "distance": int(item.get("distance", 0) or 0),
-                "position": _safe_pos_dict(item.get("pos")),
-                "orientation": 0,
-            })
+        item_snapshots = self._build_item_radar_snapshots(items)
 
         return {
             "meta": {
@@ -622,6 +609,35 @@ class DMACore:
             "items": item_snapshots,
             "teammates": teammates,
         }
+
+    def _get_item_radar_snapshots(self) -> list[dict]:
+        now_ts = time.monotonic()
+        with self.radar_lock:
+            self._purge_radar_stale_locked(now_ts)
+            items = [dict(item) for item in self.radar_items.values()]
+        return self._build_item_radar_snapshots(items)
+
+    @staticmethod
+    def _build_item_radar_snapshots(items: list[dict]) -> list[dict]:
+        return [
+            {
+                "id": str(item.get("_entity_id") or ""),
+                "type": str(item.get("type") or "item"),
+                "item_type": int(item.get("item_type", 0) or 0),
+                "item_name": str(item.get("item_name") or ""),
+                "item_quality": int(item.get("item_quality", 0) or 0),
+                "item_quality_label": str(item.get("item_quality_label") or ""),
+                "item_quality_color": str(item.get("item_quality_color") or ""),
+                "item_money": int(item.get("item_money", 0) or 0),
+                "dead_box_type": int(item.get("dead_box_type", 0) or 0),
+                "dead_box_name": str(item.get("dead_box_name") or ""),
+                "distance": int(item.get("distance", 0) or 0),
+                "position": _safe_pos_dict(item.get("pos")),
+                "orientation": 0,
+            }
+            for raw_item in items
+            for item in [describe_item(raw_item)]
+        ]
 
     def _get_snapshot_local_player(self):
         with self.radar_lock:

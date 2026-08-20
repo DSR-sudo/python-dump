@@ -117,6 +117,25 @@ class Type6ViewTest(unittest.TestCase):
         self.assertEqual(radar["items"][0]["item_name"], "蓝室核心")
         self.assertEqual(radar["items"][0]["id"], f"0x{ITEM_ADDRESS:X}")
 
+    def test_type6_keeps_items_from_the_legacy_item_stream(self):
+        parsed = parse_rwvg_actor_scan_payload(_build_type6_frame())
+        legacy_item = {
+            "id": "item:legacy",
+            "item_name": "Legacy item",
+            "position": {"x": 400, "y": 500, "z": 0},
+        }
+
+        radar = build_radar_snapshot(
+            {"actors": parsed["records"], "local_view": parsed["local_view"]},
+            None,
+            [legacy_item],
+        )
+
+        self.assertEqual([item["id"] for item in radar["items"]], [
+            f"0x{ITEM_ADDRESS:X}",
+            "item:legacy",
+        ])
+
     def test_type6_rejects_a_non_current_protocol_version(self):
         self.assertIsNone(parse_rwvg_actor_scan_payload(struct.pack("<HH", 0, 2)))
 

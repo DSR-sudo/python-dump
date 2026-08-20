@@ -52,7 +52,7 @@
     <div id="map-container">
         <div id="map"></div>
     </div>
-    <button id="resource-toggle" type="button" aria-pressed="false">资源</button>
+    <button id="resource-toggle" class="active" type="button" aria-pressed="true">资源</button>
     <script>
     const mapDimensions = {
         "db.png":  { width: 1244, height: 956 },
@@ -153,7 +153,7 @@
         return text.replace(/\(\d+\)$/, '');
     }
 
-    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1, resourcesVisible = false;
+    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1, resourcesVisible = true;
     var entitiesToRender = [];
     var itemsToRender = [];
     const mapContainer = document.getElementById('map-container'), map = document.getElementById('map');
@@ -295,7 +295,7 @@
                 const hasHealth = entityData.has_health !== false && entityData.has_max_health !== false
                     && Number.isFinite(health)
                     && Number.isFinite(maxHealth) && maxHealth > 0;
-                if (hasHealth) {
+                if (!isAi && hasHealth) {
                     const healthRing = document.createElement('div');
                     const healthRatio = Math.max(0, Math.min(1, health / maxHealth));
                     healthRing.className = 'entity-health-ring';
@@ -323,13 +323,14 @@
                     container.appendChild(direction);
                 }
                 container.appendChild(body);
-                const info = document.createElement('div');
-                info.className = 'entity-info';
-                const hpText = hasHealth ? `${Math.max(0, Math.round(health))}/${Math.round(maxHealth)}` : 'HP ?';
-                const heroText = entityData.has_hero === false ? '?' : readableCatalogName(entityData.hero_name, '未知探员');
-                const weaponText = entityData.has_weapon === false ? '?' : readableCatalogName(entityData.weapon_name, '未知武器');
-                info.textContent = `HP ${hpText} H ${heroText} W ${weaponText}`;
-                container.appendChild(info);
+                if (!isAi) {
+                    const info = document.createElement('div');
+                    info.className = 'entity-info';
+                    const heroText = entityData.has_hero === false ? '?' : readableCatalogName(entityData.hero_name, '未知探员');
+                    const weaponText = entityData.has_weapon === false ? '?' : readableCatalogName(entityData.weapon_name, '未知武器');
+                    info.textContent = `H ${heroText} W ${weaponText}`;
+                    container.appendChild(info);
+                }
                 container.style.left = `${map2DPos.x}px`;
                 container.style.top = `${map2DPos.y}px`;
                 map.appendChild(container);
