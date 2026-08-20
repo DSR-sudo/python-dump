@@ -29,6 +29,8 @@
         #auth-submit { padding: 6px 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
         #auth-error { color: red; font-size: 12px; margin-top: 5px; display: none; }
         #auth-container.hidden { display: none; }
+        #resource-toggle { position: fixed; right: 16px; bottom: 16px; z-index: 200; min-width: 52px; min-height: 36px; padding: 8px 10px; background-color: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; }
+        #resource-toggle.active { background-color: #4CAF50; border-color: #6fcf73; }
     </style>
 </head>
 <body>
@@ -50,6 +52,7 @@
     <div id="map-container">
         <div id="map"></div>
     </div>
+    <button id="resource-toggle" type="button" aria-pressed="false">资源</button>
     <script>
     const mapDimensions = {
         "db.png":  { width: 1244, height: 956 },
@@ -150,7 +153,7 @@
         return text.replace(/\(\d+\)$/, '');
     }
 
-    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1;
+    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1, resourcesVisible = false;
     var entitiesToRender = [];
     var itemsToRender = [];
     const mapContainer = document.getElementById('map-container'), map = document.getElementById('map');
@@ -331,7 +334,7 @@
                 container.style.top = `${map2DPos.y}px`;
                 map.appendChild(container);
             });
-            itemsToRender.forEach(renderRadarItemMarker);
+            if (resourcesVisible) itemsToRender.forEach(renderRadarItemMarker);
         } catch (error) {
             console.error('获取游戏数据失败:', error);
             document.getElementById('auth-container').classList.remove('hidden');
@@ -342,6 +345,7 @@
         const { position: map2DPos } = getTransformedData(itemData, currentMap);
         const container = document.createElement('div');
         container.className = 'entity-container';
+        container.classList.add('resource-marker');
         container.title = itemData.dead_box_name || itemData.item_name || 'item';
         const body = document.createElement('div');
         body.className = 'entity-body item-body';
@@ -382,6 +386,17 @@
     }
 
     function selectPlayer(playerId) { selectedPlayerId = playerId; isFollowing = true; document.querySelectorAll('.player-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.playerId == (playerId || ''))); recenterView(); saveSelection(); }
+    function toggleResourceVisibility() {
+        resourcesVisible = !resourcesVisible;
+        const toggle = document.getElementById('resource-toggle');
+        toggle.classList.toggle('active', resourcesVisible);
+        toggle.setAttribute('aria-pressed', String(resourcesVisible));
+        if (resourcesVisible) {
+            itemsToRender.forEach(renderRadarItemMarker);
+            return;
+        }
+        document.querySelectorAll('.resource-marker').forEach(marker => marker.remove());
+    }
     function updateMapButtons() { const container = document.getElementById('map-buttons'); container.innerHTML = ''; Object.keys(mapDimensions).forEach(id => { const button = document.createElement('button'); button.className = `map-btn ${currentMap === id ? 'active' : ''}`; button.textContent = id.split('.')[0].toUpperCase(); button.dataset.map = id; button.onclick = () => selectMap(id); container.appendChild(button); }); }
     function updatePlayerButtons() { const container = document.getElementById('player-buttons'); container.innerHTML = ''; const selfButton = document.createElement('button'); selfButton.className = `player-btn ${!selectedPlayerId || selectedPlayerId === '' ? 'active' : ''}`; selfButton.textContent = '自己'; selfButton.dataset.playerId = ''; selfButton.onclick = () => selectPlayer(null); container.appendChild(selfButton); var teamIndex = 1; teammates.forEach(t => { if (localPlayer && t.id === localPlayer.id) return; const button = document.createElement('button'); button.className = `player-btn ${selectedPlayerId == t.id ? 'active' : ''}`; button.textContent = `队友${ teamIndex}`; teamIndex++; button.dataset.playerId = t.id; button.onclick = () => selectPlayer(t.id); container.appendChild(button); }); }
     function loadAuth() { const savedPassword = localStorage.getItem('authToken'); if (savedPassword) { document.getElementById('auth-input').value = savedPassword; } }
@@ -400,6 +415,7 @@
             updateGameData(true);
         }
     });
+    document.getElementById('resource-toggle').addEventListener('click', toggleResourceVisibility);
     </script>
 </body>
 </html>

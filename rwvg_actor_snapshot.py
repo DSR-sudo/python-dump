@@ -4,6 +4,7 @@ import math
 import struct
 
 from id_catalog import hero_name, weapon_name
+from item_catalog import item_name
 
 
 RWVG_ACTOR_KIND_UNKNOWN = 0
@@ -28,16 +29,17 @@ RWVG_ACTOR_KIND_NAMES = {
     RWVG_ACTOR_KIND_AI: "AI",
 }
 
-RWVG_ACTOR_SNAPSHOT_VERSION = 4
+RWVG_ACTOR_SNAPSHOT_VERSION = 5
 RWVG_ACTOR_SNAPSHOT_PREFIX_FMT = "<HH"
 RWVG_ACTOR_SNAPSHOT_PREFIX_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_PREFIX_FMT)
 RWVG_ACTOR_SNAPSHOT_HEADER_FMT = "<HHIIIIQIIIIi"
 RWVG_ACTOR_SNAPSHOT_HEADER_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_HEADER_FMT)
-RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<QIBBQQQIIIBQiIIHQIIIi"
+RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<QIBBQQQIIIBQiIIHQQIIIi"
 RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT)
 RWVG_ACTOR_SNAPSHOT_MAX_CLASS_NAME_BYTES = 64
 RWVG_ACTOR_SNAPSHOT_VIEW_HAS_LOCAL_PAWN = 1 << 0
 RWVG_ACTOR_SNAPSHOT_VIEW_HAS_CONTROL_ROTATION_YAW = 1 << 1
+RWVG_ACTOR_SNAPSHOT_HAS_ITEM_ID = 1 << 9
 
 
 def _float_from_bits(bits: int) -> float:
@@ -62,8 +64,8 @@ def _parse_record(payload: bytes, offset: int):
     class_name = payload[end:class_name_end].decode("utf-8", errors="ignore")
     (actor_address, object_id, kind, _, mesh, root_component, player_state,
      pos_x, pos_y, pos_z, position_source, last_db_position_tsc, team_id,
-     health_bits, max_health_bits, weapon_id, hero_id, valid_fields, attempts, failures,
-     first_failure) = values
+     health_bits, max_health_bits, weapon_id, hero_id, item_id, valid_fields, attempts,
+     failures, first_failure) = values
     record = {
         "entity": int(actor_address), "actor_address": int(actor_address),
         "actor_address_hex": f"0x{actor_address:X}",
@@ -81,6 +83,9 @@ def _parse_record(payload: bytes, offset: int):
         "weapon_id_hex": f"0x{weapon_id:X}", "hero_id": int(hero_id),
         "hero_id_hex": f"0x{hero_id:X}",
         "weapon_name": weapon_name(weapon_id), "hero_name": hero_name(hero_id),
+        "item_id": int(item_id),
+        "item_id_hex": f"0x{item_id:X}",
+        "item_name": item_name(item_id) if valid_fields & RWVG_ACTOR_SNAPSHOT_HAS_ITEM_ID else "",
         "valid_fields": int(valid_fields),
         "diagnostics": {"attempts": int(attempts), "failures": int(failures), "first_failure": int(first_failure)},
     }

@@ -11,6 +11,7 @@ HEALTH_FIELD = 1 << 5
 MAX_HEALTH_FIELD = 1 << 6
 WEAPON_FIELD = 1 << 7
 HERO_FIELD = 1 << 8
+ITEM_ID_FIELD = 1 << 9
 VIEW_LOCAL_PAWN_FIELD = 1 << 0
 VIEW_CONTROL_ROTATION_YAW_FIELD = 1 << 1
 ITEM_KINDS = frozenset(("Item", "Container", "DeadBox", "Box"))
@@ -85,7 +86,7 @@ def _map_record(record: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str
     entity_id = f"0x{int(record.get('actor_address', 0) or 0):X}"
     class_name = str(record.get("class_name") or kind)
     if kind in ITEM_KINDS:
-        return None, _item(entity_id, kind, class_name, position)
+        return None, _item(entity_id, kind, class_name, position, record, valid_fields, has_valid_fields)
     return _entity(entity_id, kind, class_name, position, record, valid_fields, has_valid_fields), None
 
 
@@ -94,11 +95,23 @@ def _position(value: Any) -> dict[str, int]:
     return {axis: int(float(source.get(axis, 0) or 0)) for axis in ("x", "y", "z")}
 
 
-def _item(entity_id: str, kind: str, class_name: str, position: dict[str, int]) -> dict[str, Any]:
+def _item(
+    entity_id: str,
+    kind: str,
+    class_name: str,
+    position: dict[str, int],
+    record: dict[str, Any],
+    valid_fields: int,
+    has_valid_fields: bool,
+) -> dict[str, Any]:
+    has_item_id = not has_valid_fields or bool(valid_fields & ITEM_ID_FIELD)
+    resolved_name = str(record.get("item_name") or "") if has_item_id else ""
+    item_id = int(record.get("item_id", 0) or 0) if has_item_id else 0
     return {
         "id": entity_id,
         "type": "deadbody" if kind == "DeadBox" else "item",
-        "item_name": class_name,
+        "item_name": resolved_name or class_name,
+        "item_id": item_id,
         "dead_box_name": class_name if kind == "DeadBox" else "",
         "position": position,
         "source_kind": kind,
