@@ -21,7 +21,7 @@ using json = nlohmann::json;
 
 class WebRadarServer {
 public:
-    explicit WebRadarServer(int defaultPort = 8080)
+    explicit WebRadarServer(int defaultPort = 34900)
         : port_(defaultPort), isRunning_(false) {
         const std::string portStr = ReadPortFromFile();
         if (!portStr.empty()) {

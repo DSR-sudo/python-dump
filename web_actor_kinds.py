@@ -11,7 +11,7 @@ DEFAULT_EXTERNAL_WEB_HTML = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "web", "acto
 DEFAULT_EXTERNAL_WEB_CONFIG = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "web", "actor_config.txt")
 # 与 WebRadarService 复用同一张 token（web/pwd.txt），允许两个服务共享同一访问口令。
 DEFAULT_EXTERNAL_PWD = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "web", "pwd.txt")
-DEFAULT_ACTOR_KINDS_PORT = 8081
+DEFAULT_ACTOR_KINDS_PORT = 34901
 
 
 class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -21,7 +21,7 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 class WebActorKindsService:
     """
-    Actor 分类监控服务（端口默认 8081）。
+    Actor 分类监控服务（端口默认 34901）。
     结构镜像 WebRadarService：stdlib http.server + _ThreadingHTTPServer + BaseHTTPRequestHandler，
     通过 X-Auth-Token（或 ?token=）鉴权，对外提供 HTML 监控页与 /api/actor_kinds JSON。
     """

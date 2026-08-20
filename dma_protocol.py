@@ -4,7 +4,7 @@ import struct
 # RWbase src/Core/Network/Network.hpp defaults.
 # Keep env overrides first; fallback matches RWbase default listen/target port.
 DRIVER_IP = os.getenv("DMA_DRIVER_IP", "192.168.10.142")
-DRIVER_PORT = int(os.getenv("DMA_DRIVER_PORT", "10010"))
+DRIVER_PORT = int(os.getenv("DMA_DRIVER_PORT", "34902"))
 BIND_PORT = int(os.getenv("DMA_BIND_PORT", str(DRIVER_PORT)))
 
 MAGIC_KEY = 0xDEADBEEF

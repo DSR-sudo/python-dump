@@ -86,7 +86,7 @@ def print_detailed_help():
         ("coord_raw [stats/recent/watch] [IntervalSec]", "查看 RWbase 发送的 RAW 原始密文日志。"),
         ("rwbase_decrypt [stats/recent/watch] [IntervalSec]", "查看 RWbase-CPUEAXH 结构化解密调试日志（默认开启，可用 RWBASE_DECRYPT_LOG=0 关闭）。"),
         ("webradar <start/stop/status> [Port]", "启动/停止/查看网页雷达服务；token 写入 web/pwd.txt。"),
-        ("actorkinds <start/stop/status> [Port]", "启动/停止/查看 Actor 分类监控服务(默认 8081)；列出所有扫描到的 Actor 及其 GName/Kind，支持过滤。token 复用 web/pwd.txt。"),
+        ("actorkinds <start/stop/status> [Port]", "启动/停止/查看 Actor 分类监控服务(默认 34901)；列出所有扫描到的 Actor 及其 GName/Kind，支持过滤。token 复用 web/pwd.txt。"),
         ("auto_init", "自动扫描并初始化关键签名。"),
         ("cache_gnames", "构建本地 FName 缓存。"),
         ("dump_sdk <ClassName>", "为指定类生成 C++ SDK 头文件。"),
