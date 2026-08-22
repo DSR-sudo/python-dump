@@ -20,6 +20,20 @@ from pcap_capture import PcapCapture
 
 
 class ProtocolTest(unittest.TestCase):
+    def test_interface_selection_prefers_target_address(self):
+        entries = ((b"route", ("192.168.10.2",)), (b"target", ("192.168.10.1",)))
+        self.assertEqual(
+            PcapCapture._select_interface(entries, "192.168.10.1", "192.168.10.2"),
+            b"target",
+        )
+
+    def test_interface_selection_uses_route_when_target_is_remote(self):
+        entries = ((b"route", ("10.0.0.7",)), (b"other", ("172.16.0.4",)))
+        self.assertEqual(
+            PcapCapture._select_interface(entries, "192.168.10.1", "10.0.0.7"),
+            b"route",
+        )
+
     def test_ethernet_ipv4_udp_frame_parser(self):
         payload = b"wire"
         udp = struct.pack("!HHHH", 50000, 34902, 8 + len(payload), 0) + payload

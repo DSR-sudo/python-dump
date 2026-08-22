@@ -1,6 +1,10 @@
 import ctypes
 import ctypes.util
 import socket
+import sys
+
+
+ROUTE_PROBE_PORT = 9
 
 
 class PcapError(RuntimeError):
@@ -64,7 +68,10 @@ class PcapCapture:
         self._program = _BpfProgram()
         selected = interface or self._find_interface(target_ip)
         if not selected:
-            raise PcapError("no capture interface owns target address")
+            raise PcapError(
+                f"no capture interface is associated with target {target_ip}; "
+                "set DMA_CAPTURE_IFACE to a libpcap device name"
+            )
         if isinstance(selected, str):
             selected = selected.encode()
         error = ctypes.create_string_buffer(256)
@@ -111,19 +118,51 @@ class PcapCapture:
         if self._lib.pcap_findalldevs(ctypes.byref(devices), error) != 0:
             raise PcapError(error.value.decode(errors="replace"))
         try:
-            current = devices
-            while current:
-                addresses = current.contents.addresses
-                while addresses:
-                    if addresses.contents.addr:
-                        sockaddr = ctypes.string_at(addresses.contents.addr, 16)
-                        if sockaddr[0] == socket.AF_INET and socket.inet_ntoa(sockaddr[4:8]) == target_ip:
-                            return current.contents.name
-                    addresses = addresses.contents.next
-                current = current.contents.next
-            return None
+            entries = self._device_entries(devices)
+            route_ip = self._route_source_ip(target_ip)
+            return self._select_interface(entries, target_ip, route_ip)
         finally:
             self._lib.pcap_freealldevs(devices)
+
+    @staticmethod
+    def _device_entries(devices):
+        entries = []
+        current = devices
+        while current:
+            addresses = []
+            address = current.contents.addresses
+            while address:
+                if address.contents.addr:
+                    sockaddr = ctypes.string_at(address.contents.addr, 16)
+                    family = int.from_bytes(sockaddr[:2], byteorder=sys.byteorder)
+                    if family == socket.AF_INET:
+                        addresses.append(socket.inet_ntoa(sockaddr[4:8]))
+                address = address.contents.next
+            entries.append((current.contents.name, tuple(addresses)))
+            current = current.contents.next
+        return tuple(entries)
+
+    @staticmethod
+    def _route_source_ip(target_ip):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect((target_ip, ROUTE_PROBE_PORT))
+            return probe.getsockname()[0]
+        except OSError:
+            return None
+        finally:
+            probe.close()
+
+    @staticmethod
+    def _select_interface(entries, target_ip, route_ip):
+        for name, addresses in entries:
+            if target_ip in addresses:
+                return name
+        if route_ip:
+            for name, addresses in entries:
+                if route_ip in addresses:
+                    return name
+        return None
 
     @staticmethod
     def _parse_ipv4(frame, datalink):
