@@ -1,11 +1,16 @@
 ﻿import os
 import struct
+import zlib
+from dataclasses import dataclass
 
 # RWbase src/Core/Network/Network.hpp defaults.
-# Keep env overrides first; fallback matches RWbase default listen/target port.
+# The PMU source port is dynamic; only its destination is fixed.
 DRIVER_IP = os.getenv("DMA_DRIVER_IP", "192.168.10.142")
-DRIVER_PORT = int(os.getenv("DMA_DRIVER_PORT", "34902"))
-BIND_PORT = int(os.getenv("DMA_BIND_PORT", str(DRIVER_PORT)))
+TARGET_IP = os.getenv("DMA_TARGET_IP", "192.168.10.1")
+TARGET_PORT = 34902
+PCAP_CAPTURE_IFACE = os.getenv("DMA_CAPTURE_IFACE")
+PCAP_SOURCE_PORT_MIN = 49152
+PCAP_SOURCE_PORT_MAX = 65535
 
 MAGIC_KEY = 0xDEADBEEF
 
@@ -24,6 +29,258 @@ CTRL_ACK_CPUEAXH_ONLINE = 1 << 1
 
 PACKET_TYPE_LOG = 0x01
 PACKET_TYPE_DATA = 0x02
+PACKET_TYPE_ONLINE = 0x03
+PACKET_TYPE_SNAPSHOT = 0x06
+
+CODEC_BYTE_RLE = 1
+CODEC_ZERO_LITERAL = 2
+CODEC_LZSS_1K = 3
+CODEC_LZSS_4K = 4
+CODEC_DELTA_RLE = 5
+PROTOCOL_MAGICS = frozenset((
+    0xA7C31E5B, 0x3D91F4A7, 0xE24B8C19, 0x6F05D2CD, 0xB89347F1,
+))
+DEFAULT_PROTOCOL_MAGIC = 0xA7C31E5B
+PROTOCOL_HEADER_FMT = "<IBBIIHHI"
+PROTOCOL_HEADER_SIZE = struct.calcsize(PROTOCOL_HEADER_FMT)
+CODEC_IDS = frozenset((CODEC_BYTE_RLE, CODEC_ZERO_LITERAL, CODEC_LZSS_1K, CODEC_LZSS_4K, CODEC_DELTA_RLE))
+PACKET_TYPE_IDS = frozenset((PACKET_TYPE_LOG, PACKET_TYPE_DATA, PACKET_TYPE_ONLINE, PACKET_TYPE_SNAPSHOT))
+DEFAULT_PROTOCOL_DATAGRAM_SIZE = 1400
+MAX_LZSS_OFFSET = 0xFFF
+
+
+@dataclass(frozen=True)
+class ProtocolHeader:
+    magic: int
+    packet_type: int
+    codec_id: int
+    stream_id: int
+    sequence: int
+    fragment_index: int
+    fragment_count: int
+    checksum: int
+
+
+def _rle_encode(data):
+    out = bytearray()
+    index = 0
+    while index < len(data):
+        end = index + 1
+        while end < len(data) and data[end] == data[index] and end - index < 255:
+            end += 1
+        out.extend((end - index, data[index]))
+        index = end
+    return bytes(out)
+
+
+def _rle_decode(data):
+    if len(data) % 2:
+        raise ValueError("invalid byte RLE length")
+    out = bytearray()
+    for index in range(0, len(data), 2):
+        count = data[index]
+        if count == 0:
+            raise ValueError("invalid byte RLE count")
+        out.extend(bytes((data[index + 1],)) * count)
+    return bytes(out)
+
+
+def _zero_literal_encode(data):
+    out = bytearray()
+    index = 0
+    while index < len(data):
+        if data[index] == 0:
+            end = index
+            while end < len(data) and data[end] == 0:
+                end += 1
+            if end - index >= 3:
+                run = end - index
+                while run:
+                    chunk = min(run, 127)
+                    out.append(0x80 | chunk)
+                    run -= chunk
+                index = end
+                continue
+        end = index + 1
+        while end < len(data) and data[end] != 0 and end - index < 127:
+            end += 1
+        out.append(end - index)
+        out.extend(data[index:end])
+        index = end
+    return bytes(out)
+
+
+def _zero_literal_decode(data):
+    out = bytearray()
+    index = 0
+    while index < len(data):
+        token = data[index]
+        index += 1
+        length = token & 0x7F
+        if length == 0:
+            raise ValueError("invalid zero/literal token")
+        if token & 0x80:
+            out.extend(b"\x00" * length)
+        elif index + length <= len(data):
+            out.extend(data[index:index + length])
+            index += length
+        else:
+            raise ValueError("truncated literal token")
+    return bytes(out)
+
+
+def _lzss_encode(data, window):
+    out = bytearray()
+    index = 0
+    while index < len(data):
+        control_index = len(out)
+        out.append(0)
+        control = 0
+        for bit in range(8):
+            if index >= len(data):
+                break
+            start = max(0, index - min(window, MAX_LZSS_OFFSET))
+            best_length = 0
+            best_offset = 0
+            for candidate in range(start, index):
+                length = 0
+                while length < 18 and index + length < len(data):
+                    source = candidate + length
+                    if source >= index or data[source] != data[index + length]:
+                        break
+                    length += 1
+                if length > best_length:
+                    best_length = length
+                    best_offset = index - candidate
+            if best_length >= 3:
+                control |= 1 << bit
+                out.extend(struct.pack("<H", (best_offset << 4) | (best_length - 3)))
+                index += best_length
+            else:
+                out.append(data[index])
+                index += 1
+        out[control_index] = control
+    return bytes(out)
+
+
+def _lzss_decode(data, window):
+    out = bytearray()
+    index = 0
+    while index < len(data):
+        control = data[index]
+        index += 1
+        for bit in range(8):
+            if index >= len(data):
+                break
+            if control & (1 << bit):
+                if index + 2 > len(data):
+                    raise ValueError("truncated LZSS token")
+                token = struct.unpack_from("<H", data, index)[0]
+                index += 2
+                offset = token >> 4
+                length = (token & 0xF) + 3
+                if offset == 0 or offset > window or offset > len(out):
+                    raise ValueError("invalid LZSS offset")
+                for _ in range(length):
+                    out.append(out[-offset])
+            else:
+                out.append(data[index])
+                index += 1
+    return bytes(out)
+
+
+def _delta_rle_encode(data):
+    if not data:
+        return b""
+    deltas = bytes((data[index] - data[index - 1]) & 0xFF for index in range(1, len(data)))
+    return bytes((data[0],)) + _rle_encode(deltas)
+
+
+def _delta_rle_decode(data):
+    if not data:
+        return b""
+    out = bytearray((data[0],))
+    for value in _rle_decode(data[1:]):
+        out.append((out[-1] + value) & 0xFF)
+    return bytes(out)
+
+
+def encode_codec(data, codec_id):
+    codecs = {CODEC_BYTE_RLE: _rle_encode, CODEC_ZERO_LITERAL: _zero_literal_encode,
+              CODEC_LZSS_1K: lambda value: _lzss_encode(value, 1024),
+              CODEC_LZSS_4K: lambda value: _lzss_encode(value, 4096),
+              CODEC_DELTA_RLE: _delta_rle_encode}
+    if codec_id not in codecs:
+        raise ValueError(f"unsupported codec id {codec_id}")
+    return codecs[codec_id](bytes(data))
+
+
+def decode_codec(data, codec_id):
+    codecs = {CODEC_BYTE_RLE: _rle_decode, CODEC_ZERO_LITERAL: _zero_literal_decode,
+              CODEC_LZSS_1K: lambda value: _lzss_decode(value, 1024),
+              CODEC_LZSS_4K: lambda value: _lzss_decode(value, 4096),
+              CODEC_DELTA_RLE: _delta_rle_decode}
+    if codec_id not in codecs:
+        raise ValueError(f"unsupported codec id {codec_id}")
+    return codecs[codec_id](bytes(data))
+
+
+def pack_protocol_datagrams(packet_type, payload, stream_id, sequence, codec_id,
+                            max_datagram=DEFAULT_PROTOCOL_DATAGRAM_SIZE,
+                            magic=DEFAULT_PROTOCOL_MAGIC):
+    payload = bytes(payload)
+    encoded = encode_codec(payload, codec_id)
+    if magic not in PROTOCOL_MAGICS:
+        raise ValueError("invalid protocol magic")
+    chunk_size = max_datagram - PROTOCOL_HEADER_SIZE
+    if not payload or chunk_size <= 0:
+        raise ValueError("invalid protocol payload or datagram size")
+    chunks = [encoded[index:index + chunk_size] for index in range(0, len(encoded), chunk_size)]
+    checksum = zlib.crc32(payload) & 0xFFFFFFFF
+    return [
+        struct.pack(PROTOCOL_HEADER_FMT, magic, packet_type,
+                    codec_id, stream_id, sequence, index, len(chunks), checksum) + chunk
+        for index, chunk in enumerate(chunks)
+    ]
+
+
+def parse_protocol_datagram(datagram):
+    if len(datagram) < PROTOCOL_HEADER_SIZE:
+        raise ValueError("protocol datagram is shorter than header")
+    values = struct.unpack_from(PROTOCOL_HEADER_FMT, datagram)
+    header = ProtocolHeader(*values)
+    if (header.packet_type not in PACKET_TYPE_IDS or header.codec_id not in CODEC_IDS
+            or header.fragment_count == 0 or header.fragment_index >= header.fragment_count):
+        raise ValueError("invalid codec or fragment range")
+    if header.magic not in PROTOCOL_MAGICS:
+        raise ValueError("invalid protocol magic")
+    body = datagram[PROTOCOL_HEADER_SIZE:]
+    if not body:
+        raise ValueError("invalid protocol fragment length")
+    return header, body
+
+
+class ProtocolReassembler:
+    def __init__(self):
+        self._frames = {}
+
+    def add(self, datagram):
+        header, body = parse_protocol_datagram(datagram)
+        key = (header.stream_id, header.sequence, header.packet_type)
+        frame = self._frames.setdefault(key, {"header": header, "parts": {}})
+        expected = frame["header"]
+        if (expected.magic, expected.codec_id, expected.fragment_count, expected.checksum) != (
+                header.magic, header.codec_id, header.fragment_count, header.checksum):
+            raise ValueError("inconsistent protocol fragment header")
+        frame["parts"][header.fragment_index] = body
+        if len(frame["parts"]) != header.fragment_count:
+            return None
+        encoded = b"".join(frame["parts"][index] for index in range(header.fragment_count))
+        del self._frames[key]
+        raw = decode_codec(encoded, header.codec_id)
+        if (zlib.crc32(raw) & 0xFFFFFFFF) != header.checksum:
+            raise ValueError("protocol checksum mismatch")
+        return header.packet_type, raw, (header.stream_id, header.sequence)
 
 # RWbase src/Utils/Definitions.hpp:
 # #pragma pack(push, 1)

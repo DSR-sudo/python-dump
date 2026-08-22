@@ -9,6 +9,7 @@ import os
 import re
 import math
 import queue
+from pcap_capture import PcapCapture, PcapError
 from actor_snapshot_radar import build_radar_snapshot
 from dma_protocol import *
 from item_catalog import describe_item
@@ -18,6 +19,7 @@ DEFAULT_TRANSFER_GRACE_SEC = 5.0
 DEFAULT_IDLE_TIMEOUT_SEC = 2.5
 WAIT_SLICE_SEC = 0.2
 HEARTBEAT_INTERVAL_SEC = 1.0
+DRIVER_LIVENESS_TIMEOUT_SEC = 3.0
 VERBOSE_EXPECTING_LOG = os.getenv("DMA_VERBOSE_EXPECTING", "0") == "1"
 DEFAULT_PLAYER_TTL_SEC = float(os.getenv("DMA_WEBRADAR_PLAYER_TTL", "1.5"))
 RWBASE_DECRYPT_LOG_ENABLED = os.getenv("RWBASE_DECRYPT_LOG", "1").strip().lower() not in ("0", "false", "off", "no")
@@ -91,7 +93,7 @@ class DMACore:
         self.session_log = session_log
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind(("0.0.0.0", BIND_PORT))
+        self.sock.bind(("0.0.0.0", 0))
 
         try:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024 * 1024)
@@ -102,7 +104,12 @@ class DMACore:
         self.is_running = True
         self.driver_online = False
         self.driver_endpoint_lock = threading.Lock()
-        self.driver_endpoint = (DRIVER_IP, DRIVER_PORT)
+        self.driver_state_lock = threading.Lock()
+        self.driver_endpoint = None
+        self.last_driver_packet_ts = 0.0
+        self.protocol_reassembler = ProtocolReassembler()
+        self.pcap = PcapCapture(TARGET_IP, PCAP_SOURCE_PORT_MIN, PCAP_SOURCE_PORT_MAX, PCAP_CAPTURE_IFACE)
+        self.protocol_invalid_packets = 0
         self.seq = 0
         self.rwvg_stream_detected = False
         self.host_aggregate_detected = False
@@ -856,7 +863,10 @@ class DMACore:
             return self.driver_endpoint
 
     def send_to_driver(self, payload):
-        return self.sock.sendto(payload, self.get_driver_endpoint())
+        endpoint = self.get_driver_endpoint()
+        if endpoint is None:
+            raise RuntimeError("PMU endpoint has not been learned from a valid libpcap frame")
+        return self.sock.sendto(payload, endpoint)
 
     def _learn_driver_endpoint(self, address):
         endpoint = self._normalize_driver_endpoint(address)
@@ -881,44 +891,30 @@ class DMACore:
             return None
         return host, port
 
-    @staticmethod
-    def _is_driver_bootstrap_datagram(datagram):
-        if len(datagram) < 2:
-            return False
-        if datagram[0] == PACKET_TYPE_LOG:
-            message = bytes(datagram[1:]).decode("utf-8", errors="ignore").strip()
-            return message.startswith(DRIVER_LOG_IDENTITY_PREFIXES)
-        if datagram[0] != PACKET_TYPE_DATA:
-            return False
-        return try_parse_rwvg_typed_payload(datagram[1:]) is not None
-
     def _receiver_loop(self):
-        self._emit_console_line(f"[*] UDP Receiver started on port {BIND_PORT}", defer_while_input=False)
-        scratch_buffer = bytearray(65536)
+        self._emit_console_line("[*] libpcap receiver started", defer_while_input=False)
 
         while self.is_running:
             try:
-                nbytes, source_address = self.sock.recvfrom_into(scratch_buffer)
-                if nbytes < 1:
+                captured = self.pcap.next_packet()
+                if captured is None:
                     continue
-
-                datagram = scratch_buffer[:nbytes]
-                if self._is_driver_bootstrap_datagram(datagram):
-                    self._learn_driver_endpoint(source_address)
-
-                pkt_type = datagram[0]
+                source_ip, source_port, datagram = captured
+                assembled = self.protocol_reassembler.add(datagram)
+                if assembled is None:
+                    continue
+                pkt_type, payload, _ = assembled
+                self._mark_driver_packet_received()
+                self._learn_driver_endpoint((source_ip, source_port))
 
                 if pkt_type == PACKET_TYPE_LOG:
                     try:
-                        msg = datagram[1:].decode("utf-8", errors="ignore").strip()
+                        msg = payload.decode("utf-8", errors="ignore").strip()
                         self._write_received_log(msg)
                         self._try_capture_module_log(msg)
                         consumed_region_log = self._try_capture_region_log(msg)
                         consumed_host_log = self._try_capture_rwbase_host_log(msg)
                         if "ALIVE_ACK" in msg or "DRIVER_ONLINE" in msg:
-                            if not self.driver_online:
-                                self._emit_console_line("[+] Driver is ONLINE.")
-                            self.driver_online = True
                             continue
 
                         if consumed_region_log or consumed_host_log:
@@ -933,8 +929,7 @@ class DMACore:
                         pass
                     continue
 
-                if pkt_type == PACKET_TYPE_DATA:
-                    payload = datagram[1:]
+                if pkt_type in (PACKET_TYPE_DATA, PACKET_TYPE_SNAPSHOT):
                     typed_parsed = try_parse_rwvg_typed_payload(payload)
                     if typed_parsed is not None:
                         typed_kind, typed_payload = typed_parsed
@@ -963,7 +958,7 @@ class DMACore:
                         self.rwvg_stats["dropped_data_packets"] += 1
                     continue
 
-                host_agg = try_parse_host_aggregate_payload(datagram)
+                host_agg = try_parse_host_aggregate_payload(payload)
                 if host_agg is not None:
                     self.rwvg_stats["host_aggregate_frames"] += 1
                     self.rwvg_stats["host_aggregate_raw_bytes"] += host_agg["raw_size"]
@@ -973,9 +968,16 @@ class DMACore:
                             f"(players={host_agg['player_count']}, items={host_agg['item_count']})."
                         )
                         self.host_aggregate_detected = True
+            except ValueError:
+                self.protocol_invalid_packets += 1
+            except PcapError:
+                self.is_running = False
+                raise
             except Exception:
                 if not self.is_running:
                     break
+                self.is_running = False
+                raise
 
     def _try_capture_module_log(self, msg: str):
         if not msg:
@@ -1048,9 +1050,28 @@ class DMACore:
         while self.is_running:
             try:
                 self._send_heartbeat()
-                time.sleep(HEARTBEAT_INTERVAL_SEC)
-            except Exception:
-                pass
+            except (OSError, RuntimeError):
+                self._set_driver_online(False)
+            self._expire_driver_online_if_stale()
+            time.sleep(HEARTBEAT_INTERVAL_SEC)
+
+    def _set_driver_online(self, online):
+        with self.driver_state_lock:
+            changed = self.driver_online != bool(online)
+            self.driver_online = bool(online)
+        if changed:
+            state = "ONLINE" if online else "OFFLINE"
+            self._emit_console_line(f"[*] Driver is {state}.", defer_while_input=False)
+
+    def _mark_driver_packet_received(self):
+        self.last_driver_packet_ts = time.monotonic()
+        self._set_driver_online(True)
+
+    def _expire_driver_online_if_stale(self):
+        if not self.driver_online or self.last_driver_packet_ts <= 0:
+            return
+        if time.monotonic() - self.last_driver_packet_ts > DRIVER_LIVENESS_TIMEOUT_SEC:
+            self._set_driver_online(False)
 
     def _send_heartbeat(self):
         payload = b"HELO".ljust(32, b"\x00")
@@ -1117,3 +1138,9 @@ class DMACore:
                 f"{self.recvd_bytes}/{size} bytes ({percent:.1f}%)."
             )
             return None
+
+    def shutdown(self):
+        self.is_running = False
+        self._set_driver_online(False)
+        self.pcap.close()
+        self.sock.close()

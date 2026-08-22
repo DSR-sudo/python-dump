@@ -111,6 +111,7 @@ def main():
         except Exception as e:
             log(f"Error: {e}", "ERROR")
     handler.shutdown()
+    core.shutdown()
 
 if __name__ == "__main__":
     main()

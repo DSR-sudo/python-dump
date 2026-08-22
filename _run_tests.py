@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 loader = unittest.TestLoader()
-suite = loader.loadTestsFromName("test_type6_view")
+suite = loader.loadTestsFromNames(["test_type6_view", "test_dma_protocol"])
 runner = unittest.TextTestRunner(verbosity=2)
 result = runner.run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)
