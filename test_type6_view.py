@@ -13,8 +13,7 @@ from rwvg_actor_snapshot import (
 )
 
 
-ACTOR_ADDRESS = 0x123456789ABCDEF0
-ITEM_ADDRESS = 0x23456789ABCDEF01
+LOCAL_PAWN = 0x123456789ABCDEF0
 ITEM_ID = 15050200005
 POSITION_FIELD = 1 << 3
 TEAM_FIELD = 1 << 4
@@ -31,28 +30,26 @@ def _float_bits(value: float) -> int:
 
 
 def _build_type6_frame() -> bytes:
-    class_name = b"BP_DFMCharacter_C"
-    item_class_name = b"BP_InventoryPickup_C"
     record = struct.pack(
         RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT,
-        ACTOR_ADDRESS, 17, 1, len(class_name), 0, 0, 0,
+        1, 0, 0, 0,
         _float_bits(100.0), _float_bits(200.0), _float_bits(300.0), 1, 0,
         4, _float_bits(100.0), _float_bits(100.0), 0, 0x1122334455667788, 0,
         POSITION_FIELD | TEAM_FIELD | HEALTH_FIELD | MAX_HEALTH_FIELD | WEAPON_FIELD | HERO_FIELD,
         1, 0, 0,
-    ) + class_name
+    )
     item_record = struct.pack(
         RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT,
-        ITEM_ADDRESS, 18, 4, len(item_class_name), 0, 0, 0,
+        4, 0, 0, 0,
         _float_bits(150.0), _float_bits(250.0), _float_bits(350.0), 5, 0,
         0, 0, 0, 0, 0, ITEM_ID,
         POSITION_FIELD | ITEM_ID_FIELD,
         1, 0, 0,
-    ) + item_class_name
+    )
     header = struct.pack(
         RWVG_ACTOR_SNAPSHOT_HEADER_FMT,
         2, RWVG_ACTOR_SNAPSHOT_VERSION, 7, 0, 1, 2,
-        ACTOR_ADDRESS, YAW_BITS, 3, 3, 0, 0,
+        LOCAL_PAWN, YAW_BITS, 3, 3, 0, 0,
     )
     return header + record + item_record
 
@@ -69,8 +66,8 @@ class Type6ViewTest(unittest.TestCase):
 
         self.assertIsNotNone(parsed)
         self.assertEqual(RWVG_ACTOR_SNAPSHOT_HEADER_SIZE, 48)
-        self.assertEqual(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE, 105)
-        self.assertEqual(parsed["local_view"]["local_pawn"], ACTOR_ADDRESS)
+        self.assertEqual(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE, 92)
+        self.assertEqual(parsed["local_view"]["local_pawn"], LOCAL_PAWN)
         self.assertEqual(parsed["local_view"]["yaw"], 135.5)
         self.assertEqual(parsed["records"][0]["hero_id"], 0x1122334455667788)
         self.assertEqual(parsed["records"][0]["hero_id_hex"], "0x1122334455667788")
@@ -78,6 +75,8 @@ class Type6ViewTest(unittest.TestCase):
         self.assertEqual(parsed["records"][0]["weapon_name"], "未知武器(0)")
         self.assertEqual(parsed["records"][0]["item_id"], 0)
         self.assertEqual(parsed["records"][0]["item_name"], "")
+        for field in ("entity", "actor_address", "object_id", "gname", "class_name"):
+            self.assertNotIn(field, parsed["records"][0])
 
         radar = build_radar_snapshot({
             "actors": parsed["records"],
@@ -85,10 +84,8 @@ class Type6ViewTest(unittest.TestCase):
             "version": parsed["version"],
         }, None)
 
-        self.assertEqual(radar["local_player"]["id"], f"0x{ACTOR_ADDRESS:X}")
-        self.assertEqual(radar["local_player"]["yaw"], 135.5)
-        self.assertTrue(radar["entities"][0]["has_orientation"])
-        self.assertEqual(radar["entities"][0]["orientation"], 135.5)
+        self.assertIsNone(radar["local_player"])
+        self.assertFalse(radar["entities"][0]["has_orientation"])
         self.assertEqual(radar["entities"][0]["hero_id"], 0x1122334455667788)
         self.assertEqual(radar["entities"][0]["hero_id_hex"], "0x1122334455667788")
         self.assertEqual(radar["entities"][0]["hero_name"], "未知探员(1234605616436508552)")
@@ -104,6 +101,7 @@ class Type6ViewTest(unittest.TestCase):
         item = parsed["records"][1]
         self.assertEqual(item["kind_name"], "Item")
         self.assertEqual(item["item_id"], ITEM_ID)
+        self.assertEqual(item["item_id_hex"], f"0x{ITEM_ID:X}")
         self.assertEqual(item["item_name"], "蓝室核心")
 
         radar = build_radar_snapshot({
@@ -114,8 +112,9 @@ class Type6ViewTest(unittest.TestCase):
 
         self.assertEqual(len(radar["items"]), 1)
         self.assertEqual(radar["items"][0]["item_id"], ITEM_ID)
+        self.assertEqual(radar["items"][0]["item_id_hex"], f"0x{ITEM_ID:X}")
         self.assertEqual(radar["items"][0]["item_name"], "蓝室核心")
-        self.assertEqual(radar["items"][0]["id"], f"0x{ITEM_ADDRESS:X}")
+        self.assertEqual(radar["items"][0]["id"], "record:1")
 
     def test_type6_keeps_items_from_the_legacy_item_stream(self):
         parsed = parse_rwvg_actor_scan_payload(_build_type6_frame())
@@ -132,7 +131,7 @@ class Type6ViewTest(unittest.TestCase):
         )
 
         self.assertEqual([item["id"] for item in radar["items"]], [
-            f"0x{ITEM_ADDRESS:X}",
+            "record:1",
             "item:legacy",
         ])
 

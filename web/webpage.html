@@ -347,7 +347,8 @@
         const container = document.createElement('div');
         container.className = 'entity-container';
         container.classList.add('resource-marker');
-        container.title = itemData.dead_box_name || itemData.item_name || 'item';
+        const itemLabel = itemData.dead_box_name || itemData.item_name || 'item';
+        container.title = itemLabel;
         const body = document.createElement('div');
         body.className = 'entity-body item-body';
         body.style.backgroundColor = itemData.item_quality_color || '#ffeb3b';

@@ -404,12 +404,12 @@ class DMACore:
 
     def _merge_actor_snapshot_records(self, records: list, now_ts: float):
         for record in records:
-            actor_address = int(record.get("actor_address", record.get("entity", 0)) or 0)
-            if actor_address not in self.actor_scan_entities:
-                self.actor_scan_order.append(actor_address)
+            record_id = int(record.get("record_id", 0) or 0)
+            if record_id not in self.actor_scan_entities:
+                self.actor_scan_order.append(record_id)
             stamped = dict(record)
             stamped["_ts"] = now_ts
-            self.actor_scan_entities[actor_address] = stamped
+            self.actor_scan_entities[record_id] = stamped
 
     def _record_actor_snapshot_frame(self, record_count: int, now_ts: float):
         self.rwvg_stats["actor_scan_frames"] += 1
@@ -632,6 +632,8 @@ class DMACore:
                 "type": str(item.get("type") or "item"),
                 "item_type": int(item.get("item_type", 0) or 0),
                 "item_name": str(item.get("item_name") or ""),
+                "item_id": int(item.get("item_id", 0) or 0),
+                "item_id_hex": str(item.get("item_id_hex") or ""),
                 "item_quality": int(item.get("item_quality", 0) or 0),
                 "item_quality_label": str(item.get("item_quality_label") or ""),
                 "item_quality_color": str(item.get("item_quality_color") or ""),

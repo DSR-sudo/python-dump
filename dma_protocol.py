@@ -32,18 +32,18 @@ PACKET_TYPE_DATA = 0x02
 PACKET_TYPE_ONLINE = 0x03
 PACKET_TYPE_SNAPSHOT = 0x06
 
-CODEC_BYTE_RLE = 1
+CODEC_LZ4_BLOCK = 1
 CODEC_ZERO_LITERAL = 2
 CODEC_LZSS_1K = 3
 CODEC_LZSS_4K = 4
-CODEC_DELTA_RLE = 5
+CODEC_PACK_BITS = 5
 PROTOCOL_MAGICS = frozenset((
     0xA7C31E5B, 0x3D91F4A7, 0xE24B8C19, 0x6F05D2CD, 0xB89347F1,
 ))
 DEFAULT_PROTOCOL_MAGIC = 0xA7C31E5B
 PROTOCOL_HEADER_FMT = "<IBBIIHHI"
 PROTOCOL_HEADER_SIZE = struct.calcsize(PROTOCOL_HEADER_FMT)
-CODEC_IDS = frozenset((CODEC_BYTE_RLE, CODEC_ZERO_LITERAL, CODEC_LZSS_1K, CODEC_LZSS_4K, CODEC_DELTA_RLE))
+CODEC_IDS = frozenset((CODEC_LZ4_BLOCK, CODEC_ZERO_LITERAL, CODEC_LZSS_1K, CODEC_LZSS_4K, CODEC_PACK_BITS))
 PACKET_TYPE_IDS = frozenset((PACKET_TYPE_LOG, PACKET_TYPE_DATA, PACKET_TYPE_ONLINE, PACKET_TYPE_SNAPSHOT))
 DEFAULT_PROTOCOL_DATAGRAM_SIZE = 1400
 MAX_LZSS_OFFSET = 0xFFF
@@ -59,30 +59,6 @@ class ProtocolHeader:
     fragment_index: int
     fragment_count: int
     checksum: int
-
-
-def _rle_encode(data):
-    out = bytearray()
-    index = 0
-    while index < len(data):
-        end = index + 1
-        while end < len(data) and data[end] == data[index] and end - index < 255:
-            end += 1
-        out.extend((end - index, data[index]))
-        index = end
-    return bytes(out)
-
-
-def _rle_decode(data):
-    if len(data) % 2:
-        raise ValueError("invalid byte RLE length")
-    out = bytearray()
-    for index in range(0, len(data), 2):
-        count = data[index]
-        if count == 0:
-            raise ValueError("invalid byte RLE count")
-        out.extend(bytes((data[index + 1],)) * count)
-    return bytes(out)
 
 
 def _zero_literal_encode(data):
@@ -126,6 +102,160 @@ def _zero_literal_decode(data):
             index += length
         else:
             raise ValueError("truncated literal token")
+    return bytes(out)
+
+
+def _lz4_hash(value):
+    return ((value * 2654435761) & 0xFFFFFFFF) >> 22
+
+
+def _lz4_length(out, length):
+    while length >= 255:
+        out.append(255)
+        length -= 255
+    out.append(length)
+
+
+def _lz4_sequence(out, literals, match_offset=0, match_size=0):
+    token_index = len(out)
+    out.append(0)
+    literal_size = len(literals)
+    match_code = max(0, match_size - 4)
+    token = (0xF0 if literal_size >= 15 else literal_size << 4)
+    token |= 0x0F if match_size >= 4 and match_code >= 15 else match_code
+    if literal_size >= 15:
+        _lz4_length(out, literal_size - 15)
+    out.extend(literals)
+    if match_size >= 4:
+        out.extend(struct.pack("<H", match_offset))
+        if match_code >= 15:
+            _lz4_length(out, match_code - 15)
+    out[token_index] = token
+
+
+def _lz4_encode(data):
+    data = bytes(data)
+    positions = [-1] * 1024
+    out = bytearray()
+    anchor = 0
+    index = 0
+    match_limit = max(0, len(data) - 5)
+    while index < match_limit:
+        value = struct.unpack_from("<I", data, index)[0]
+        slot = _lz4_hash(value)
+        candidate = positions[slot]
+        positions[slot] = index
+        if (candidate < 0 or index - candidate > 0xFFFF
+                or data[candidate:candidate + 4] != data[index:index + 4]):
+            index += 1
+            continue
+        match_end = index + 4
+        while match_end < len(data) and data[candidate + match_end - index] == data[match_end]:
+            match_end += 1
+        _lz4_sequence(out, data[anchor:index], index - candidate, match_end - index)
+        index = match_end
+        anchor = index
+    _lz4_sequence(out, data[anchor:])
+    return bytes(out)
+
+
+def _lz4_decode(data):
+    out = bytearray()
+    index = 0
+    while index < len(data):
+        token = data[index]
+        index += 1
+        literal_size = token >> 4
+        if literal_size == 15:
+            while True:
+                if index >= len(data):
+                    raise ValueError("truncated LZ4 literal length")
+                length = data[index]
+                index += 1
+                literal_size += length
+                if length != 255:
+                    break
+        if index + literal_size > len(data):
+            raise ValueError("truncated LZ4 literals")
+        out.extend(data[index:index + literal_size])
+        index += literal_size
+        if index == len(data):
+            break
+        if index + 2 > len(data):
+            raise ValueError("truncated LZ4 offset")
+        offset = struct.unpack_from("<H", data, index)[0]
+        index += 2
+        if offset == 0 or offset > len(out):
+            raise ValueError("invalid LZ4 offset")
+        match_size = token & 0x0F
+        if match_size == 15:
+            while True:
+                if index >= len(data):
+                    raise ValueError("truncated LZ4 match length")
+                length = data[index]
+                index += 1
+                match_size += length
+                if length != 255:
+                    break
+        match_size += 4
+        for _ in range(match_size):
+            out.append(out[-offset])
+    return bytes(out)
+
+
+def _packbits_encode(data):
+    out = bytearray()
+    index = 0
+    while index < len(data):
+        run_end = index + 1
+        while (run_end < len(data) and data[run_end] == data[index]
+               and run_end - index < 127):
+            run_end += 1
+        if run_end - index >= 3:
+            run = run_end - index
+            while run:
+                chunk = min(run, 127)
+                out.extend((0x80 | chunk, data[index]))
+                run -= chunk
+                index += chunk
+            continue
+        literal_start = index
+        literal_end = index
+        while literal_end < len(data) and literal_end - literal_start < 127:
+            next_index = literal_end + 1
+            while (next_index < len(data) and data[next_index] == data[literal_end]
+                   and next_index - literal_end < 3):
+                next_index += 1
+            if next_index - literal_end >= 3:
+                break
+            literal_end = next_index
+        if literal_end == literal_start:
+            literal_end += 1
+        out.append(literal_end - literal_start)
+        out.extend(data[literal_start:literal_end])
+        index = literal_end
+    return bytes(out)
+
+
+def _packbits_decode(data):
+    out = bytearray()
+    index = 0
+    while index < len(data):
+        token = data[index]
+        index += 1
+        length = token & 0x7F
+        if length == 0:
+            raise ValueError("invalid PackBits token")
+        if token & 0x80:
+            if index >= len(data):
+                raise ValueError("truncated PackBits run")
+            out.extend(bytes((data[index],)) * length)
+            index += 1
+        elif index + length <= len(data):
+            out.extend(data[index:index + length])
+            index += length
+        else:
+            raise ValueError("truncated PackBits literal")
     return bytes(out)
 
 
@@ -189,37 +319,21 @@ def _lzss_decode(data, window):
     return bytes(out)
 
 
-def _delta_rle_encode(data):
-    if not data:
-        return b""
-    deltas = bytes((data[index] - data[index - 1]) & 0xFF for index in range(1, len(data)))
-    return bytes((data[0],)) + _rle_encode(deltas)
-
-
-def _delta_rle_decode(data):
-    if not data:
-        return b""
-    out = bytearray((data[0],))
-    for value in _rle_decode(data[1:]):
-        out.append((out[-1] + value) & 0xFF)
-    return bytes(out)
-
-
 def encode_codec(data, codec_id):
-    codecs = {CODEC_BYTE_RLE: _rle_encode, CODEC_ZERO_LITERAL: _zero_literal_encode,
+    codecs = {CODEC_LZ4_BLOCK: _lz4_encode, CODEC_ZERO_LITERAL: _zero_literal_encode,
               CODEC_LZSS_1K: lambda value: _lzss_encode(value, 1024),
               CODEC_LZSS_4K: lambda value: _lzss_encode(value, 4096),
-              CODEC_DELTA_RLE: _delta_rle_encode}
+              CODEC_PACK_BITS: _packbits_encode}
     if codec_id not in codecs:
         raise ValueError(f"unsupported codec id {codec_id}")
     return codecs[codec_id](bytes(data))
 
 
 def decode_codec(data, codec_id):
-    codecs = {CODEC_BYTE_RLE: _rle_decode, CODEC_ZERO_LITERAL: _zero_literal_decode,
+    codecs = {CODEC_LZ4_BLOCK: _lz4_decode, CODEC_ZERO_LITERAL: _zero_literal_decode,
               CODEC_LZSS_1K: lambda value: _lzss_decode(value, 1024),
               CODEC_LZSS_4K: lambda value: _lzss_decode(value, 4096),
-              CODEC_DELTA_RLE: _delta_rle_decode}
+              CODEC_PACK_BITS: _packbits_decode}
     if codec_id not in codecs:
         raise ValueError(f"unsupported codec id {codec_id}")
     return codecs[codec_id](bytes(data))
@@ -320,7 +434,6 @@ from rwvg_protocol import (
     RWVG_ACTOR_KIND_UNKNOWN,
     RWVG_ACTOR_SNAPSHOT_HEADER_FMT,
     RWVG_ACTOR_SNAPSHOT_HEADER_SIZE,
-    RWVG_ACTOR_SNAPSHOT_MAX_CLASS_NAME_BYTES,
     RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT,
     RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE,
     RWVG_ACTOR_SNAPSHOT_VERSION,

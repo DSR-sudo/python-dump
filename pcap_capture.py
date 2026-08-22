@@ -17,7 +17,6 @@ class _PcapAddr(ctypes.Structure):
 
 _PcapAddr._fields_ = [
     ("next", ctypes.POINTER(_PcapAddr)),
-    ("name", ctypes.c_void_p),
     ("addr", ctypes.c_void_p),
     ("netmask", ctypes.c_void_p),
     ("broadaddr", ctypes.c_void_p),

@@ -37,8 +37,6 @@
         <input id="auth-input" type="text" placeholder="输入密码" autocomplete="off">
         <button id="auth-submit">确认</button>
         <span id="auth-error">密码错误</span>
-        <span class="label" style="margin-left:8px">GName</span>
-        <input id="filter-gname" type="text" placeholder="子串过滤(不区分大小写)" autocomplete="off" style="width:200px">
         <span class="label">Kind</span>
         <select id="filter-kind">
             <option value="">全部</option>
@@ -52,8 +50,6 @@
             <option value="Box">Box</option>
             <option value="AI">AI</option>
         </select>
-        <span class="label">Entity</span>
-        <input id="filter-entity" type="text" placeholder="0x指针" autocomplete="off" style="width:140px">
         <button id="refresh-btn" class="control-btn">刷新</button>
         <label class="control-btn active"><input type="checkbox" id="auto-refresh" checked style="margin-right:4px">自动刷新</label>
         <select id="interval-select" class="control-btn" style="background-color:#555;color:#fff">
@@ -70,9 +66,7 @@
         <table>
             <thead>
                 <tr>
-                    <th>Entity</th>
-                    <th>ObjectId</th>
-                    <th>GName</th>
+                    <th>ItemId</th>
                     <th>Kind</th>
                     <th>Pos X</th>
                     <th>Pos Y</th>
@@ -131,17 +125,9 @@
     }
 
     function applyFilters(actors) {
-        const gnameQ = document.getElementById('filter-gname').value.trim().toLowerCase();
         const kindQ = document.getElementById('filter-kind').value;
-        const entityQ = document.getElementById('filter-entity').value.trim().toLowerCase().replace(/^0x/, '');
         return actors.filter(a => {
-            const gname = String(a.gname || '').toLowerCase();
-            if (gnameQ && gname.indexOf(gnameQ) === -1) return false;
             if (kindQ && a.kind_name !== kindQ) return false;
-            if (entityQ) {
-                const e = Number(a.entity || 0).toString(16).toLowerCase();
-                if (e.indexOf(entityQ) === -1) return false;
-            }
             return true;
         });
     }
@@ -170,9 +156,7 @@
             tr.className = 'kind-' + (a.kind_name || 'Unknown');
             const pos = a.pos || {};
             const details = {
-                actor_address: a.actor_address || a.entity || 0,
-                actor_address_hex: a.actor_address_hex || '',
-                class_name: a.class_name || a.gname || '', mesh: a.mesh || 0,
+                record_id: a.record_id || 0, mesh: a.mesh || 0,
                 root_component: a.root_component || 0, player_state: a.player_state || 0,
                 mesh_hex: a.mesh_hex || '', root_component_hex: a.root_component_hex || '',
                 player_state_hex: a.player_state_hex || '',
@@ -183,14 +167,14 @@
                 weapon_name: a.weapon_name || '',
                 hero_id: a.hero_id || 0, hero_id_hex: a.hero_id_hex || '',
                 hero_name: a.hero_name || '',
+                item_id: a.item_id || 0, item_id_hex: a.item_id_hex || '',
+                item_name: a.item_name || '',
                 health: a.health, max_health: a.max_health,
                 valid_fields: a.valid_fields || 0,
                 diagnostics: a.diagnostics || {}
             };
             tr.innerHTML =
-                '<td>' + escapeHtml(a.actor_address_hex || fmtEntity(a.entity)) + '</td>' +
-                '<td>' + fmtNum(a.object_id) + '</td>' +
-                '<td>' + escapeHtml(a.gname || '') + '</td>' +
+                '<td>' + escapeHtml(hasField(a, 1 << 9) ? (a.item_id_hex || fmtNum(a.item_id)) : '?') + '</td>' +
                 '<td>' + escapeHtml(a.kind_name || 'Unknown') + '</td>' +
                 '<td>' + fmtFloat(pos.x) + '</td>' +
                 '<td>' + fmtFloat(pos.y) + '</td>' +
@@ -288,9 +272,7 @@
     }
 
     // 过滤/刷新控件事件
-    document.getElementById('filter-gname').addEventListener('input', renderTable);
     document.getElementById('filter-kind').addEventListener('change', renderTable);
-    document.getElementById('filter-entity').addEventListener('input', renderTable);
     document.getElementById('refresh-btn').addEventListener('click', refresh);
     document.getElementById('auto-refresh').addEventListener('change', setupTimer);
     document.getElementById('interval-select').addEventListener('change', setupTimer);

@@ -2,10 +2,10 @@ import struct
 import unittest
 
 from dma_protocol import (
-    CODEC_BYTE_RLE,
-    CODEC_DELTA_RLE,
+    CODEC_LZ4_BLOCK,
     CODEC_LZSS_1K,
     CODEC_LZSS_4K,
+    CODEC_PACK_BITS,
     CODEC_ZERO_LITERAL,
     PACKET_TYPE_DATA,
     PROTOCOL_HEADER_SIZE,
@@ -52,7 +52,7 @@ class ProtocolTest(unittest.TestCase):
 
     def test_all_codecs_round_trip(self):
         payload = (b"\x00" * 300) + (b"abcdef" * 400) + bytes(range(256))
-        for codec in (CODEC_BYTE_RLE, CODEC_ZERO_LITERAL, CODEC_LZSS_1K, CODEC_LZSS_4K, CODEC_DELTA_RLE):
+        for codec in (CODEC_LZ4_BLOCK, CODEC_ZERO_LITERAL, CODEC_LZSS_1K, CODEC_LZSS_4K, CODEC_PACK_BITS):
             self.assertEqual(decode_codec(encode_codec(payload, codec), codec), payload)
 
     def test_fragment_reassembly_validates_checksum_and_range(self):
@@ -74,14 +74,14 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(PROTOCOL_HEADER_SIZE, 22)
         magic = next(iter(PROTOCOL_MAGICS))
         datagram = pack_protocol_datagrams(
-            PACKET_TYPE_DATA, b"abc", 1, 1, CODEC_BYTE_RLE, magic=magic)[0]
+            PACKET_TYPE_DATA, b"abc", 1, 1, CODEC_LZ4_BLOCK, magic=magic)[0]
         header, body = parse_protocol_datagram(datagram)
         self.assertEqual(header.magic, magic)
-        self.assertEqual(header.codec_id, CODEC_BYTE_RLE)
-        self.assertEqual(decode_codec(body, CODEC_BYTE_RLE), b"abc")
+        self.assertEqual(header.codec_id, CODEC_LZ4_BLOCK)
+        self.assertEqual(decode_codec(body, CODEC_LZ4_BLOCK), b"abc")
 
     def test_invalid_fragment_range_is_rejected(self):
-        datagram = bytearray(pack_protocol_datagrams(PACKET_TYPE_DATA, b"abc", 1, 1, CODEC_BYTE_RLE)[0])
+        datagram = bytearray(pack_protocol_datagrams(PACKET_TYPE_DATA, b"abc", 1, 1, CODEC_LZ4_BLOCK)[0])
         struct.pack_into("<H", datagram, 14, 1)
         with self.assertRaises(ValueError):
             parse_protocol_datagram(bytes(datagram))

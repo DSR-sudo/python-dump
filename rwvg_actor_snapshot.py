@@ -29,14 +29,13 @@ RWVG_ACTOR_KIND_NAMES = {
     RWVG_ACTOR_KIND_AI: "AI",
 }
 
-RWVG_ACTOR_SNAPSHOT_VERSION = 5
+RWVG_ACTOR_SNAPSHOT_VERSION = 6
 RWVG_ACTOR_SNAPSHOT_PREFIX_FMT = "<HH"
 RWVG_ACTOR_SNAPSHOT_PREFIX_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_PREFIX_FMT)
 RWVG_ACTOR_SNAPSHOT_HEADER_FMT = "<HHIIIIQIIIIi"
 RWVG_ACTOR_SNAPSHOT_HEADER_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_HEADER_FMT)
-RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<QIBBQQQIIIBQiIIHQQIIIi"
+RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<BQQQIIIBQiIIHQQIIIi"
 RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT)
-RWVG_ACTOR_SNAPSHOT_MAX_CLASS_NAME_BYTES = 64
 RWVG_ACTOR_SNAPSHOT_VIEW_HAS_LOCAL_PAWN = 1 << 0
 RWVG_ACTOR_SNAPSHOT_VIEW_HAS_CONTROL_ROTATION_YAW = 1 << 1
 RWVG_ACTOR_SNAPSHOT_HAS_ITEM_ID = 1 << 9
@@ -50,27 +49,18 @@ def _kind_name(kind: int) -> str:
     return RWVG_ACTOR_KIND_NAMES.get(int(kind), "Unknown")
 
 
-def _parse_record(payload: bytes, offset: int):
+def _parse_record(payload: bytes, offset: int, record_id: int):
     end = offset + RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE
     if end > len(payload):
         return None
     values = struct.unpack_from(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT, payload, offset)
-    class_name_len = values[3]
-    if class_name_len > RWVG_ACTOR_SNAPSHOT_MAX_CLASS_NAME_BYTES:
-        return None
-    class_name_end = end + class_name_len
-    if class_name_end > len(payload):
-        return None
-    class_name = payload[end:class_name_end].decode("utf-8", errors="ignore")
-    (actor_address, object_id, kind, _, mesh, root_component, player_state,
+    (kind, mesh, root_component, player_state,
      pos_x, pos_y, pos_z, position_source, last_db_position_tsc, team_id,
      health_bits, max_health_bits, weapon_id, hero_id, item_id, valid_fields, attempts,
      failures, first_failure) = values
     record = {
-        "entity": int(actor_address), "actor_address": int(actor_address),
-        "actor_address_hex": f"0x{actor_address:X}",
-        "object_id": int(object_id), "kind": int(kind), "kind_name": _kind_name(kind),
-        "gname": class_name, "class_name": class_name, "mesh": int(mesh),
+        "record_id": int(record_id), "kind": int(kind), "kind_name": _kind_name(kind),
+        "mesh": int(mesh),
         "root_component": int(root_component), "player_state": int(player_state),
         "mesh_hex": f"0x{mesh:X}", "root_component_hex": f"0x{root_component:X}",
         "player_state_hex": f"0x{player_state:X}",
@@ -89,13 +79,14 @@ def _parse_record(payload: bytes, offset: int):
         "valid_fields": int(valid_fields),
         "diagnostics": {"attempts": int(attempts), "failures": int(failures), "first_failure": int(first_failure)},
     }
-    return record, class_name_end
+    return record, end
 
 
-def _parse_snapshot_records(payload: bytes, offset: int, record_count: int):
+def _parse_snapshot_records(payload: bytes, offset: int, record_count: int, fragment_index: int):
     records = []
-    for _ in range(record_count):
-        parsed = _parse_record(payload, offset)
+    for index in range(record_count):
+        record_id = (int(fragment_index) << 32) | index
+        parsed = _parse_record(payload, offset, record_id)
         if parsed is None:
             return None
         record, offset = parsed
@@ -113,7 +104,8 @@ def _parse_snapshot(payload: bytes, record_count: int):
         return None
     if total_record_count == 0 and (record_count != 0 or fragment_count != 1):
         return None
-    records = _parse_snapshot_records(payload, RWVG_ACTOR_SNAPSHOT_HEADER_SIZE, record_count)
+    records = _parse_snapshot_records(
+        payload, RWVG_ACTOR_SNAPSHOT_HEADER_SIZE, record_count, fragment_index)
     if records is None:
         return None
     yaw = _float_from_bits(yaw_bits)

@@ -103,11 +103,11 @@ def _map_record(record: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str
         return None, None
     kind = str(record.get("kind_name") or "Unknown")
     position = _position(record.get("pos"))
-    entity_id = f"0x{int(record.get('actor_address', 0) or 0):X}"
-    class_name = str(record.get("class_name") or kind)
+    record_id = int(record.get("record_id", 0) or 0)
+    entity_id = f"record:{record_id:X}"
     if kind in ITEM_KINDS:
-        return None, _item(entity_id, kind, class_name, position, record, valid_fields, has_valid_fields)
-    return _entity(entity_id, kind, class_name, position, record, valid_fields, has_valid_fields), None
+        return None, _item(entity_id, kind, position, record, valid_fields, has_valid_fields)
+    return _entity(entity_id, kind, position, record, valid_fields, has_valid_fields), None
 
 
 def _position(value: Any) -> dict[str, int]:
@@ -118,7 +118,6 @@ def _position(value: Any) -> dict[str, int]:
 def _item(
     entity_id: str,
     kind: str,
-    class_name: str,
     position: dict[str, int],
     record: dict[str, Any],
     valid_fields: int,
@@ -130,9 +129,10 @@ def _item(
     return {
         "id": entity_id,
         "type": "deadbody" if kind == "DeadBox" else "item",
-        "item_name": resolved_name or class_name,
+        "item_name": resolved_name or kind,
         "item_id": item_id,
-        "dead_box_name": class_name if kind == "DeadBox" else "",
+        "item_id_hex": f"0x{item_id:X}" if has_item_id else "",
+        "dead_box_name": kind if kind == "DeadBox" else "",
         "position": position,
         "source_kind": kind,
     }
@@ -141,7 +141,6 @@ def _item(
 def _entity(
     entity_id: str,
     kind: str,
-    class_name: str,
     position: dict[str, int],
     record: dict[str, Any],
     valid_fields: int,
@@ -154,9 +153,8 @@ def _entity(
     has_hero = not has_valid_fields or bool(valid_fields & HERO_FIELD)
     return {
         "id": entity_id,
-        "name": class_name,
+        "name": kind,
         "type": "ai" if kind in AI_KINDS else "player",
-        "class_name": class_name,
         "team_id": int(record.get("team_id", 0) or 0) if has_team else 0,
         "has_team": has_team,
         "position": position,
