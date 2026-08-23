@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from item_descriptor import effective_item_quality, quality_display
+from item_catalog import item_name
+
 
 POSITION_FIELD = 1 << 3
 TEAM_FIELD = 1 << 4
@@ -124,14 +127,20 @@ def _item(
     has_valid_fields: bool,
 ) -> dict[str, Any]:
     has_item_id = not has_valid_fields or bool(valid_fields & ITEM_ID_FIELD)
-    resolved_name = str(record.get("item_name") or "") if has_item_id else ""
     item_id = int(record.get("item_id", 0) or 0) if has_item_id else 0
+    resolved_name = str(record.get("item_name") or "") if has_item_id else ""
+    resolved_name = resolved_name or (item_name(item_id) if has_item_id else "")
+    item_quality = effective_item_quality(item_id, record.get("item_quality", 0))
+    quality_label, quality_color = quality_display(item_quality)
     return {
         "id": entity_id,
         "type": "deadbody" if kind == "DeadBox" else "item",
         "item_name": resolved_name or kind,
         "item_id": item_id,
         "item_id_hex": f"0x{item_id:X}" if has_item_id else "",
+        "item_quality": item_quality,
+        "item_quality_label": quality_label,
+        "item_quality_color": quality_color,
         "dead_box_name": kind if kind == "DeadBox" else "",
         "position": position,
         "source_kind": kind,

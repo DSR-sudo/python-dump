@@ -116,6 +116,20 @@ class Type6ViewTest(unittest.TestCase):
         self.assertEqual(radar["items"][0]["item_name"], "蓝室核心")
         self.assertEqual(radar["items"][0]["id"], "record:1")
 
+    def test_type6_item_exposes_quality_display_fields(self):
+        parsed = parse_rwvg_actor_scan_payload(_build_type6_frame())
+
+        radar = build_radar_snapshot({
+            "actors": parsed["records"],
+            "local_view": parsed["local_view"],
+            "version": parsed["version"],
+        }, None)
+
+        item = radar["items"][0]
+        self.assertEqual(item["item_quality"], 0)
+        self.assertEqual(item["item_quality_label"], "None")
+        self.assertEqual(item["item_quality_color"], "#c8c8c8")
+
     def test_type6_keeps_items_from_the_legacy_item_stream(self):
         parsed = parse_rwvg_actor_scan_payload(_build_type6_frame())
         legacy_item = {

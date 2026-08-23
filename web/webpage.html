@@ -20,6 +20,7 @@
         .entity-health-ring { position: absolute; width: 22px; height: 22px; border-radius: 50%; top: 50%; left: 50%; transform: translate(-50%, -50%); background: conic-gradient(var(--health-color) calc(var(--health-ratio) * 1turn), rgba(255,255,255,0.18) 0); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); pointer-events: none; }
         .entity-info { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); white-space: nowrap; color: #fff; text-shadow: 0 1px 2px #000; font-size: 9px; line-height: 11px; pointer-events: none; }
         .item-body { width: 10px; height: 10px; border-radius: 2px; border: 1px solid #222; background-color: #ffeb3b; color: #111; font-size: 7px; }
+        .item-info { top: 12px; font-size: 8px; color: #ffeb3b; }
         .teammate { background-color: green; }
         .white-player { background-color: white; border-color: black; color: black; }
         #reset-view { background-color: #f44336; }
@@ -31,6 +32,11 @@
         #auth-container.hidden { display: none; }
         #resource-toggle { position: fixed; right: 16px; bottom: 16px; z-index: 200; min-width: 52px; min-height: 36px; padding: 8px 10px; background-color: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; }
         #resource-toggle.active { background-color: #4CAF50; border-color: #6fcf73; }
+        #quality-filter { position: fixed; top: 80px; right: 12px; z-index: 210; display: grid; gap: 5px; min-width: 104px; padding: 8px; background: rgba(35, 35, 35, 0.94); border: 1px solid #555; border-radius: 4px; font-size: 11px; }
+        #quality-filter-title { color: #bbb; font-weight: bold; margin-bottom: 2px; }
+        .quality-option { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+        .quality-option input { margin: 0; }
+        .quality-swatch { width: 9px; height: 9px; border: 1px solid #222; display: inline-block; }
     </style>
 </head>
 <body>
@@ -51,6 +57,16 @@
 
     <div id="map-container">
         <div id="map"></div>
+    </div>
+    <div id="quality-filter" aria-label="Item quality filter">
+        <div id="quality-filter-title">Item Quality</div>
+        <label class="quality-option"><input type="checkbox" data-quality="0" checked><span class="quality-swatch" style="background:#c8c8c8"></span>None</label>
+        <label class="quality-option"><input type="checkbox" data-quality="1" checked><span class="quality-swatch" style="background:#f7f7f7"></span>White</label>
+        <label class="quality-option"><input type="checkbox" data-quality="2" checked><span class="quality-swatch" style="background:#14d914"></span>Green</label>
+        <label class="quality-option"><input type="checkbox" data-quality="3" checked><span class="quality-swatch" style="background:#4876ff"></span>Blue</label>
+        <label class="quality-option"><input type="checkbox" data-quality="4" checked><span class="quality-swatch" style="background:#e066ff"></span>Purple</label>
+        <label class="quality-option"><input type="checkbox" data-quality="5" checked><span class="quality-swatch" style="background:#ffff00"></span>Gold</label>
+        <label class="quality-option"><input type="checkbox" data-quality="6" checked><span class="quality-swatch" style="background:#ff3030"></span>Red</label>
     </div>
     <button id="resource-toggle" class="active" type="button" aria-pressed="true">资源</button>
     <script>
@@ -156,6 +172,7 @@
     let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1, resourcesVisible = true;
     var entitiesToRender = [];
     var itemsToRender = [];
+    const selectedItemQualities = new Set([0, 1, 2, 3, 4, 5, 6]);
     const mapContainer = document.getElementById('map-container'), map = document.getElementById('map');
 
     function applyMapTransform() { map.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`; }
@@ -328,14 +345,14 @@
                     info.className = 'entity-info';
                     const heroText = entityData.has_hero === false ? '?' : readableCatalogName(entityData.hero_name, '未知探员');
                     const weaponText = entityData.has_weapon === false ? '?' : readableCatalogName(entityData.weapon_name, '未知武器');
-                    info.textContent = `H ${heroText} W ${weaponText}`;
+                    info.textContent = `${heroText} ${weaponText}`;
                     container.appendChild(info);
                 }
                 container.style.left = `${map2DPos.x}px`;
                 container.style.top = `${map2DPos.y}px`;
                 map.appendChild(container);
             });
-            if (resourcesVisible) itemsToRender.forEach(renderRadarItemMarker);
+            refreshResourceMarkers();
         } catch (error) {
             console.error('获取游戏数据失败:', error);
             document.getElementById('auth-container').classList.remove('hidden');
@@ -354,9 +371,22 @@
         body.style.backgroundColor = itemData.item_quality_color || '#ffeb3b';
         body.textContent = itemData.type === 'deadbody' ? 'D' : 'I';
         container.appendChild(body);
+        const info = document.createElement('div');
+        info.className = 'entity-info item-info';
+        info.style.color = itemData.item_quality_color || '#ffeb3b';
+        info.textContent = itemLabel;
+        container.appendChild(info);
         container.style.left = `${map2DPos.x}px`;
         container.style.top = `${map2DPos.y}px`;
         map.appendChild(container);
+    }
+
+    function refreshResourceMarkers() {
+        document.querySelectorAll('.resource-marker').forEach(marker => marker.remove());
+        if (!resourcesVisible) return;
+        itemsToRender
+            .filter(item => selectedItemQualities.has(Number(item.item_quality) || 0))
+            .forEach(renderRadarItemMarker);
     }
 
     function recenterView() {
@@ -394,7 +424,7 @@
         toggle.classList.toggle('active', resourcesVisible);
         toggle.setAttribute('aria-pressed', String(resourcesVisible));
         if (resourcesVisible) {
-            itemsToRender.forEach(renderRadarItemMarker);
+            refreshResourceMarkers();
             return;
         }
         document.querySelectorAll('.resource-marker').forEach(marker => marker.remove());
@@ -418,6 +448,14 @@
         }
     });
     document.getElementById('resource-toggle').addEventListener('click', toggleResourceVisibility);
+    document.querySelectorAll('#quality-filter input[data-quality]').forEach(input => {
+        input.addEventListener('change', () => {
+            const quality = Number(input.dataset.quality);
+            if (input.checked) selectedItemQualities.add(quality);
+            else selectedItemQualities.delete(quality);
+            refreshResourceMarkers();
+        });
+    });
     </script>
 </body>
 </html>
