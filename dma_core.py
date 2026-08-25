@@ -9,6 +9,7 @@ import os
 import re
 import math
 import queue
+from enum import Enum
 from actor_snapshot_radar import build_radar_snapshot
 from dma_protocol import *
 from item_catalog import describe_item
@@ -32,6 +33,12 @@ RWBASE_DECRYPT_FALLBACK_PATH = os.getenv(
 )
 RWBASE_DECRYPT_FALLBACK_MAX_BYTES = 100 * 1024 * 1024
 RWBASE_DECRYPT_FALLBACK_RETENTION_DAYS = 7
+
+
+class DriverConnectionState(Enum):
+    DISCONNECTED = "disconnected"
+    CONNECTED_WAITING_FRAME = "connected_waiting_frame"
+    ONLINE = "online"
 
 rwbase_decrypt_logger = logging.getLogger("rwbase_decrypt")
 rwbase_decrypt_logger.addHandler(logging.NullHandler())
@@ -100,6 +107,7 @@ class DMACore:
         self.connection = None
         self.is_running = True
         self.driver_online = False
+        self.driver_connection_state = DriverConnectionState.DISCONNECTED
         self.driver_endpoint_lock = threading.Lock()
         self.driver_state_lock = threading.Lock()
         self.driver_endpoint = None
@@ -885,6 +893,8 @@ class DMACore:
         if previous is not None:
             previous.close()
         self.protocol_reassembler = ProtocolStreamReassembler()
+        self.last_driver_packet_ts = 0.0
+        self._set_driver_connection_state(DriverConnectionState.CONNECTED_WAITING_FRAME)
         self._emit_console_line(
             f"[+] Driver TCP connection accepted: {endpoint[0]}:{endpoint[1]}",
             defer_while_input=False,
@@ -899,7 +909,7 @@ class DMACore:
         with self.driver_endpoint_lock:
             self.driver_endpoint = None
         connection.close()
-        self._set_driver_online(False)
+        self._set_driver_connection_state(DriverConnectionState.DISCONNECTED)
 
     def _process_log_packet(self, payload):
         msg = payload.decode("utf-8", errors="ignore").strip()
@@ -1060,29 +1070,56 @@ class DMACore:
     def _heartbeat_loop(self):
         while self.is_running:
             try:
+                # PMU keeps no receive IRP; HELO remains a compatibility send and
+                # may eventually hit the TCP send window when the driver is silent.
                 self._send_heartbeat()
             except (OSError, RuntimeError):
-                self._set_driver_online(False)
+                self._handle_heartbeat_failure()
             self._expire_driver_online_if_stale()
             time.sleep(HEARTBEAT_INTERVAL_SEC)
 
-    def _set_driver_online(self, online):
+    def _handle_heartbeat_failure(self):
+        with self.connection_lock:
+            connection = self.connection
+        if connection is not None:
+            self._emit_console_line(
+                "[!] PMU compatibility send failed; closing the TCP connection.",
+                defer_while_input=False,
+            )
+            self._drop_driver_connection(connection)
+            return
+        self._set_driver_connection_state(DriverConnectionState.DISCONNECTED)
+
+    def _set_driver_connection_state(self, state):
+        if not isinstance(state, DriverConnectionState):
+            raise ValueError(f"invalid driver connection state: {state!r}")
+        online = state is DriverConnectionState.ONLINE
         with self.driver_state_lock:
-            changed = self.driver_online != bool(online)
-            self.driver_online = bool(online)
+            changed = self.driver_connection_state is not state
+            self.driver_connection_state = state
+            self.driver_online = online
         if changed:
-            state = "ONLINE" if online else "OFFLINE"
-            self._emit_console_line(f"[*] Driver is {state}.", defer_while_input=False)
+            if state is DriverConnectionState.ONLINE:
+                message = "[*] Driver is ONLINE."
+            elif state is DriverConnectionState.DISCONNECTED:
+                message = "[*] Driver is OFFLINE."
+            else:
+                message = "[*] Driver state: CONNECTED_WAITING_FRAME."
+            self._emit_console_line(message, defer_while_input=False)
+
+    def _set_driver_online(self, online):
+        state = DriverConnectionState.ONLINE if online else DriverConnectionState.DISCONNECTED
+        self._set_driver_connection_state(state)
 
     def _mark_driver_packet_received(self):
         self.last_driver_packet_ts = time.monotonic()
-        self._set_driver_online(True)
+        self._set_driver_connection_state(DriverConnectionState.ONLINE)
 
     def _expire_driver_online_if_stale(self):
         if not self.driver_online or self.last_driver_packet_ts <= 0:
             return
         if time.monotonic() - self.last_driver_packet_ts > DRIVER_LIVENESS_TIMEOUT_SEC:
-            self._set_driver_online(False)
+            self._set_driver_connection_state(DriverConnectionState.CONNECTED_WAITING_FRAME)
 
     def _send_heartbeat(self):
         payload = b"HELO".ljust(32, b"\x00")
