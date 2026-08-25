@@ -3,14 +3,12 @@ import struct
 import zlib
 from dataclasses import dataclass
 
-# RWbase src/Core/Network/Network.hpp defaults.
-# The PMU source port is dynamic; only its destination is fixed.
-DRIVER_IP = os.getenv("DMA_DRIVER_IP", "192.168.10.142")
-TARGET_IP = os.getenv("DMA_TARGET_IP", "192.168.10.1")
-TARGET_PORT = 34902
-PCAP_CAPTURE_IFACE = os.getenv("DMA_CAPTURE_IFACE")
-PCAP_SOURCE_PORT_MIN = 49152
-PCAP_SOURCE_PORT_MAX = 65535
+# RWbase PMU TCP endpoint defaults.
+TCP_LISTEN_HOST = os.getenv("DMA_TCP_LISTEN_HOST", "0.0.0.0")
+TARGET_PORT = int(os.getenv("DMA_TARGET_PORT", "53786"))
+TCP_FRAME_PREFIX_SIZE = 4
+TCP_MAX_FRAME_SIZE = 1536
+TCP_MAX_FRAME_BODY_SIZE = TCP_MAX_FRAME_SIZE - TCP_FRAME_PREFIX_SIZE
 
 MAGIC_KEY = 0xDEADBEEF
 
@@ -45,7 +43,7 @@ PROTOCOL_HEADER_FMT = "<IBBIIHHI"
 PROTOCOL_HEADER_SIZE = struct.calcsize(PROTOCOL_HEADER_FMT)
 CODEC_IDS = frozenset((CODEC_LZ4_BLOCK, CODEC_ZERO_LITERAL, CODEC_LZSS_1K, CODEC_LZSS_4K, CODEC_PACK_BITS))
 PACKET_TYPE_IDS = frozenset((PACKET_TYPE_LOG, PACKET_TYPE_DATA, PACKET_TYPE_ONLINE, PACKET_TYPE_SNAPSHOT))
-DEFAULT_PROTOCOL_DATAGRAM_SIZE = 1400
+DEFAULT_PROTOCOL_FRAME_SIZE = TCP_MAX_FRAME_SIZE
 MAX_LZSS_OFFSET = 0xFFF
 
 
@@ -339,47 +337,76 @@ def decode_codec(data, codec_id):
     return codecs[codec_id](bytes(data))
 
 
-def pack_protocol_datagrams(packet_type, payload, stream_id, sequence, codec_id,
-                            max_datagram=DEFAULT_PROTOCOL_DATAGRAM_SIZE,
-                            magic=DEFAULT_PROTOCOL_MAGIC):
+def pack_protocol_frames(packet_type, payload, stream_id, sequence, codec_id,
+                         max_frame=DEFAULT_PROTOCOL_FRAME_SIZE,
+                         magic=DEFAULT_PROTOCOL_MAGIC):
     payload = bytes(payload)
     encoded = encode_codec(payload, codec_id)
     if magic not in PROTOCOL_MAGICS:
         raise ValueError("invalid protocol magic")
-    chunk_size = max_datagram - PROTOCOL_HEADER_SIZE
+    if max_frame < TCP_FRAME_PREFIX_SIZE + PROTOCOL_HEADER_SIZE or max_frame > TCP_MAX_FRAME_SIZE:
+        raise ValueError("invalid PMU TCP frame size")
+    chunk_size = max_frame - TCP_FRAME_PREFIX_SIZE - PROTOCOL_HEADER_SIZE
     if not payload or chunk_size <= 0:
-        raise ValueError("invalid protocol payload or datagram size")
+        raise ValueError("invalid protocol payload or TCP frame size")
     chunks = [encoded[index:index + chunk_size] for index in range(0, len(encoded), chunk_size)]
     checksum = zlib.crc32(payload) & 0xFFFFFFFF
-    return [
-        struct.pack(PROTOCOL_HEADER_FMT, magic, packet_type,
-                    codec_id, stream_id, sequence, index, len(chunks), checksum) + chunk
-        for index, chunk in enumerate(chunks)
-    ]
+    frames = []
+    for index, chunk in enumerate(chunks):
+        body = struct.pack(
+            PROTOCOL_HEADER_FMT, magic, packet_type, codec_id, stream_id,
+            sequence, index, len(chunks), checksum,
+        ) + chunk
+        frames.append(struct.pack("<I", len(body)) + body)
+    return frames
 
 
-def parse_protocol_datagram(datagram):
-    if len(datagram) < PROTOCOL_HEADER_SIZE:
-        raise ValueError("protocol datagram is shorter than header")
-    values = struct.unpack_from(PROTOCOL_HEADER_FMT, datagram)
+def parse_protocol_frame(frame):
+    if len(frame) < TCP_FRAME_PREFIX_SIZE + PROTOCOL_HEADER_SIZE:
+        raise ValueError("TCP frame is shorter than length prefix and header")
+    frame_size = struct.unpack_from("<I", frame)[0]
+    if frame_size != len(frame) - TCP_FRAME_PREFIX_SIZE:
+        raise ValueError("TCP frame length prefix mismatch")
+    if frame_size > TCP_MAX_FRAME_BODY_SIZE:
+        raise ValueError("TCP frame exceeds PMU frame limit")
+    values = struct.unpack_from(PROTOCOL_HEADER_FMT, frame, TCP_FRAME_PREFIX_SIZE)
     header = ProtocolHeader(*values)
     if (header.packet_type not in PACKET_TYPE_IDS or header.codec_id not in CODEC_IDS
             or header.fragment_count == 0 or header.fragment_index >= header.fragment_count):
         raise ValueError("invalid codec or fragment range")
     if header.magic not in PROTOCOL_MAGICS:
         raise ValueError("invalid protocol magic")
-    body = datagram[PROTOCOL_HEADER_SIZE:]
+    body = frame[TCP_FRAME_PREFIX_SIZE + PROTOCOL_HEADER_SIZE:]
     if not body:
         raise ValueError("invalid protocol fragment length")
     return header, body
 
 
-class ProtocolReassembler:
+class ProtocolStreamReassembler:
     def __init__(self):
         self._frames = {}
+        self._stream = bytearray()
 
-    def add(self, datagram):
-        header, body = parse_protocol_datagram(datagram)
+    def feed(self, data):
+        self._stream.extend(data)
+        results = []
+        while True:
+            if len(self._stream) < TCP_FRAME_PREFIX_SIZE:
+                return results
+            frame_size = struct.unpack_from("<I", self._stream)[0]
+            if frame_size < PROTOCOL_HEADER_SIZE or frame_size > TCP_MAX_FRAME_BODY_SIZE:
+                raise ValueError(f"invalid TCP frame size {frame_size}")
+            total_size = TCP_FRAME_PREFIX_SIZE + frame_size
+            if len(self._stream) < total_size:
+                return results
+            frame = bytes(self._stream[:total_size])
+            del self._stream[:total_size]
+            result = self.add_frame(frame)
+            if result is not None:
+                results.append(result)
+
+    def add_frame(self, frame):
+        header, body = parse_protocol_frame(frame)
         key = (header.stream_id, header.sequence, header.packet_type)
         frame = self._frames.setdefault(key, {"header": header, "parts": {}})
         expected = frame["header"]

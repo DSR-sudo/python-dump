@@ -9,7 +9,6 @@ import os
 import re
 import math
 import queue
-from pcap_capture import PcapCapture, PcapError
 from actor_snapshot_radar import build_radar_snapshot
 from dma_protocol import *
 from item_catalog import describe_item
@@ -91,24 +90,21 @@ class DMACore:
     )
     def __init__(self, session_log=None):
         self.session_log = session_log
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind(("0.0.0.0", 0))
-
-        try:
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024 * 1024)
-        except Exception:
-            print("[!] Warning: Could not set 64MB Recv Buffer. OS limit might be lower.")
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024 * 1024)
-
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind((TCP_LISTEN_HOST, TARGET_PORT))
+        self.listener.listen(1)
+        self.listener.settimeout(WAIT_SLICE_SEC)
+        self.connection_lock = threading.Lock()
+        self.send_lock = threading.Lock()
+        self.connection = None
         self.is_running = True
         self.driver_online = False
         self.driver_endpoint_lock = threading.Lock()
         self.driver_state_lock = threading.Lock()
         self.driver_endpoint = None
         self.last_driver_packet_ts = 0.0
-        self.protocol_reassembler = ProtocolReassembler()
-        self.pcap = PcapCapture(TARGET_IP, PCAP_SOURCE_PORT_MIN, PCAP_SOURCE_PORT_MAX, PCAP_CAPTURE_IFACE)
+        self.protocol_reassembler = ProtocolStreamReassembler()
         self.protocol_invalid_packets = 0
         self.seq = 0
         self.rwvg_stream_detected = False
@@ -865,116 +861,129 @@ class DMACore:
             return self.driver_endpoint
 
     def send_to_driver(self, payload):
-        endpoint = self.get_driver_endpoint()
-        if endpoint is None:
-            raise RuntimeError("PMU endpoint has not been learned from a valid libpcap frame")
-        return self.sock.sendto(payload, endpoint)
+        with self.connection_lock:
+            connection = self.connection
+        if connection is None:
+            raise RuntimeError("PMU TCP connection is not established")
+        with self.send_lock:
+            connection.sendall(bytes(payload))
+        return len(payload)
 
-    def _learn_driver_endpoint(self, address):
-        endpoint = self._normalize_driver_endpoint(address)
-        if endpoint is None:
-            return
-        with self.driver_endpoint_lock:
-            changed = endpoint != self.driver_endpoint
-            self.driver_endpoint = endpoint
-        if changed:
-            self._emit_console_line(f"[+] Driver endpoint learned: {endpoint[0]}:{endpoint[1]}")
-
-    @staticmethod
-    def _normalize_driver_endpoint(address):
-        if not isinstance(address, tuple) or len(address) < 2:
-            return None
-        host, port = address[0], address[1]
-        if not isinstance(host, str) or not isinstance(port, int) or not 1 <= port <= 65535:
-            return None
+    def _accept_driver_connection(self):
         try:
-            socket.inet_aton(host)
+            connection, endpoint = self.listener.accept()
+        except socket.timeout:
+            return False
         except OSError:
-            return None
-        return host, port
+            return False
+        connection.settimeout(WAIT_SLICE_SEC)
+        with self.connection_lock:
+            previous = self.connection
+            self.connection = connection
+        with self.driver_endpoint_lock:
+            self.driver_endpoint = endpoint
+        if previous is not None:
+            previous.close()
+        self.protocol_reassembler = ProtocolStreamReassembler()
+        self._emit_console_line(
+            f"[+] Driver TCP connection accepted: {endpoint[0]}:{endpoint[1]}",
+            defer_while_input=False,
+        )
+        return True
+
+    def _drop_driver_connection(self, connection):
+        with self.connection_lock:
+            if self.connection is not connection:
+                return
+            self.connection = None
+        with self.driver_endpoint_lock:
+            self.driver_endpoint = None
+        connection.close()
+        self._set_driver_online(False)
+
+    def _process_log_packet(self, payload):
+        msg = payload.decode("utf-8", errors="ignore").strip()
+        self._write_received_log(msg)
+        self._try_capture_module_log(msg)
+        consumed_region_log = self._try_capture_region_log(msg)
+        consumed_host_log = self._try_capture_rwbase_host_log(msg)
+        if "ALIVE_ACK" in msg or "DRIVER_ONLINE" in msg:
+            return
+        if consumed_region_log or consumed_host_log:
+            return
+        if msg:
+            self._emit_console_line(f"[LOG] {msg}", write_to_session=False)
+
+    def _process_data_packet(self, payload):
+        typed_parsed = try_parse_rwvg_typed_payload(payload)
+        if typed_parsed is not None:
+            typed_kind, typed_payload = typed_parsed
+            self._handle_rwvg_typed_frame(typed_kind, typed_payload)
+            return
+        if self.expected_size > 0:
+            payload_len = len(payload)
+            self.rwvg_stats["command_bytes"] += payload_len
+            self.last_untyped_data_ts = time.monotonic()
+            if self.recvd_bytes + payload_len <= self.expected_size:
+                self.view[self.recvd_bytes:self.recvd_bytes + payload_len] = payload
+                self.recvd_bytes += payload_len
+                self.last_data_ts = time.monotonic()
+            else:
+                self.rwvg_stats["dropped_data_packets"] += 1
+            if self.recvd_bytes >= self.expected_size:
+                self.expected_size = 0
+                self.recv_event.set()
+            return
+        self.last_untyped_data_ts = time.monotonic()
+        if not self._handle_zombie_ack_packet(payload):
+            self.rwvg_stats["dropped_data_packets"] += 1
+
+    def _process_assembled_packet(self, assembled):
+        pkt_type, payload, _ = assembled
+        self._mark_driver_packet_received()
+        if pkt_type == PACKET_TYPE_LOG:
+            try:
+                self._process_log_packet(payload)
+            except Exception:
+                pass
+            return
+        if pkt_type in (PACKET_TYPE_DATA, PACKET_TYPE_SNAPSHOT):
+            self._process_data_packet(payload)
+            return
+        host_agg = try_parse_host_aggregate_payload(payload)
+        if host_agg is None:
+            return
+        self.rwvg_stats["host_aggregate_frames"] += 1
+        self.rwvg_stats["host_aggregate_raw_bytes"] += host_agg["raw_size"]
+        if not self.host_aggregate_detected:
+            self._emit_console_line(
+                "[+] Host-compat aggregate stream detected "
+                f"(players={host_agg['player_count']}, items={host_agg['item_count']})."
+            )
+            self.host_aggregate_detected = True
 
     def _receiver_loop(self):
-        self._emit_console_line("[*] libpcap receiver started", defer_while_input=False)
-
+        self._emit_console_line("[*] TCP receiver started", defer_while_input=False)
         while self.is_running:
+            with self.connection_lock:
+                connection = self.connection
+            if connection is None:
+                self._accept_driver_connection()
+                continue
             try:
-                captured = self.pcap.next_packet()
-                if captured is None:
+                chunk = connection.recv(64 * 1024)
+                if not chunk:
+                    self._drop_driver_connection(connection)
                     continue
-                source_ip, source_port, datagram = captured
-                assembled = self.protocol_reassembler.add(datagram)
-                if assembled is None:
-                    continue
-                pkt_type, payload, _ = assembled
-                self._mark_driver_packet_received()
-                self._learn_driver_endpoint((source_ip, source_port))
-
-                if pkt_type == PACKET_TYPE_LOG:
-                    try:
-                        msg = payload.decode("utf-8", errors="ignore").strip()
-                        self._write_received_log(msg)
-                        self._try_capture_module_log(msg)
-                        consumed_region_log = self._try_capture_region_log(msg)
-                        consumed_host_log = self._try_capture_rwbase_host_log(msg)
-                        if "ALIVE_ACK" in msg or "DRIVER_ONLINE" in msg:
-                            continue
-
-                        if consumed_region_log or consumed_host_log:
-                            continue
-
-                        if msg:
-                            self._emit_console_line(
-                                f"[LOG] {msg}",
-                                write_to_session=False,
-                            )
-                    except Exception:
-                        pass
-                    continue
-
-                if pkt_type in (PACKET_TYPE_DATA, PACKET_TYPE_SNAPSHOT):
-                    typed_parsed = try_parse_rwvg_typed_payload(payload)
-                    if typed_parsed is not None:
-                        typed_kind, typed_payload = typed_parsed
-                        self._handle_rwvg_typed_frame(typed_kind, typed_payload)
-                        continue
-
-                    if self.expected_size > 0:
-                        payload_len = len(payload)
-                        self.rwvg_stats["command_bytes"] += payload_len
-                        self.last_untyped_data_ts = time.monotonic()
-
-                        if self.recvd_bytes + payload_len <= self.expected_size:
-                            self.view[self.recvd_bytes:self.recvd_bytes + payload_len] = payload
-                            self.recvd_bytes += payload_len
-                            self.last_data_ts = time.monotonic()
-                        else:
-                            self.rwvg_stats["dropped_data_packets"] += 1
-
-                        if self.recvd_bytes >= self.expected_size:
-                            self.expected_size = 0
-                            self.recv_event.set()
-                    else:
-                        self.last_untyped_data_ts = time.monotonic()
-                        if self._handle_zombie_ack_packet(payload):
-                            continue
-                        self.rwvg_stats["dropped_data_packets"] += 1
-                    continue
-
-                host_agg = try_parse_host_aggregate_payload(payload)
-                if host_agg is not None:
-                    self.rwvg_stats["host_aggregate_frames"] += 1
-                    self.rwvg_stats["host_aggregate_raw_bytes"] += host_agg["raw_size"]
-                    if not self.host_aggregate_detected:
-                        self._emit_console_line(
-                            "[+] Host-compat aggregate stream detected "
-                            f"(players={host_agg['player_count']}, items={host_agg['item_count']})."
-                        )
-                        self.host_aggregate_detected = True
+                for assembled in self.protocol_reassembler.feed(chunk):
+                    self._process_assembled_packet(assembled)
             except ValueError:
                 self.protocol_invalid_packets += 1
-            except PcapError:
-                self.is_running = False
-                raise
+                self._drop_driver_connection(connection)
+            except socket.timeout:
+                continue
+            except OSError:
+                self._drop_driver_connection(connection)
             except Exception:
                 if not self.is_running:
                     break
@@ -1144,5 +1153,9 @@ class DMACore:
     def shutdown(self):
         self.is_running = False
         self._set_driver_online(False)
-        self.pcap.close()
-        self.sock.close()
+        with self.connection_lock:
+            connection = self.connection
+            self.connection = None
+        if connection is not None:
+            connection.close()
+        self.listener.close()

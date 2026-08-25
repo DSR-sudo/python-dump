@@ -53,7 +53,7 @@ RWVG_PLAYER_FMT = "<2f2i18s18s18s32s32sQ3f3ffiiB"
 RWVG_ITEM_FMT = "<Q3fii32s18siii"
 FLOAT32_TEXT_SIG_DIGITS = 9
 
-# RWbase host-compat aggregate payload layout (base64 wrapped, raw UDP payload):
+# RWbase host-compat aggregate payload layout (base64 wrapped, raw TCP frame payload):
 # [HostUtilsStruct][SIZE_T playerCount][HostSendPlayerStruct * N][SIZE_T itemCount][HostSendItemsStruct * M]
 HOST_UTILS_SIZE = 145
 HOST_PLAYER_SIZE = 402
@@ -248,17 +248,17 @@ def parse_zombie_control_ack(payload: bytes):
     return int(struct.unpack_from("<Q", payload, 0)[0])
 
 
-def try_parse_host_aggregate_payload(datagram: bytes):
+def try_parse_host_aggregate_payload(frame_payload: bytes):
     """
-    Parse RWbase host-compat aggregate stream, which is sent as raw UDP payload
+    Parse RWbase host-compat aggregate stream, which is sent as a raw TCP frame payload
     (without PACKET_TYPE prefix) and base64-encoded.
     Returns {"player_count": int, "item_count": int, "raw_size": int} or None.
     """
-    if not datagram:
+    if not frame_payload:
         return None
 
     try:
-        decoded = base64.b64decode(datagram, validate=True)
+        decoded = base64.b64decode(frame_payload, validate=True)
     except Exception:
         return None
 
