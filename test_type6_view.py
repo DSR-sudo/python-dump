@@ -3,6 +3,7 @@ import unittest
 
 from actor_snapshot_radar import build_radar_snapshot
 from id_catalog import hero_name, weapon_name
+from item_descriptor import effective_item_quality
 from rwvg_actor_snapshot import (
     RWVG_ACTOR_SNAPSHOT_HEADER_FMT,
     RWVG_ACTOR_SNAPSHOT_HEADER_SIZE,
@@ -29,12 +30,13 @@ def _float_bits(value: float) -> int:
     return struct.unpack("<I", struct.pack("<f", value))[0]
 
 
-def _build_type6_frame() -> bytes:
+def _build_type6_frame(item_quality: int = 0) -> bytes:
     record = struct.pack(
         RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT,
         1, 0, 0, 0,
         _float_bits(100.0), _float_bits(200.0), _float_bits(300.0), 1, 0,
         4, _float_bits(100.0), _float_bits(100.0), 0, 0x1122334455667788, 0,
+        0,
         POSITION_FIELD | TEAM_FIELD | HEALTH_FIELD | MAX_HEALTH_FIELD | WEAPON_FIELD | HERO_FIELD,
         1, 0, 0,
     )
@@ -43,7 +45,8 @@ def _build_type6_frame() -> bytes:
         4, 0, 0, 0,
         _float_bits(150.0), _float_bits(250.0), _float_bits(350.0), 5, 0,
         0, 0, 0, 0, 0, ITEM_ID,
-        POSITION_FIELD | ITEM_ID_FIELD,
+        item_quality,
+        POSITION_FIELD | ITEM_ID_FIELD | (1 << 10),
         1, 0, 0,
     )
     header = struct.pack(
@@ -55,6 +58,15 @@ def _build_type6_frame() -> bytes:
 
 
 class Type6ViewTest(unittest.TestCase):
+    def test_item_id_suffix_decodes_equipment_quality(self):
+        self.assertEqual(effective_item_quality(11010003004), 3)
+        self.assertEqual(effective_item_quality(11080006004), 6)
+        self.assertEqual(effective_item_quality(15050200005), 0)
+
+    def test_explicit_quality_and_forced_red_override_item_id_grade(self):
+        self.assertEqual(effective_item_quality(11010003004, 5), 5)
+        self.assertEqual(effective_item_quality(18010000016, 1), 6)
+
     def test_id_catalog_distinguishes_known_and_unknown_values(self):
         self.assertEqual(hero_name(88000000030), "红狼")
         self.assertEqual(weapon_name(51878), "腾龙")
@@ -66,7 +78,7 @@ class Type6ViewTest(unittest.TestCase):
 
         self.assertIsNotNone(parsed)
         self.assertEqual(RWVG_ACTOR_SNAPSHOT_HEADER_SIZE, 48)
-        self.assertEqual(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE, 92)
+        self.assertEqual(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE, 96)
         self.assertEqual(parsed["local_view"]["local_pawn"], LOCAL_PAWN)
         self.assertEqual(parsed["local_view"]["yaw"], 135.5)
         self.assertEqual(parsed["records"][0]["hero_id"], 0x1122334455667788)
@@ -101,6 +113,7 @@ class Type6ViewTest(unittest.TestCase):
         item = parsed["records"][1]
         self.assertEqual(item["kind_name"], "Item")
         self.assertEqual(item["item_id"], ITEM_ID)
+        self.assertEqual(item["item_quality"], 0)
         self.assertEqual(item["item_id_hex"], f"0x{ITEM_ID:X}")
         self.assertEqual(item["item_name"], "蓝室核心")
 
@@ -130,6 +143,19 @@ class Type6ViewTest(unittest.TestCase):
         self.assertEqual(item["item_quality_label"], "None")
         self.assertEqual(item["item_quality_color"], "#c8c8c8")
 
+    def test_type6_prefers_quality_read_from_item_component(self):
+        parsed = parse_rwvg_actor_scan_payload(_build_type6_frame(item_quality=4))
+        snapshot = {
+            "actors": [parsed["records"][1]],
+            "local_view": parsed["local_view"],
+            "version": parsed["version"],
+        }
+
+        item = build_radar_snapshot(snapshot, None)["items"][0]
+
+        self.assertEqual(item["item_quality"], 4)
+        self.assertEqual(item["item_quality_label"], "Purple")
+
     def test_type6_keeps_items_from_the_legacy_item_stream(self):
         parsed = parse_rwvg_actor_scan_payload(_build_type6_frame())
         legacy_item = {
@@ -150,7 +176,11 @@ class Type6ViewTest(unittest.TestCase):
         ])
 
     def test_type6_rejects_a_non_current_protocol_version(self):
-        self.assertIsNone(parse_rwvg_actor_scan_payload(struct.pack("<HH", 0, 2)))
+        legacy_frame = struct.pack(
+            RWVG_ACTOR_SNAPSHOT_HEADER_FMT,
+            0, 6, 7, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+        )
+        self.assertIsNone(parse_rwvg_actor_scan_payload(legacy_frame))
 
 
 if __name__ == "__main__":

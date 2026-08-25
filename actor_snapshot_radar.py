@@ -15,6 +15,7 @@ MAX_HEALTH_FIELD = 1 << 6
 WEAPON_FIELD = 1 << 7
 HERO_FIELD = 1 << 8
 ITEM_ID_FIELD = 1 << 9
+ITEM_QUALITY_FIELD = 1 << 10
 VIEW_LOCAL_PAWN_FIELD = 1 << 0
 VIEW_CONTROL_ROTATION_YAW_FIELD = 1 << 1
 ITEM_KINDS = frozenset(("Item", "Container", "DeadBox", "Box"))
@@ -130,7 +131,9 @@ def _item(
     item_id = int(record.get("item_id", 0) or 0) if has_item_id else 0
     resolved_name = str(record.get("item_name") or "") if has_item_id else ""
     resolved_name = resolved_name or (item_name(item_id) if has_item_id else "")
-    item_quality = effective_item_quality(item_id, record.get("item_quality", 0))
+    has_item_quality = not has_valid_fields or bool(valid_fields & ITEM_QUALITY_FIELD)
+    raw_quality = record.get("item_quality", 0) if has_item_quality else 0
+    item_quality = effective_item_quality(item_id, raw_quality)
     quality_label, quality_color = quality_display(item_quality)
     return {
         "id": entity_id,

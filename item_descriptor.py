@@ -19,23 +19,30 @@ FORCED_RED_ITEM_IDS = frozenset({
     18010000016, 18010000037, 18010000038, 18010000040,
     18020000010, 18050000005, 18050000007, 18060000009, 18060000011,
 })
-GRADE_DERIVED_BAG_IDS = frozenset({
-    11080003004, 11080003005, 11080004003, 11080004004,
-    11080005003, 11080005004, 11080006002, 11080006003, 11080006004,
-})
+
+ITEM_ID_SEQUENCE_MODULUS = 10_000
+ITEM_ID_GRADE_DIVISOR = 1_000
+MAX_ITEM_QUALITY = 6
+
+
+def _quality_from_item_id(item_id: int) -> int:
+    """Decode the game's equipment grade encoded in the ItemID suffix."""
+    value = int(item_id or 0)
+    if value <= 0:
+        return 0
+    grade = (value % ITEM_ID_SEQUENCE_MODULUS) // ITEM_ID_GRADE_DIVISOR
+    return grade if 1 <= grade <= MAX_ITEM_QUALITY else 0
 
 
 def effective_item_quality(item_id: int, item_quality: int = 0) -> int:
-    """Apply the item quality rules used by the desktop radar renderer."""
+    """Resolve an item's display grade from explicit quality or its ItemID."""
     value = int(item_id or 0)
     quality = int(item_quality or 0)
     if value in FORCED_RED_ITEM_IDS:
-        return 6
+        return MAX_ITEM_QUALITY
     if quality > 0:
         return quality
-    if value in GRADE_DERIVED_BAG_IDS:
-        return (value % 10000) // 1000
-    return quality
+    return _quality_from_item_id(value)
 
 
 def quality_display(quality: int) -> tuple[str, str]:
