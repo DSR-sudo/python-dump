@@ -57,11 +57,11 @@ class DMAApi:
 
     def enum_user_modules(self, pid):
         payload = pack_enum_modules_req(pid)
-        self.core.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
+        self.core.send_to_driver(payload)
 
     def enum_user_regions(self, pid):
         payload = pack_enum_regions_req(pid)
-        self.core.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
+        self.core.send_to_driver(payload)
 
     def _request_u64(self, payload, retries=0, timeout=3.0):
         attempts = max(1, int(retries) + 1)
@@ -85,3 +85,7 @@ class DMAApi:
     def ping_cpueaxh(self):
         payload = pack_pingpong_req()
         return self._request_u64(payload, retries=1)
+
+    def find_user_pattern(self, pid, section_name, pattern: bytes, mask: str):
+        payload = pack_find_user_pattern_req(pid, section_name, pattern, mask)
+        return self._request_u64(payload, retries=0, timeout=5.0)

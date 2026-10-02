@@ -11,9 +11,13 @@ from dma_protocol import (
     RWVG_MAGIC,
     RWVG_TYPE_ITEM,
     RWVG_TYPE_PLAYER,
+    RWVG_TYPE_ITEM_BATCH,
+    RWVG_TYPE_PLAYER_BATCH,
     RWVG_TYPE_UTILS,
+    RWVG_TYPE_ACTOR_SCAN,
     RWVG_TYPED_SIZE_BY_KIND,
 )
+from rwvg_actor_snapshot import RWVG_ACTOR_SNAPSHOT_VERSION
 
 DEFAULT_EXTERNAL_BASE_DIR = "/root/python-dump"
 DEFAULT_EXTERNAL_IMAGE_DIR = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "image")
@@ -27,7 +31,7 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 class WebRadarService:
-    def __init__(self, core, default_port=8080, root_dir=None):
+    def __init__(self, core, default_port=34900, root_dir=None):
         self.core = core
         self.default_port = int(default_port)
         self.root_dir = root_dir or os.path.dirname(os.path.abspath(__file__))
@@ -201,8 +205,22 @@ refresh();
                     "utils": RWVG_TYPE_UTILS,
                     "player": RWVG_TYPE_PLAYER,
                     "item": RWVG_TYPE_ITEM,
+                    "player_batch": RWVG_TYPE_PLAYER_BATCH,
+                    "item_batch": RWVG_TYPE_ITEM_BATCH,
+                    "actor_scan": RWVG_TYPE_ACTOR_SCAN,
+                },
+                "batch_types": {
+                    "player_batch": RWVG_TYPE_PLAYER_BATCH,
+                    "item_batch": RWVG_TYPE_ITEM_BATCH,
+                },
+                "batch_stats": {
+                    "player_batch_frames": int(stats.get("player_batch_frames", 0) or 0),
+                    "item_batch_frames": int(stats.get("item_batch_frames", 0) or 0),
+                    "player_batch_entities": int(stats.get("player_batch_entities", 0) or 0),
+                    "item_batch_entities": int(stats.get("item_batch_entities", 0) or 0),
                 },
                 "typed_size_by_kind": dict(RWVG_TYPED_SIZE_BY_KIND),
+                "actor_snapshot_version": RWVG_ACTOR_SNAPSHOT_VERSION,
             },
             "stream_stats": stats,
             "snapshot": snapshot,

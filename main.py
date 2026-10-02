@@ -1,14 +1,20 @@
 # main.py
+import atexit
 import time
+from pathlib import Path
 from dma_core import DMACore
 from dma_api import DMAApi
 from dma_command import CommandHandler, log, print_banner, print_detailed_help
+from session_log import SessionLog
 
 def main():
+    session_log = SessionLog.start(Path(__file__).resolve().parent)
+    atexit.register(session_log.close)
+    print(f"[+] Session log: {session_log.path}")
     print_banner()
     
     # 1. 初始化 DMA 通信
-    core = DMACore() #
+    core = DMACore(session_log=session_log) #
     api = DMAApi(core) #
 
     log("Waiting for DMA Driver connection...")
@@ -46,6 +52,8 @@ def main():
                 handler.handle_dump_sdk(args)
             elif cmd == "modules":
                 handler.handle_modules(args)
+            elif cmd == "vt_fpat":
+                handler.handle_vt_fpat(args)
             elif cmd == "start_data_threads":
                 handler.handle_start_data_threads()
             elif cmd == "stop_data_threads":
@@ -58,12 +66,16 @@ def main():
                 handler.handle_stream_log(args)
             elif cmd == "rwbase_decrypt":
                 handler.handle_rwbase_decrypt(args)
+            elif cmd == "coord_raw":
+                handler.handle_coord_raw(args)
             elif cmd == "rwbase_stream":
                 handler.handle_rwbase_stream(args)
             elif cmd == "rwbase_data":
                 handler.handle_rwbase_data(args)
             elif cmd == "webradar":
                 handler.handle_webradar(args)
+            elif cmd == "actorkinds":
+                handler.handle_actorkinds(args)
             elif cmd == "dump_mem":
                 handler.handle_dump_mem(args)
             elif cmd == "regions":
@@ -99,6 +111,7 @@ def main():
         except Exception as e:
             log(f"Error: {e}", "ERROR")
     handler.shutdown()
+    core.shutdown()
 
 if __name__ == "__main__":
     main()

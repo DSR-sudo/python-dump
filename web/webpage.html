@@ -17,6 +17,10 @@
         .entity-body { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 1px solid white; display: flex; justify-content: center; align-items: center; font-size: 8px; font-weight: bold; color: white; top: 50%; left: 50%; transform: translate(-50%, -50%); }
         .entity-direction { position: absolute; width: 1.5px; height: 12px; background-color: white; left: 50%; bottom: 50%; transform-origin: center bottom; }
         .entity-body.dead { width: 10px; height: 10px; background-color: transparent !important; border-width: 1.5px; }
+        .entity-health-ring { position: absolute; width: 22px; height: 22px; border-radius: 50%; top: 50%; left: 50%; transform: translate(-50%, -50%); background: conic-gradient(var(--health-color) calc(var(--health-ratio) * 1turn), rgba(255,255,255,0.18) 0); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); pointer-events: none; }
+        .entity-info { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); white-space: nowrap; color: #fff; text-shadow: 0 1px 2px #000; font-size: 9px; line-height: 11px; pointer-events: none; }
+        .item-body { width: 10px; height: 10px; border-radius: 2px; border: 1px solid #222; background-color: #ffeb3b; color: #111; font-size: 7px; }
+        .item-info { top: 12px; font-size: 8px; color: #ffeb3b; }
         .teammate { background-color: green; }
         .white-player { background-color: white; border-color: black; color: black; }
         #reset-view { background-color: #f44336; }
@@ -26,15 +30,13 @@
         #auth-submit { padding: 6px 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
         #auth-error { color: red; font-size: 12px; margin-top: 5px; display: none; }
         #auth-container.hidden { display: none; }
-        #log-panel { position: fixed; right: 8px; bottom: 8px; width: 520px; max-width: 96vw; height: 38vh; background: rgba(0,0,0,0.75); border: 1px solid #444; border-radius: 6px; z-index: 120; display: flex; flex-direction: column; }
-        #log-panel-title { padding: 6px 8px; font-size: 12px; color: #ddd; border-bottom: 1px solid #333; }
-        #log-panel-body { flex: 1; display: flex; gap: 6px; padding: 6px; min-height: 0; }
-        .log-col { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-        .log-col-title { font-size: 11px; color: #bdbdbd; margin-bottom: 4px; }
-        .log-box { flex: 1; margin: 0; padding: 6px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: rgba(20,20,20,0.95); border: 1px solid #2f2f2f; border-radius: 4px; font-family: Consolas, monospace; font-size: 11px; line-height: 1.35; color: #d9d9d9; }
-        @media (max-width: 900px) {
-            #log-panel { left: 8px; right: 8px; width: auto; height: 34vh; }
-        }
+        #resource-toggle { position: fixed; right: 16px; bottom: 16px; z-index: 200; min-width: 52px; min-height: 36px; padding: 8px 10px; background-color: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; }
+        #resource-toggle.active { background-color: #4CAF50; border-color: #6fcf73; }
+        #quality-filter { position: fixed; top: 80px; right: 12px; z-index: 210; display: grid; gap: 5px; min-width: 104px; padding: 8px; background: rgba(35, 35, 35, 0.94); border: 1px solid #555; border-radius: 4px; font-size: 11px; }
+        #quality-filter-title { color: #bbb; font-weight: bold; margin-bottom: 2px; }
+        .quality-option { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+        .quality-option input { margin: 0; }
+        .quality-swatch { width: 9px; height: 9px; border: 1px solid #222; display: inline-block; }
     </style>
 </head>
 <body>
@@ -52,24 +54,21 @@
         </div>
         <div id="calibration-status" style="width: 100%; text-align: center; padding: 2px; font-weight: bold; min-height: 1em;display:none"></div>
     </div>
-    
+
     <div id="map-container">
         <div id="map"></div>
     </div>
-    <div id="log-panel">
-        <div id="log-panel-title">RWBASE Stream Logs (History)</div>
-        <div id="log-panel-body">
-            <div class="log-col">
-                <div class="log-col-title">Decrypt Logs (RWbase/CPUEAXH)</div>
-                <pre id="decode-log-box" class="log-box">waiting decrypt logs...</pre>
-            </div>
-            <div class="log-col">
-                <div class="log-col-title">Send Thread (Players)</div>
-                <pre id="send-log-box" class="log-box">waiting send logs...</pre>
-            </div>
-        </div>
+    <div id="quality-filter" aria-label="Item quality filter">
+        <div id="quality-filter-title">Item Quality</div>
+        <label class="quality-option"><input type="checkbox" data-quality="0" checked><span class="quality-swatch" style="background:#c8c8c8"></span>None</label>
+        <label class="quality-option"><input type="checkbox" data-quality="1" checked><span class="quality-swatch" style="background:#f7f7f7"></span>White</label>
+        <label class="quality-option"><input type="checkbox" data-quality="2" checked><span class="quality-swatch" style="background:#14d914"></span>Green</label>
+        <label class="quality-option"><input type="checkbox" data-quality="3" checked><span class="quality-swatch" style="background:#4876ff"></span>Blue</label>
+        <label class="quality-option"><input type="checkbox" data-quality="4" checked><span class="quality-swatch" style="background:#e066ff"></span>Purple</label>
+        <label class="quality-option"><input type="checkbox" data-quality="5" checked><span class="quality-swatch" style="background:#ffff00"></span>Gold</label>
+        <label class="quality-option"><input type="checkbox" data-quality="6" checked><span class="quality-swatch" style="background:#ff3030"></span>Red</label>
     </div>
-
+    <button id="resource-toggle" class="active" type="button" aria-pressed="true">资源</button>
     <script>
     const mapDimensions = {
         "db.png":  { width: 1244, height: 956 },
@@ -80,29 +79,29 @@
     };
 
     const mapConverters = {
-        "db.png": { 
+        "db.png": {
             point3D_1: { x: -16207, y: -27879 },
-            point2D_1: { x: 470, y: 245 }, 
-            point3D_2: { x: 35455, y: 37782  }, 
-            point2D_2: { x: 1025, y: 946 } 
+            point2D_1: { x: 470, y: 245 },
+            point3D_2: { x: 35455, y: 37782  },
+            point2D_2: { x: 1025, y: 946 }
         },
-        "cg.png": { 
+        "cg.png": {
             point3D_1: { x: -32065, y: 58724 },
-            point2D_1: { x: 176, y: 816 }, 
-            point3D_2: { x: -102202, y: -22623  }, 
-            point2D_2: { x: 863, y: 228 } 
+            point2D_1: { x: 176, y: 816 },
+            point3D_2: { x: -102202, y: -22623  },
+            point2D_2: { x: 863, y: 228 }
         },
-        "bks.png": { 
+        "bks.png": {
             point3D_1: { x: -14036, y: 9953 },
-            point2D_1: { x: 182, y: 696 }, 
-            point3D_2: { x: 14128, y: -34523  }, 
-            point2D_2: { x: 588, y: 57 } 
+            point2D_1: { x: 182, y: 696 },
+            point3D_2: { x: 14128, y: -34523  },
+            point2D_2: { x: 588, y: 57 }
         },
-        "ht.png": { 
+        "ht.png": {
             point3D_1: { x: -27015, y: -18887 },
-            point2D_1: { x: 104, y: 180 }, 
-            point3D_2: { x: 17252, y: 27568  }, 
-            point2D_2: { x: 686, y: 789 } 
+            point2D_1: { x: 104, y: 180 },
+            point3D_2: { x: 17252, y: 27568  },
+            point2D_2: { x: 686, y: 789 }
         },
     };
 
@@ -148,7 +147,7 @@
             return { position: { x: finalMapX, y: finalMapY }, rotation: finalRotation };
         };
     }
-    
+
     function getTransformedData(entityData, mapName) {
         if (!entityData || !entityData.position) return { position: { x: 0, y: 0 }, rotation: 90 };
         const converter = mapConverters[mapName];
@@ -162,17 +161,24 @@
         }
         return transformerCache[mapName](entityData.position, entityData.orientation);
     }
-    
-    function getTeamColor(team_id) { const colors = [ 'rgba(80, 80, 255, 1)', 'rgba(255, 160, 80, 1)', 'rgba(180, 80, 255, 1)', 'rgba(160, 100, 60, 1)', 'rgba(255, 220, 80, 1)', 'rgba(80, 220, 220, 1)', 'rgba(180, 80, 80, 1)', 'rgba(120, 80, 180, 1)', 'rgba(220, 120, 80, 1)', 'rgba(255, 160, 160, 1)', 'rgba(160, 160, 255, 1)', 'rgba(255, 200, 160, 1)', 'rgba(200, 160, 255, 1)', 'rgba(200, 150, 100, 1)', 'rgba(255, 240, 160, 1)', 'rgba(160, 240, 240, 1)', 'rgba(240, 160, 160, 1)', 'rgba(200, 160, 200, 1)', 'rgba(240, 200, 160, 1)', ]; return colors[team_id] || 'rgba(128, 128, 128, 1)'; }
 
-    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1;
+    function getTeamColor(team_id) { const colors = [ 'rgba(80, 80, 255, 1)', 'rgba(255, 160, 80, 1)', 'rgba(180, 80, 255, 1)', 'rgba(160, 100, 60, 1)', 'rgba(255, 220, 80, 1)', 'rgba(80, 220, 220, 1)', 'rgba(180, 80, 80, 1)', 'rgba(120, 80, 180, 1)', 'rgba(220, 120, 80, 1)', 'rgba(255, 160, 160, 1)', 'rgba(160, 160, 255, 1)', 'rgba(255, 200, 160, 1)', 'rgba(200, 160, 255, 1)', 'rgba(200, 150, 100, 1)', 'rgba(255, 240, 160, 1)', 'rgba(160, 240, 240, 1)', 'rgba(240, 160, 160, 1)', 'rgba(200, 160, 200, 1)', 'rgba(240, 200, 160, 1)', ]; return colors[team_id] || 'rgba(128, 128, 128, 1)'; }
+    function readableCatalogName(value, fallback) {
+        const text = String(value || '');
+        if (!text) return fallback;
+        return text.replace(/\(\d+\)$/, '');
+    }
+
+    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1, resourcesVisible = true;
     var entitiesToRender = [];
+    var itemsToRender = [];
+    const selectedItemQualities = new Set([0, 1, 2, 3, 4, 5, 6]);
     const mapContainer = document.getElementById('map-container'), map = document.getElementById('map');
-    
+
     function applyMapTransform() { map.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`; }
-    
+
     window.addEventListener('resize', () => { if (isFollowing) recenterView(); });
-    
+
     mapContainer.addEventListener('mousedown', (e) => { isDragging = true; isFollowing = false; lastX = e.clientX; lastY = e.clientY; e.preventDefault(); });
     mapContainer.addEventListener('mousemove', (e) => { if (isDragging) { offsetX += e.clientX - lastX; offsetY += e.clientY - lastY; lastX = e.clientX; lastY = e.clientY; applyMapTransform(); } });
     mapContainer.addEventListener('mouseup', () => isDragging = false);
@@ -235,7 +241,7 @@
             applyMapTransform();
         } else if (e.touches.length === 2) {
             const t1 = e.touches[0], t2 = e.touches[1];
-            
+
             // 计算双指中心点
             const midX = (t1.clientX + t2.clientX) / 2;
             const midY = (t1.clientY + t2.clientY) / 2;
@@ -246,7 +252,7 @@
             // 计算当前在触摸中心点的地图坐标
             const mapPointX = (touchCenterX - offsetX) / scale;
             const mapPointY = (touchCenterY - offsetY) / scale;
-            
+
             // 计算新的缩放比例
             const distance = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
             if (touchStartDistance > 0) {
@@ -279,6 +285,7 @@
             forceUpdate = true;
             const data = await response.json();
             entitiesToRender = [...data.entities];
+            itemsToRender = Array.isArray(data.items) ? [...data.items] : [];
             localPlayer = data.local_player;
             teammates = data.teammates;
             if (localPlayer) {
@@ -296,141 +303,132 @@
                 container.className = 'entity-container';
                 const body = document.createElement('div');
                 body.className = 'entity-body';
-                const isTeammate = entityData.team_id === localPlayer?.team_id;
-                const isDead = entityData.health <= 0;
+                const entityType = entityData.type || 'player';
+                const isAi = entityType === 'ai';
+                const isTeammate = !isAi && entityData.team_id === localPlayer?.team_id;
+                const isDead = entityData.has_health === true && Number(entityData.health) <= 0;
+                const health = Number(entityData.health);
+                const maxHealth = Number(entityData.max_health);
+                const hasHealth = entityData.has_health !== false && entityData.has_max_health !== false
+                    && Number.isFinite(health)
+                    && Number.isFinite(maxHealth) && maxHealth > 0;
+                if (!isAi && hasHealth) {
+                    const healthRing = document.createElement('div');
+                    const healthRatio = Math.max(0, Math.min(1, health / maxHealth));
+                    healthRing.className = 'entity-health-ring';
+                    healthRing.style.setProperty('--health-ratio', healthRatio.toString());
+                    healthRing.style.setProperty('--health-color', healthRatio > 0.5 ? '#54d66a' : (healthRatio > 0.25 ? '#f4c542' : '#ef5350'));
+                    container.appendChild(healthRing);
+                }
                 if (isTeammate) {
                     const isSelf = entityData.id === localPlayer?.id;
                     let isSelected = (selectedPlayerId === null || selectedPlayerId === '') ? isSelf : (entityData.id == selectedPlayerId);
                     body.classList.add(isSelected ? 'white-player' : 'teammate');
+                } else if (isAi) {
+                    body.style.backgroundColor = isDead ? 'transparent' : 'rgba(255, 152, 0, 1)';
+                    body.style.borderColor = isDead ? 'rgba(255, 152, 0, 1)' : 'black';
+                    if (!isDead) body.textContent = 'A';
                 } else {
                     const teamColor = getTeamColor(entityData.team_id);
-                    if (isDead) { body.classList.add('dead'); body.style.borderColor = teamColor; } 
+                    if (isDead) { body.classList.add('dead'); body.style.borderColor = teamColor; }
                     else { body.style.backgroundColor = teamColor; body.style.borderColor = 'black'; body.textContent = entityData.team_id; }
                 }
-                if (!isDead) {
+                if (!isDead && entityData.has_orientation !== false) {
                     const direction = document.createElement('div');
                     direction.className = 'entity-direction';
                     direction.style.transform = `translateX(-50%) rotate(${correctedOrientation}deg)`;
                     container.appendChild(direction);
                 }
                 container.appendChild(body);
+                if (!isAi) {
+                    const info = document.createElement('div');
+                    info.className = 'entity-info';
+                    const heroText = entityData.has_hero === false ? '?' : readableCatalogName(entityData.hero_name, '未知探员');
+                    const weaponText = entityData.has_weapon === false ? '?' : readableCatalogName(entityData.weapon_name, '未知武器');
+                    info.textContent = `${heroText} ${weaponText}`;
+                    container.appendChild(info);
+                }
                 container.style.left = `${map2DPos.x}px`;
                 container.style.top = `${map2DPos.y}px`;
                 map.appendChild(container);
             });
-        } catch (error) { 
-            console.error('获取游戏数据失败:', error); 
+            refreshResourceMarkers();
+        } catch (error) {
+            console.error('获取游戏数据失败:', error);
             document.getElementById('auth-container').classList.remove('hidden');
         }
     }
 
-    const LOG_COLUMN_WIDTHS = Object.freeze({
-        category: 20,
-        entityId: 14,
-        teamId: 3,
-        health: 4,
-        distance: 5,
-        visible: 1,
-        position: 7,
-        type: 12,
-        rcode: 10,
-    });
-
-    function alignText(value, width) {
-        const text = String(value ?? 'n/a');
-        if (text.length <= width) return text.padEnd(width, ' ');
-        if (width <= 1) return '…';
-        return `${text.slice(0, width - 1)}…`;
+    function renderRadarItemMarker(itemData) {
+        const { position: map2DPos } = getTransformedData(itemData, currentMap);
+        const container = document.createElement('div');
+        container.className = 'entity-container';
+        container.classList.add('resource-marker');
+        const itemLabel = itemData.dead_box_name || itemData.item_name || 'item';
+        container.title = itemLabel;
+        const body = document.createElement('div');
+        body.className = 'entity-body item-body';
+        body.style.backgroundColor = itemData.item_quality_color || '#ffeb3b';
+        body.textContent = itemData.type === 'deadbody' ? 'D' : 'I';
+        container.appendChild(body);
+        const info = document.createElement('div');
+        info.className = 'entity-info item-info';
+        info.style.color = itemData.item_quality_color || '#ffeb3b';
+        info.textContent = itemLabel;
+        container.appendChild(info);
+        container.style.left = `${map2DPos.x}px`;
+        container.style.top = `${map2DPos.y}px`;
+        map.appendChild(container);
     }
 
-    function alignNumber(value, width) {
-        const parsed = Number(value);
-        const text = Number.isFinite(parsed) ? Math.trunc(parsed).toString() : '0';
-        if (text.length <= width) return text.padStart(width, ' ');
-        return text.slice(-width);
+    function refreshResourceMarkers() {
+        document.querySelectorAll('.resource-marker').forEach(marker => marker.remove());
+        if (!resourcesVisible) return;
+        itemsToRender
+            .filter(item => selectedItemQualities.has(Number(item.item_quality) || 0))
+            .forEach(renderRadarItemMarker);
     }
 
-    function formatDecryptLogLine(item) {
-        const obj = item || {};
-        const stage = alignText(obj.stage || 'decrypt', LOG_COLUMN_WIDTHS.category);
-        const status = alignText(obj.status || 'n/a', LOG_COLUMN_WIDTHS.type);
-        const entity = alignText(obj.entity || 'n/a', LOG_COLUMN_WIDTHS.entityId);
-        const failKind = alignText(obj.fail_kind || 'n/a', LOG_COLUMN_WIDTHS.rcode);
-        return `[${stage}] status=${status} entity=${entity} fail=${failKind}`;
-    }
-
-    function formatSendLogLine(item) {
-        const obj = item || {};
-        const pos = obj.pos || {};
-        const hp = Math.floor(Number(obj.health || 0));
-        const maxHp = Math.floor(Number(obj.max_health || 0));
-        const x = Math.floor(Number(pos.x || 0));
-        const y = Math.floor(Number(pos.y || 0));
-        const z = Math.floor(Number(pos.z || 0));
-        const id = alignText(obj.entity_id || 'n/a', LOG_COLUMN_WIDTHS.entityId);
-        const team = alignNumber(obj.team_id || 0, LOG_COLUMN_WIDTHS.teamId);
-        const hpText = alignNumber(hp, LOG_COLUMN_WIDTHS.health);
-        const maxHpText = alignNumber(maxHp, LOG_COLUMN_WIDTHS.health);
-        const distance = alignNumber(obj.distance || 0, LOG_COLUMN_WIDTHS.distance);
-        const vis = alignNumber(obj.visible ? 1 : 0, LOG_COLUMN_WIDTHS.visible);
-        const px = alignNumber(x, LOG_COLUMN_WIDTHS.position);
-        const py = alignNumber(y, LOG_COLUMN_WIDTHS.position);
-        const pz = alignNumber(z, LOG_COLUMN_WIDTHS.position);
-        return `id=${id} team=${team} hp=${hpText}/${maxHpText} d=${distance} vis=${vis} pos=(${px},${py},${pz})`;
-    }
-
-    async function updateLogHistory() {
-        try {
-            const password = (document.getElementById('auth-input').value || '').trim();
-            if (!password) return;
-            const response = await fetch('/api/logs', { headers: { 'X-Auth-Token': password } });
-            if (response.status !== 200) return;
-            const payload = await response.json();
-
-            const decrypt = Array.isArray(payload.decrypt) ? payload.decrypt : [];
-            const send = Array.isArray(payload.send_thread_players) ? payload.send_thread_players : [];
-
-            const decodeLines = decrypt.slice(-36).map(formatDecryptLogLine);
-            const sendLines = send.slice(-36).map(formatSendLogLine);
-
-            const decodeBox = document.getElementById('decode-log-box');
-            const sendBox = document.getElementById('send-log-box');
-            if (decodeBox) decodeBox.textContent = decodeLines.length ? decodeLines.join('\n') : 'no decrypt logs';
-            if (sendBox) sendBox.textContent = sendLines.length ? sendLines.join('\n') : 'no send-thread player logs';
-        } catch (error) {
-            // Keep radar rendering unaffected even if log endpoint is temporarily unavailable.
-        }
-    }
-
-    function recenterView() { 
-        let targetPlayer = null; 
-        if (selectedPlayerId) { targetPlayer = teammates.find(t => t.id == selectedPlayerId) || entitiesToRender.find(e => e.id == selectedPlayerId); } 
-        if (!targetPlayer) targetPlayer = localPlayer; 
-        if (targetPlayer) { 
+    function recenterView() {
+        let targetPlayer = null;
+        if (selectedPlayerId) { targetPlayer = teammates.find(t => t.id == selectedPlayerId) || entitiesToRender.find(e => e.id == selectedPlayerId); }
+        if (!targetPlayer) targetPlayer = localPlayer;
+        if (targetPlayer) {
             const { position: viewCenter2D } = getTransformedData(targetPlayer, currentMap);
-            const rect = mapContainer.getBoundingClientRect(); 
-            offsetX = rect.width / 2 - viewCenter2D.x * scale; 
-            offsetY = rect.height / 2 - viewCenter2D.y * scale; 
-            applyMapTransform(); 
-        } 
+            const rect = mapContainer.getBoundingClientRect();
+            offsetX = rect.width / 2 - viewCenter2D.x * scale;
+            offsetY = rect.height / 2 - viewCenter2D.y * scale;
+            applyMapTransform();
+        }
     }
     function loadSelection() { currentMap = localStorage.getItem('selectedMap') || 'db.png'; pendingPlayerSelection = localStorage.getItem('selectedPlayerId'); }
     function saveSelection() { localStorage.setItem('selectedMap', currentMap); localStorage.setItem('selectedPlayerId', selectedPlayerId || ''); }
-    
-    function selectMap(mapId) { 
-        currentMap = mapId; 
-        map.style.backgroundImage = `url('/image/${currentMap}')`; 
-        const dims = mapDimensions[mapId] || { width: 1000, height: 1000 }; 
+
+    function selectMap(mapId) {
+        currentMap = mapId;
+        map.style.backgroundImage = `url('/image/${currentMap}')`;
+        const dims = mapDimensions[mapId] || { width: 1000, height: 1000 };
         map.style.width = `${dims.width}px`;
-        map.style.height = `${dims.height}px`; 
-        document.querySelectorAll('.map-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.map === mapId)); 
+        map.style.height = `${dims.height}px`;
+        document.querySelectorAll('.map-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.map === mapId));
         checkCalibration(mapId);
         delete transformerCache[mapId];
-        saveSelection(); 
-        updateGameData(true); 
+        saveSelection();
+        updateGameData(true);
     }
 
     function selectPlayer(playerId) { selectedPlayerId = playerId; isFollowing = true; document.querySelectorAll('.player-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.playerId == (playerId || ''))); recenterView(); saveSelection(); }
+    function toggleResourceVisibility() {
+        resourcesVisible = !resourcesVisible;
+        const toggle = document.getElementById('resource-toggle');
+        toggle.classList.toggle('active', resourcesVisible);
+        toggle.setAttribute('aria-pressed', String(resourcesVisible));
+        if (resourcesVisible) {
+            refreshResourceMarkers();
+            return;
+        }
+        document.querySelectorAll('.resource-marker').forEach(marker => marker.remove());
+    }
     function updateMapButtons() { const container = document.getElementById('map-buttons'); container.innerHTML = ''; Object.keys(mapDimensions).forEach(id => { const button = document.createElement('button'); button.className = `map-btn ${currentMap === id ? 'active' : ''}`; button.textContent = id.split('.')[0].toUpperCase(); button.dataset.map = id; button.onclick = () => selectMap(id); container.appendChild(button); }); }
     function updatePlayerButtons() { const container = document.getElementById('player-buttons'); container.innerHTML = ''; const selfButton = document.createElement('button'); selfButton.className = `player-btn ${!selectedPlayerId || selectedPlayerId === '' ? 'active' : ''}`; selfButton.textContent = '自己'; selfButton.dataset.playerId = ''; selfButton.onclick = () => selectPlayer(null); container.appendChild(selfButton); var teamIndex = 1; teammates.forEach(t => { if (localPlayer && t.id === localPlayer.id) return; const button = document.createElement('button'); button.className = `player-btn ${selectedPlayerId == t.id ? 'active' : ''}`; button.textContent = `队友${ teamIndex}`; teamIndex++; button.dataset.playerId = t.id; button.onclick = () => selectPlayer(t.id); container.appendChild(button); }); }
     function loadAuth() { const savedPassword = localStorage.getItem('authToken'); if (savedPassword) { document.getElementById('auth-input').value = savedPassword; } }
@@ -441,18 +439,22 @@
     selectMap(currentMap);
     updateGameData(true);
     setInterval(updateGameData, 50);
-    updateLogHistory();
-    setInterval(updateLogHistory, 300);
-
     document.getElementById('auth-submit').addEventListener('click', () => {
         updateGameData(true);
-        updateLogHistory();
     });
     document.getElementById('auth-input').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
             updateGameData(true);
-            updateLogHistory();
         }
+    });
+    document.getElementById('resource-toggle').addEventListener('click', toggleResourceVisibility);
+    document.querySelectorAll('#quality-filter input[data-quality]').forEach(input => {
+        input.addEventListener('change', () => {
+            const quality = Number(input.dataset.quality);
+            if (input.checked) selectedItemQualities.add(quality);
+            else selectedItemQualities.delete(quality);
+            refreshResourceMarkers();
+        });
     });
     </script>
 </body>

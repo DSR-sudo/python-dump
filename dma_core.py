@@ -9,16 +9,23 @@ import os
 import re
 import math
 import queue
+from enum import Enum
+from actor_snapshot_radar import build_radar_snapshot
 from dma_protocol import *
+from item_catalog import describe_item
 
 DEFAULT_EXPECTED_TRANSFER_BPS = 8 * 1024 * 1024  # 8 MB/s conservative baseline.
 DEFAULT_TRANSFER_GRACE_SEC = 5.0
 DEFAULT_IDLE_TIMEOUT_SEC = 2.5
 WAIT_SLICE_SEC = 0.2
+HEARTBEAT_INTERVAL_SEC = 1.0
+DRIVER_LIVENESS_TIMEOUT_SEC = 3.0
 VERBOSE_EXPECTING_LOG = os.getenv("DMA_VERBOSE_EXPECTING", "0") == "1"
 DEFAULT_PLAYER_TTL_SEC = float(os.getenv("DMA_WEBRADAR_PLAYER_TTL", "1.5"))
-RWBASE_DECRYPT_LOG_ENABLED = os.getenv("RWBASE_DECRYPT_LOG", "0") == "1"
+RWBASE_DECRYPT_LOG_ENABLED = os.getenv("RWBASE_DECRYPT_LOG", "1").strip().lower() not in ("0", "false", "off", "no")
 RWBASE_DECRYPT_LOG_PREFIX = "[CoordDecryptDebug][B64] "
+COORD_RAW_LOG_PREFIX = "[COORDRAW][SEND] "
+DRIVER_LOG_IDENTITY_PREFIXES = ("[PMU]", "[DB]", "ALIVE_ACK", "DRIVER_ONLINE")
 RWBASE_DECRYPT_QUEUE_CAPACITY = 1024
 RWBASE_DECRYPT_FALLBACK_PATH = os.getenv(
     "RWBASE_DECRYPT_FALLBACK_PATH",
@@ -26,6 +33,12 @@ RWBASE_DECRYPT_FALLBACK_PATH = os.getenv(
 )
 RWBASE_DECRYPT_FALLBACK_MAX_BYTES = 100 * 1024 * 1024
 RWBASE_DECRYPT_FALLBACK_RETENTION_DAYS = 7
+
+
+class DriverConnectionState(Enum):
+    DISCONNECTED = "disconnected"
+    CONNECTED_WAITING_FRAME = "connected_waiting_frame"
+    ONLINE = "online"
 
 rwbase_decrypt_logger = logging.getLogger("rwbase_decrypt")
 rwbase_decrypt_logger.addHandler(logging.NullHandler())
@@ -82,19 +95,25 @@ class DMACore:
     REGION_DONE_RE = re.compile(
         r"^\[UserRegion\]\s+Done\s+PID=([0-9A-Fa-fx]+)\s+Count=(\d+)$"
     )
-    def __init__(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind(("0.0.0.0", BIND_PORT))
-
-        try:
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024 * 1024)
-        except Exception:
-            print("[!] Warning: Could not set 64MB Recv Buffer. OS limit might be lower.")
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024 * 1024)
-
+    def __init__(self, session_log=None):
+        self.session_log = session_log
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind((TCP_LISTEN_HOST, TARGET_PORT))
+        self.listener.listen(1)
+        self.listener.settimeout(WAIT_SLICE_SEC)
+        self.connection_lock = threading.Lock()
+        self.send_lock = threading.Lock()
+        self.connection = None
         self.is_running = True
         self.driver_online = False
+        self.driver_connection_state = DriverConnectionState.DISCONNECTED
+        self.driver_endpoint_lock = threading.Lock()
+        self.driver_state_lock = threading.Lock()
+        self.driver_endpoint = None
+        self.last_driver_packet_ts = 0.0
+        self.protocol_reassembler = ProtocolStreamReassembler()
+        self.protocol_invalid_packets = 0
         self.seq = 0
         self.rwvg_stream_detected = False
         self.host_aggregate_detected = False
@@ -102,6 +121,12 @@ class DMACore:
             "utils_frames": 0,
             "player_frames": 0,
             "item_frames": 0,
+            "player_batch_frames": 0,
+            "item_batch_frames": 0,
+            "player_batch_entities": 0,
+            "item_batch_entities": 0,
+            "actor_scan_frames": 0,
+            "actor_scan_entities": 0,
             "typed_bytes": 0,
             "host_aggregate_frames": 0,
             "host_aggregate_raw_bytes": 0,
@@ -143,6 +168,13 @@ class DMACore:
             "recent": [],
         }
         self.decrypt_log_queue = queue.Queue(maxsize=RWBASE_DECRYPT_QUEUE_CAPACITY)
+        self.coord_raw_lock = threading.Lock()
+        self.coord_raw_diag = {
+            "stats": {
+                "total": 0,
+            },
+            "recent": [],
+        }
         self.trace_lock = threading.Lock()
         self.send_thread_history = []
         self.trace_history_limit = 512
@@ -152,6 +184,24 @@ class DMACore:
         self.radar_players = {}
         self.radar_items = {}
         self.radar_player_ttl_sec = DEFAULT_PLAYER_TTL_SEC
+        # Actor 分类转储 (Type=6) 快照：按 entity 指针去重，保留最近若干条
+        self.actor_scan_lock = threading.Lock()
+        self.actor_scan_entities = {}        # entity 指针 -> 解析后的 record dict
+        self.actor_scan_order = []           # 保持插入顺序，便于按时间近似倒序展示
+        self.actor_scan_local_view = {}
+        self.actor_scan_version = RWVG_ACTOR_SNAPSHOT_VERSION
+        self.actor_scan_last_ts = 0.0        # 最近一帧的 monotonic 时间戳
+        self.actor_scan_last_count = 0       # 最近一帧解析到的记录数
+        self.actor_scan_frames = 0           # 累计收到的 Type=6 帧数
+        self.actor_scan_snapshot_id = None
+        self.actor_scan_fragment_count = 0
+        self.actor_scan_received_fragments = set()
+        self.actor_scan_total_record_count = 0
+        self.actor_scan_complete = False
+        self.actor_scan_dropped_late_fragments = 0
+        self.actor_scan_duplicate_fragments = 0
+        self.actor_scan_invalid_fragments = 0
+        self.actor_scan_last_status = "awaiting_snapshot"
         self.console_lock = threading.Lock()
         self.console_input_active = False
         self.console_deferred_lines = []
@@ -163,7 +213,12 @@ class DMACore:
         if RWBASE_DECRYPT_LOG_ENABLED:
             threading.Thread(target=self._decrypt_log_worker, daemon=True).start()
 
-    def _emit_console_line(self, line: str, defer_while_input: bool = True):
+    def _emit_console_line(
+        self,
+        line: str,
+        defer_while_input: bool = True,
+        write_to_session: bool = True,
+    ):
         if not line:
             return
 
@@ -174,6 +229,9 @@ class DMACore:
                 else:
                     self.console_deferred_dropped += 1
                 return
+        if not write_to_session and self.session_log is not None:
+            self.session_log.write_console_only(f"{line}\n")
+            return
         print(line)
 
     def begin_console_input(self):
@@ -192,9 +250,218 @@ class DMACore:
             self.console_deferred_dropped = 0
 
         for line in deferred:
-            print(line)
+            self._write_deferred_console_line(line)
         if dropped > 0:
             print(f"[LOG] {dropped} background lines dropped while typing.")
+
+    def _write_deferred_console_line(self, line: str):
+        if self.session_log is None:
+            print(line)
+            return
+        self.session_log.write_console_only(f"{line}\n")
+
+    def _write_received_log(self, message: str):
+        if self.session_log is not None:
+            self.session_log.write_received_log(message)
+
+    def _record_player_radar(self, parsed: dict, now_ts: float):
+        entity_id = self._build_player_entity_id(parsed)
+        parsed["_entity_id"] = entity_id
+        parsed["_ts"] = now_ts
+        self._append_send_thread_log({
+            "ts": now_ts,
+            "kind": "player",
+            "entity_id": entity_id,
+            "team_id": int(parsed.get("team_id", 0) or 0),
+            "health": _safe_wire_float(parsed.get("health", 0.0)),
+            "max_health": _safe_wire_float(parsed.get("max_health", 0.0)),
+            "distance": int(parsed.get("distance", 0) or 0),
+            "visible": bool(parsed.get("is_visible", False)),
+            "pos": _safe_wire_pos_dict(parsed.get("pos") or {}),
+            "name": str(parsed.get("player_name") or parsed.get("bot_name") or ""),
+            "weapon": str(parsed.get("weapon_name") or ""),
+        })
+        with self.radar_lock:
+            self.radar_players[entity_id] = parsed
+            self._purge_radar_stale_locked(now_ts)
+
+    def _record_item_radar(self, parsed: dict, now_ts: float):
+        item_key = self._build_item_entity_id(parsed, now_ts)
+        parsed["_ts"] = now_ts
+        parsed["_entity_id"] = item_key
+        self._append_send_thread_log({
+            "ts": now_ts,
+            "kind": "item",
+            "entity_id": item_key,
+            "item_type": int(parsed.get("item_type", 0) or 0),
+            "dead_box_type": int(parsed.get("dead_box_type", 0) or 0),
+            "distance": int(parsed.get("distance", 0) or 0),
+            "pos": _safe_wire_pos_dict(parsed.get("pos") or {}),
+        })
+        with self.radar_lock:
+            self.radar_items[item_key] = parsed
+            self._purge_radar_stale_locked(now_ts)
+
+    def _handle_player_payload(self, typed_payload: bytes, now_ts: float) -> int:
+        parsed = parse_rwvg_player_payload(typed_payload)
+        if parsed is None:
+            return 0
+        self._record_player_radar(parsed, now_ts)
+        return 1
+
+    def _handle_item_payload(self, typed_payload: bytes, now_ts: float) -> int:
+        parsed = parse_rwvg_item_payload(typed_payload)
+        if parsed is None:
+            return 0
+        self._record_item_radar(parsed, now_ts)
+        return 1
+
+    def _handle_player_batch_payload(self, typed_payload: bytes, now_ts: float) -> int:
+        payloads = parse_rwvg_batch_payload(typed_payload, RWVG_TYPED_SIZE_BY_KIND[RWVG_TYPE_PLAYER])
+        if payloads is None:
+            return 0
+        self.rwvg_stats["player_batch_frames"] += 1
+        handled = 0
+        for payload in payloads:
+            handled += self._handle_player_payload(payload, now_ts)
+        self.rwvg_stats["player_batch_entities"] += handled
+        return handled
+
+    def _handle_item_batch_payload(self, typed_payload: bytes, now_ts: float) -> int:
+        payloads = parse_rwvg_batch_payload(typed_payload, RWVG_TYPED_SIZE_BY_KIND[RWVG_TYPE_ITEM])
+        if payloads is None:
+            return 0
+        self.rwvg_stats["item_batch_frames"] += 1
+        handled = 0
+        for payload in payloads:
+            handled += self._handle_item_payload(payload, now_ts)
+        self.rwvg_stats["item_batch_entities"] += handled
+        return handled
+
+    def _handle_actor_scan_payload(self, typed_payload: bytes, now_ts: float) -> int:
+        parsed = parse_rwvg_actor_scan_payload(typed_payload)
+        if parsed is None:
+            return 0
+
+        return self._accept_actor_snapshot(parsed, now_ts)
+
+    def _accept_actor_snapshot(self, parsed: dict, now_ts: float) -> int:
+        snapshot_id = int(parsed["snapshot_id"])
+        fragment_index = int(parsed["fragment_index"])
+        with self.actor_scan_lock:
+            if self._is_older_actor_snapshot(snapshot_id):
+                self.actor_scan_dropped_late_fragments += 1
+                self.actor_scan_last_status = "dropped_late_fragment"
+                return 0
+            if self.actor_scan_snapshot_id != snapshot_id:
+                self._start_actor_snapshot(parsed, now_ts)
+            if not self._has_matching_actor_snapshot_shape(parsed):
+                self.actor_scan_invalid_fragments += 1
+                self.actor_scan_last_status = "invalid_fragment_metadata"
+                return 0
+            if fragment_index in self.actor_scan_received_fragments:
+                self.actor_scan_duplicate_fragments += 1
+                self.actor_scan_last_status = "duplicate_fragment"
+                return 0
+            records = parsed.get("records") or []
+            self.actor_scan_received_fragments.add(fragment_index)
+            self._merge_actor_snapshot_records(records, now_ts)
+            self.actor_scan_complete = len(self.actor_scan_received_fragments) == self.actor_scan_fragment_count
+            self.actor_scan_last_status = "complete" if self.actor_scan_complete else "partial"
+        self._record_actor_snapshot_frame(len(records), now_ts)
+        return len(records)
+
+    def _is_older_actor_snapshot(self, snapshot_id: int) -> bool:
+        return self.actor_scan_snapshot_id is not None and snapshot_id < self.actor_scan_snapshot_id
+
+    def _start_actor_snapshot(self, parsed: dict, now_ts: float):
+        self.actor_scan_version = int(parsed["version"])
+        self.actor_scan_local_view = dict(parsed.get("local_view") or {})
+        self.actor_scan_snapshot_id = int(parsed["snapshot_id"])
+        self.actor_scan_fragment_count = int(parsed["fragment_count"])
+        self.actor_scan_received_fragments = set()
+        self.actor_scan_total_record_count = int(parsed["total_record_count"])
+        self.actor_scan_complete = False
+        self.actor_scan_last_status = "partial"
+        self.actor_scan_last_ts = now_ts
+        self.actor_scan_last_count = 0
+        self.actor_scan_entities = {}
+        self.actor_scan_order = []
+
+    def _has_matching_actor_snapshot_shape(self, parsed: dict) -> bool:
+        return (
+            self.actor_scan_fragment_count == int(parsed["fragment_count"])
+            and self.actor_scan_total_record_count == int(parsed["total_record_count"])
+            and self._local_view_identity(self.actor_scan_local_view)
+            == self._local_view_identity(parsed.get("local_view"))
+        )
+
+    @staticmethod
+    def _local_view_identity(view: dict | None) -> tuple[int, ...]:
+        source = view or {}
+        diagnostics = source.get("diagnostics") or {}
+        return (
+            int(source.get("local_pawn", 0) or 0), int(source.get("yaw_bits", 0) or 0),
+            int(source.get("valid_fields", 0) or 0), int(diagnostics.get("attempts", 0) or 0),
+            int(diagnostics.get("failures", 0) or 0), int(diagnostics.get("first_failure", 0) or 0),
+        )
+
+    def _merge_actor_snapshot_records(self, records: list, now_ts: float):
+        for record in records:
+            record_id = int(record.get("record_id", 0) or 0)
+            if record_id not in self.actor_scan_entities:
+                self.actor_scan_order.append(record_id)
+            stamped = dict(record)
+            stamped["_ts"] = now_ts
+            self.actor_scan_entities[record_id] = stamped
+
+    def _record_actor_snapshot_frame(self, record_count: int, now_ts: float):
+        self.rwvg_stats["actor_scan_frames"] += 1
+        self.rwvg_stats["actor_scan_entities"] += record_count
+        self.actor_scan_frames += 1
+        self.actor_scan_last_count = record_count
+        self.actor_scan_last_ts = now_ts
+
+    def get_actor_scan_snapshot(self):
+        with self.actor_scan_lock:
+            order = list(self.actor_scan_order)
+            entities = dict(self.actor_scan_entities)
+            local_view = dict(self.actor_scan_local_view)
+            version = int(self.actor_scan_version)
+        return {
+            "actors": [dict(entities[entity]) for entity in order if entity in entities],
+            "count": len(entities),
+            "frames": int(self.actor_scan_frames),
+            "last_ts": float(self.actor_scan_last_ts or 0.0),
+            "last_count": int(self.actor_scan_last_count),
+            "has_data": self.actor_scan_snapshot_id is not None or bool(entities),
+            "version": version,
+            "local_view": local_view,
+            "snapshot_id": self.actor_scan_snapshot_id,
+            "fragment_count": int(self.actor_scan_fragment_count),
+            "received_fragments": len(self.actor_scan_received_fragments),
+            "total_record_count": int(self.actor_scan_total_record_count),
+            "complete": bool(self.actor_scan_complete),
+            "status": str(self.actor_scan_last_status),
+            "dropped_late_fragments": int(self.actor_scan_dropped_late_fragments),
+            "duplicate_fragments": int(self.actor_scan_duplicate_fragments),
+            "invalid_fragments": int(self.actor_scan_invalid_fragments),
+        }
+
+    def _start_current_rwvg_snapshot(self, parsed: dict, now_ts: float):
+        self._append_send_thread_log({
+            "ts": now_ts,
+            "kind": "local",
+            "entity_id": "local",
+            "team_id": int(parsed.get("local_team_id", 0) or 0),
+            "weapon_id": int(parsed.get("local_weapon_id", 0) or 0),
+            "pos": _safe_wire_pos_dict(parsed.get("local_pos") or {}),
+        })
+        with self.radar_lock:
+            self.radar_latest_utils = parsed
+            self.radar_latest_utils_ts = now_ts
+            self.radar_players = {}
+            self.radar_items = {}
 
     def _handle_rwvg_typed_frame(self, typed_kind, typed_payload):
         now_ts = time.monotonic()
@@ -202,41 +469,19 @@ class DMACore:
             self.rwvg_stats["utils_frames"] += 1
             parsed = parse_rwvg_utils_payload(typed_payload)
             if parsed is not None:
-                with self.radar_lock:
-                    self.radar_latest_utils = parsed
-                    self.radar_latest_utils_ts = now_ts
+                self._start_current_rwvg_snapshot(parsed, now_ts)
         elif typed_kind == RWVG_TYPE_PLAYER:
             self.rwvg_stats["player_frames"] += 1
-            parsed = parse_rwvg_player_payload(typed_payload)
-            if parsed is not None:
-                entity_id = self._build_player_entity_id(parsed)
-                parsed["_entity_id"] = entity_id
-                parsed["_ts"] = now_ts
-                self._append_send_thread_log({
-                    "ts": now_ts,
-                    "kind": "player",
-                    "entity_id": entity_id,
-                    "team_id": int(parsed.get("team_id", 0) or 0),
-                    "health": _safe_wire_float(parsed.get("health", 0.0)),
-                    "max_health": _safe_wire_float(parsed.get("max_health", 0.0)),
-                    "distance": int(parsed.get("distance", 0) or 0),
-                    "visible": bool(parsed.get("is_visible", False)),
-                    "pos": _safe_wire_pos_dict(parsed.get("pos") or {}),
-                    "name": str(parsed.get("player_name") or ""),
-                    "weapon": str(parsed.get("weapon_name") or ""),
-                })
-                with self.radar_lock:
-                    self.radar_players[entity_id] = parsed
-                    self._purge_radar_stale_locked(now_ts)
+            self._handle_player_payload(typed_payload, now_ts)
         elif typed_kind == RWVG_TYPE_ITEM:
             self.rwvg_stats["item_frames"] += 1
-            parsed = parse_rwvg_item_payload(typed_payload)
-            if parsed is not None:
-                item_key = f"{parsed.get('dead_box_type', 0)}:{now_ts:.6f}"
-                parsed["_ts"] = now_ts
-                with self.radar_lock:
-                    self.radar_items[item_key] = parsed
-                    self._purge_radar_stale_locked(now_ts)
+            self._handle_item_payload(typed_payload, now_ts)
+        elif typed_kind == RWVG_TYPE_PLAYER_BATCH:
+            self._handle_player_batch_payload(typed_payload, now_ts)
+        elif typed_kind == RWVG_TYPE_ITEM_BATCH:
+            self._handle_item_batch_payload(typed_payload, now_ts)
+        elif typed_kind == RWVG_TYPE_ACTOR_SCAN:
+            self._handle_actor_scan_payload(typed_payload, now_ts)
         self.rwvg_stats["typed_bytes"] += len(typed_payload)
 
         if not self.rwvg_stream_detected:
@@ -252,6 +497,14 @@ class DMACore:
         player_name = str(player.get("player_name") or "")
         detective = str(player.get("detective") or "")
         return f"FALLBACK_{team_id}_{player_name}_{detective}"
+
+    def _build_item_entity_id(self, item: dict, now_ts: float) -> str:
+        pos = item.get("pos") or {}
+        item_type = int(item.get("item_type", 0) or 0)
+        dead_box_type = int(item.get("dead_box_type", 0) or 0)
+        x = int(_safe_float(pos.get("x", 0.0)))
+        y = int(_safe_float(pos.get("y", 0.0)))
+        return f"item:{item_type}:{dead_box_type}:{x}:{y}:{now_ts:.3f}"
 
     def _purge_radar_stale_locked(self, now_ts: float):
         cutoff = now_ts - max(self.radar_player_ttl_sec, 0.25)
@@ -286,11 +539,20 @@ class DMACore:
         return yaw_deg
 
     def get_radar_snapshot(self):
+        actor_snapshot = self.get_actor_scan_snapshot()
+        if actor_snapshot["has_data"]:
+            return build_radar_snapshot(
+                actor_snapshot,
+                self._get_snapshot_local_player(),
+                self._get_item_radar_snapshots(),
+            )
+
         now_ts = time.monotonic()
         with self.radar_lock:
             self._purge_radar_stale_locked(now_ts)
             utils = dict(self.radar_latest_utils or {})
             players = [dict(player) for player in self.radar_players.values()]
+            items = [dict(item) for item in self.radar_items.values()]
             utils_ts = float(self.radar_latest_utils_ts or 0.0)
 
         local_team_id = int(utils.get("local_team_id", 0) or 0)
@@ -307,19 +569,29 @@ class DMACore:
 
         entities = []
         teammates = []
+        actual_player_count = 0
+        ai_count = 0
         for player in players:
             class_name = str(player.get("class_name") or "")
-            is_actual_player = class_name != "AI"
-            if not class_name or not is_actual_player:
+            if not class_name:
                 continue
+
+            is_ai = class_name == "AI"
+            entity_type = "ai" if is_ai else "player"
+            if is_ai:
+                ai_count += 1
+            else:
+                actual_player_count += 1
 
             entity_id = str(player.get("_entity_id") or self._build_player_entity_id(player))
             player_name = str(player.get("player_name") or "")
+            bot_name = str(player.get("bot_name") or "")
             pos = player.get("pos") or {}
             entity = {
                 "id": entity_id,
-                "name": player_name if player_name else f"Player_{entity_id}",
-                "type": "player",
+                "name": bot_name if is_ai and bot_name else (player_name if player_name else f"{entity_type.title()}_{entity_id}"),
+                "type": entity_type,
+                "class_name": class_name,
                 "team_id": int(player.get("team_id", 0) or 0),
                 "position": _safe_pos_dict(pos),
                 "orientation": _safe_float(player.get("direction", 0.0)),
@@ -328,19 +600,70 @@ class DMACore:
             }
             entities.append(entity)
 
-            if local_team_id > 0 and entity["team_id"] == local_team_id:
+            if (not is_ai) and local_team_id > 0 and entity["team_id"] == local_team_id:
                 teammates.append(dict(entity))
+
+        item_snapshots = self._build_item_radar_snapshots(items)
 
         return {
             "meta": {
                 "utils_present": bool(utils),
                 "utils_age_ms": max(0, int((now_ts - utils_ts) * 1000.0)) if utils_ts > 0.0 else -1,
-                "player_count": len(entities),
+                "entity_count": len(entities),
+                "item_count": len(item_snapshots),
+                "player_count": actual_player_count,
+                "ai_count": ai_count,
                 "teammate_count": len(teammates),
             },
             "local_player": local_player,
             "entities": entities,
+            "items": item_snapshots,
             "teammates": teammates,
+        }
+
+    def _get_item_radar_snapshots(self) -> list[dict]:
+        now_ts = time.monotonic()
+        with self.radar_lock:
+            self._purge_radar_stale_locked(now_ts)
+            items = [dict(item) for item in self.radar_items.values()]
+        return self._build_item_radar_snapshots(items)
+
+    @staticmethod
+    def _build_item_radar_snapshots(items: list[dict]) -> list[dict]:
+        return [
+            {
+                "id": str(item.get("_entity_id") or ""),
+                "type": str(item.get("type") or "item"),
+                "item_type": int(item.get("item_type", 0) or 0),
+                "item_name": str(item.get("item_name") or ""),
+                "item_id": int(item.get("item_id", 0) or 0),
+                "item_id_hex": str(item.get("item_id_hex") or ""),
+                "item_quality": int(item.get("item_quality", 0) or 0),
+                "item_quality_label": str(item.get("item_quality_label") or ""),
+                "item_quality_color": str(item.get("item_quality_color") or ""),
+                "item_money": int(item.get("item_money", 0) or 0),
+                "dead_box_type": int(item.get("dead_box_type", 0) or 0),
+                "dead_box_name": str(item.get("dead_box_name") or ""),
+                "distance": int(item.get("distance", 0) or 0),
+                "position": _safe_pos_dict(item.get("pos")),
+                "orientation": 0,
+            }
+            for raw_item in items
+            for item in [describe_item(raw_item)]
+        ]
+
+    def _get_snapshot_local_player(self):
+        with self.radar_lock:
+            utils = dict(self.radar_latest_utils or {})
+        if not utils:
+            return None
+        return {
+            "id": "local",
+            "team_id": int(utils.get("local_team_id", 0) or 0),
+            "camp_id": 0,
+            "yaw": self._calculate_local_yaw(utils.get("matrix")),
+            "position": _safe_pos_dict(utils.get("local_pos")),
+            "neck_position": _safe_pos_dict(utils.get("local_neck_pos")),
         }
 
     def _handle_zombie_ack_packet(self, payload):
@@ -483,9 +806,41 @@ class DMACore:
             })
         return True
 
+    def _try_capture_coord_raw_log(self, msg: str):
+        if not msg.startswith(COORD_RAW_LOG_PREFIX):
+            return False
+
+        body = msg[len(COORD_RAW_LOG_PREFIX):].strip()
+        fields = {}
+        for token in body.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            fields[key] = value
+
+        event = {
+            "pid": fields.get("pid", "n/a"),
+            "entity": fields.get("entity", "n/a"),
+            "identity": fields.get("identity", "n/a"),
+            "handler": fields.get("handler", "n/a"),
+            "flags": fields.get("flags", "n/a"),
+            "raw": fields.get("raw", ""),
+            "raw_text": body,
+            "ts_utc": _utc_iso8601_now(),
+        }
+        with self.coord_raw_lock:
+            self.coord_raw_diag["stats"]["total"] += 1
+            recent = self.coord_raw_diag["recent"]
+            recent.append(event)
+            if len(recent) > self.trace_history_limit:
+                del recent[:-self.trace_history_limit]
+        return True
+
     def _try_capture_rwbase_host_log(self, msg: str):
         if not msg:
             return False
+        if self._try_capture_coord_raw_log(msg):
+            return True
         return self._try_capture_rwbase_decrypt_log(msg)
 
     def get_rwbase_decrypt_diag(self):
@@ -497,87 +852,153 @@ class DMACore:
                 "recent": list(self.decrypt_diag["recent"]),
             }
 
+    def get_coord_raw_diag(self):
+        with self.coord_raw_lock:
+            return {
+                "stats": dict(self.coord_raw_diag["stats"]),
+                "recent": list(self.coord_raw_diag["recent"]),
+            }
+
     def get_send_thread_history(self, limit: int = 50):
         n = max(1, int(limit))
         with self.trace_lock:
             return [dict(item) for item in self.send_thread_history[-n:]]
 
-    def _receiver_loop(self):
-        self._emit_console_line(f"[*] UDP Receiver started on port {BIND_PORT}", defer_while_input=False)
-        scratch_buffer = bytearray(65536)
+    def get_driver_endpoint(self):
+        with self.driver_endpoint_lock:
+            return self.driver_endpoint
 
-        while self.is_running:
+    def send_to_driver(self, payload):
+        with self.connection_lock:
+            connection = self.connection
+        if connection is None:
+            raise RuntimeError("PMU TCP connection is not established")
+        with self.send_lock:
+            connection.sendall(bytes(payload))
+        return len(payload)
+
+    def _accept_driver_connection(self):
+        try:
+            connection, endpoint = self.listener.accept()
+        except socket.timeout:
+            return False
+        except OSError:
+            return False
+        connection.settimeout(WAIT_SLICE_SEC)
+        with self.connection_lock:
+            previous = self.connection
+            self.connection = connection
+        with self.driver_endpoint_lock:
+            self.driver_endpoint = endpoint
+        if previous is not None:
+            previous.close()
+        self.protocol_reassembler = ProtocolStreamReassembler()
+        self.last_driver_packet_ts = 0.0
+        self._set_driver_connection_state(DriverConnectionState.CONNECTED_WAITING_FRAME)
+        self._emit_console_line(
+            f"[+] Driver TCP connection accepted: {endpoint[0]}:{endpoint[1]}",
+            defer_while_input=False,
+        )
+        return True
+
+    def _drop_driver_connection(self, connection):
+        with self.connection_lock:
+            if self.connection is not connection:
+                return
+            self.connection = None
+        with self.driver_endpoint_lock:
+            self.driver_endpoint = None
+        connection.close()
+        self._set_driver_connection_state(DriverConnectionState.DISCONNECTED)
+
+    def _process_log_packet(self, payload):
+        msg = payload.decode("utf-8", errors="ignore").strip()
+        self._write_received_log(msg)
+        self._try_capture_module_log(msg)
+        consumed_region_log = self._try_capture_region_log(msg)
+        consumed_host_log = self._try_capture_rwbase_host_log(msg)
+        if "ALIVE_ACK" in msg or "DRIVER_ONLINE" in msg:
+            return
+        if consumed_region_log or consumed_host_log:
+            return
+        if msg:
+            self._emit_console_line(f"[LOG] {msg}", write_to_session=False)
+
+    def _process_data_packet(self, payload):
+        typed_parsed = try_parse_rwvg_typed_payload(payload)
+        if typed_parsed is not None:
+            typed_kind, typed_payload = typed_parsed
+            self._handle_rwvg_typed_frame(typed_kind, typed_payload)
+            return
+        if self.expected_size > 0:
+            payload_len = len(payload)
+            self.rwvg_stats["command_bytes"] += payload_len
+            self.last_untyped_data_ts = time.monotonic()
+            if self.recvd_bytes + payload_len <= self.expected_size:
+                self.view[self.recvd_bytes:self.recvd_bytes + payload_len] = payload
+                self.recvd_bytes += payload_len
+                self.last_data_ts = time.monotonic()
+            else:
+                self.rwvg_stats["dropped_data_packets"] += 1
+            if self.recvd_bytes >= self.expected_size:
+                self.expected_size = 0
+                self.recv_event.set()
+            return
+        self.last_untyped_data_ts = time.monotonic()
+        if not self._handle_zombie_ack_packet(payload):
+            self.rwvg_stats["dropped_data_packets"] += 1
+
+    def _process_assembled_packet(self, assembled):
+        pkt_type, payload, _ = assembled
+        self._mark_driver_packet_received()
+        if pkt_type == PACKET_TYPE_LOG:
             try:
-                nbytes = self.sock.recv_into(scratch_buffer)
-                if nbytes < 1:
+                self._process_log_packet(payload)
+            except Exception:
+                pass
+            return
+        if pkt_type in (PACKET_TYPE_DATA, PACKET_TYPE_SNAPSHOT):
+            self._process_data_packet(payload)
+            return
+        host_agg = try_parse_host_aggregate_payload(payload)
+        if host_agg is None:
+            return
+        self.rwvg_stats["host_aggregate_frames"] += 1
+        self.rwvg_stats["host_aggregate_raw_bytes"] += host_agg["raw_size"]
+        if not self.host_aggregate_detected:
+            self._emit_console_line(
+                "[+] Host-compat aggregate stream detected "
+                f"(players={host_agg['player_count']}, items={host_agg['item_count']})."
+            )
+            self.host_aggregate_detected = True
+
+    def _receiver_loop(self):
+        self._emit_console_line("[*] TCP receiver started", defer_while_input=False)
+        while self.is_running:
+            with self.connection_lock:
+                connection = self.connection
+            if connection is None:
+                self._accept_driver_connection()
+                continue
+            try:
+                chunk = connection.recv(64 * 1024)
+                if not chunk:
+                    self._drop_driver_connection(connection)
                     continue
-
-                pkt_type = scratch_buffer[0]
-
-                if pkt_type == PACKET_TYPE_LOG:
-                    try:
-                        msg = scratch_buffer[1:nbytes].decode("utf-8", errors="ignore").strip()
-                        self._try_capture_module_log(msg)
-                        consumed_region_log = self._try_capture_region_log(msg)
-                        consumed_host_log = self._try_capture_rwbase_host_log(msg)
-                        if "ALIVE_ACK" in msg or "DRIVER_ONLINE" in msg:
-                            if not self.driver_online:
-                                self._emit_console_line("[+] Driver is ONLINE.")
-                            self.driver_online = True
-                            continue
-
-                        if consumed_region_log or consumed_host_log:
-                            continue
-
-                        if msg:
-                            self._emit_console_line(f"[LOG] {msg}")
-                    except Exception:
-                        pass
-                    continue
-
-                if pkt_type == PACKET_TYPE_DATA:
-                    payload = scratch_buffer[1:nbytes]
-                    typed_parsed = try_parse_rwvg_typed_payload(payload)
-                    if typed_parsed is not None:
-                        typed_kind, typed_payload = typed_parsed
-                        self._handle_rwvg_typed_frame(typed_kind, typed_payload)
-                        continue
-
-                    if self.expected_size > 0:
-                        payload_len = len(payload)
-                        self.rwvg_stats["command_bytes"] += payload_len
-                        self.last_untyped_data_ts = time.monotonic()
-
-                        if self.recvd_bytes + payload_len <= self.expected_size:
-                            self.view[self.recvd_bytes:self.recvd_bytes + payload_len] = payload
-                            self.recvd_bytes += payload_len
-                            self.last_data_ts = time.monotonic()
-                        else:
-                            self.rwvg_stats["dropped_data_packets"] += 1
-
-                        if self.recvd_bytes >= self.expected_size:
-                            self.expected_size = 0
-                            self.recv_event.set()
-                    else:
-                        self.last_untyped_data_ts = time.monotonic()
-                        if self._handle_zombie_ack_packet(payload):
-                            continue
-                        self.rwvg_stats["dropped_data_packets"] += 1
-                    continue
-
-                host_agg = try_parse_host_aggregate_payload(scratch_buffer[:nbytes])
-                if host_agg is not None:
-                    self.rwvg_stats["host_aggregate_frames"] += 1
-                    self.rwvg_stats["host_aggregate_raw_bytes"] += host_agg["raw_size"]
-                    if not self.host_aggregate_detected:
-                        self._emit_console_line(
-                            "[+] Host-compat aggregate stream detected "
-                            f"(players={host_agg['player_count']}, items={host_agg['item_count']})."
-                        )
-                        self.host_aggregate_detected = True
+                for assembled in self.protocol_reassembler.feed(chunk):
+                    self._process_assembled_packet(assembled)
+            except ValueError:
+                self.protocol_invalid_packets += 1
+                self._drop_driver_connection(connection)
+            except socket.timeout:
+                continue
+            except OSError:
+                self._drop_driver_connection(connection)
             except Exception:
                 if not self.is_running:
                     break
+                self.is_running = False
+                raise
 
     def _try_capture_module_log(self, msg: str):
         if not msg:
@@ -649,12 +1070,61 @@ class DMACore:
     def _heartbeat_loop(self):
         while self.is_running:
             try:
-                payload = b"HELO".ljust(32, b"\x00")
-                self.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
-                self.seq += 1
-                time.sleep(1.0)
-            except Exception:
-                pass
+                # PMU keeps no receive IRP; HELO remains a compatibility send and
+                # may eventually hit the TCP send window when the driver is silent.
+                self._send_heartbeat()
+            except (OSError, RuntimeError):
+                self._handle_heartbeat_failure()
+            self._expire_driver_online_if_stale()
+            time.sleep(HEARTBEAT_INTERVAL_SEC)
+
+    def _handle_heartbeat_failure(self):
+        with self.connection_lock:
+            connection = self.connection
+        if connection is not None:
+            self._emit_console_line(
+                "[!] PMU compatibility send failed; closing the TCP connection.",
+                defer_while_input=False,
+            )
+            self._drop_driver_connection(connection)
+            return
+        self._set_driver_connection_state(DriverConnectionState.DISCONNECTED)
+
+    def _set_driver_connection_state(self, state):
+        if not isinstance(state, DriverConnectionState):
+            raise ValueError(f"invalid driver connection state: {state!r}")
+        online = state is DriverConnectionState.ONLINE
+        with self.driver_state_lock:
+            changed = self.driver_connection_state is not state
+            self.driver_connection_state = state
+            self.driver_online = online
+        if changed:
+            if state is DriverConnectionState.ONLINE:
+                message = "[*] Driver is ONLINE."
+            elif state is DriverConnectionState.DISCONNECTED:
+                message = "[*] Driver is OFFLINE."
+            else:
+                message = "[*] Driver state: CONNECTED_WAITING_FRAME."
+            self._emit_console_line(message, defer_while_input=False)
+
+    def _set_driver_online(self, online):
+        state = DriverConnectionState.ONLINE if online else DriverConnectionState.DISCONNECTED
+        self._set_driver_connection_state(state)
+
+    def _mark_driver_packet_received(self):
+        self.last_driver_packet_ts = time.monotonic()
+        self._set_driver_connection_state(DriverConnectionState.ONLINE)
+
+    def _expire_driver_online_if_stale(self):
+        if not self.driver_online or self.last_driver_packet_ts <= 0:
+            return
+        if time.monotonic() - self.last_driver_packet_ts > DRIVER_LIVENESS_TIMEOUT_SEC:
+            self._set_driver_connection_state(DriverConnectionState.CONNECTED_WAITING_FRAME)
+
+    def _send_heartbeat(self):
+        payload = b"HELO".ljust(32, b"\x00")
+        self.send_to_driver(payload)
+        self.seq += 1
 
     def request_bytes(self, payload, size, timeout=3.0):
         with self.lock:
@@ -680,7 +1150,7 @@ class DMACore:
             self.last_data_ts = start_ts
             self.expected_size = size
 
-            self.sock.sendto(payload, (DRIVER_IP, DRIVER_PORT))
+            self.send_to_driver(payload)
 
             requested_timeout = max(float(timeout), 1.0)
             transfer_budget = (size / DEFAULT_EXPECTED_TRANSFER_BPS) + DEFAULT_TRANSFER_GRACE_SEC
@@ -716,3 +1186,13 @@ class DMACore:
                 f"{self.recvd_bytes}/{size} bytes ({percent:.1f}%)."
             )
             return None
+
+    def shutdown(self):
+        self.is_running = False
+        self._set_driver_online(False)
+        with self.connection_lock:
+            connection = self.connection
+            self.connection = None
+        if connection is not None:
+            connection.close()
+        self.listener.close()
