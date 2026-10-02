@@ -37,7 +37,6 @@ RWBASE_DECRYPT_FALLBACK_RETENTION_DAYS = 7
 
 class DriverConnectionState(Enum):
     DISCONNECTED = "disconnected"
-    CONNECTED_WAITING_FRAME = "connected_waiting_frame"
     ONLINE = "online"
 
 rwbase_decrypt_logger = logging.getLogger("rwbase_decrypt")
@@ -97,14 +96,15 @@ class DMACore:
     )
     def __init__(self, session_log=None):
         self.session_log = session_log
-        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.listener.bind((TCP_LISTEN_HOST, TARGET_PORT))
-        self.listener.listen(1)
-        self.listener.settimeout(WAIT_SLICE_SEC)
-        self.connection_lock = threading.Lock()
+        family = socket.AF_INET6 if ":" in UDP_LISTEN_HOST else socket.AF_INET
+        self.sock = socket.socket(family, socket.SOCK_DGRAM)
+        try:
+            self.sock.bind((UDP_LISTEN_HOST, BIND_PORT))
+            self.sock.settimeout(WAIT_SLICE_SEC)
+        except Exception:
+            self.sock.close()
+            raise
         self.send_lock = threading.Lock()
-        self.connection = None
         self.is_running = True
         self.driver_online = False
         self.driver_connection_state = DriverConnectionState.DISCONNECTED
@@ -112,7 +112,6 @@ class DMACore:
         self.driver_state_lock = threading.Lock()
         self.driver_endpoint = None
         self.last_driver_packet_ts = 0.0
-        self.protocol_reassembler = ProtocolStreamReassembler()
         self.protocol_invalid_packets = 0
         self.seq = 0
         self.rwvg_stream_detected = False
@@ -208,10 +207,13 @@ class DMACore:
         self.console_deferred_dropped = 0
         self.console_deferred_limit = 256
 
-        threading.Thread(target=self._receiver_loop, daemon=True).start()
-        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+        self.stop_event = threading.Event()
+        self.threads = [threading.Thread(target=self._receiver_loop, daemon=True),
+                        threading.Thread(target=self._heartbeat_loop, daemon=True)]
         if RWBASE_DECRYPT_LOG_ENABLED:
-            threading.Thread(target=self._decrypt_log_worker, daemon=True).start()
+            self.threads.append(threading.Thread(target=self._decrypt_log_worker, daemon=True))
+        for thread in self.threads:
+            thread.start()
 
     def _emit_console_line(
         self,
@@ -869,47 +871,27 @@ class DMACore:
             return self.driver_endpoint
 
     def send_to_driver(self, payload):
-        with self.connection_lock:
-            connection = self.connection
-        if connection is None:
-            raise RuntimeError("PMU TCP connection is not established")
-        with self.send_lock:
-            connection.sendall(bytes(payload))
-        return len(payload)
+        payload = validate_driver_request(payload)
+        with self.send_lock, self.driver_endpoint_lock:
+            if self.driver_endpoint is None:
+                raise RuntimeError("UDP driver endpoint has not been discovered")
+            sent = self.sock.sendto(payload, self.driver_endpoint)
+        if sent != len(payload):
+            raise OSError("incomplete UDP datagram send")
+        return sent
 
-    def _accept_driver_connection(self):
-        try:
-            connection, endpoint = self.listener.accept()
-        except socket.timeout:
-            return False
-        except OSError:
-            return False
-        connection.settimeout(WAIT_SLICE_SEC)
-        with self.connection_lock:
-            previous = self.connection
-            self.connection = connection
+    def _accept_driver_packet(self, endpoint):
+        # A live peer owns this single-driver session. Never mix senders' data.
         with self.driver_endpoint_lock:
+            now = time.monotonic()
+            if (self.driver_endpoint is not None and endpoint != self.driver_endpoint
+                    and (self.expected_size > 0
+                         or now - self.last_driver_packet_ts <= DRIVER_LIVENESS_TIMEOUT_SEC)):
+                return False
             self.driver_endpoint = endpoint
-        if previous is not None:
-            previous.close()
-        self.protocol_reassembler = ProtocolStreamReassembler()
-        self.last_driver_packet_ts = 0.0
-        self._set_driver_connection_state(DriverConnectionState.CONNECTED_WAITING_FRAME)
-        self._emit_console_line(
-            f"[+] Driver TCP connection accepted: {endpoint[0]}:{endpoint[1]}",
-            defer_while_input=False,
-        )
+            self.last_driver_packet_ts = now
+            self._set_driver_connection_state(DriverConnectionState.ONLINE)
         return True
-
-    def _drop_driver_connection(self, connection):
-        with self.connection_lock:
-            if self.connection is not connection:
-                return
-            self.connection = None
-        with self.driver_endpoint_lock:
-            self.driver_endpoint = None
-        connection.close()
-        self._set_driver_connection_state(DriverConnectionState.DISCONNECTED)
 
     def _process_log_packet(self, payload):
         msg = payload.decode("utf-8", errors="ignore").strip()
@@ -948,9 +930,7 @@ class DMACore:
         if not self._handle_zombie_ack_packet(payload):
             self.rwvg_stats["dropped_data_packets"] += 1
 
-    def _process_assembled_packet(self, assembled):
-        pkt_type, payload, _ = assembled
-        self._mark_driver_packet_received()
+    def _process_packet(self, pkt_type, payload):
         if pkt_type == PACKET_TYPE_LOG:
             try:
                 self._process_log_packet(payload)
@@ -973,31 +953,30 @@ class DMACore:
             self.host_aggregate_detected = True
 
     def _receiver_loop(self):
-        self._emit_console_line("[*] TCP receiver started", defer_while_input=False)
+        self._emit_console_line(
+            f"[*] Plaintext UDP receiver started on {self.sock.getsockname()}",
+            defer_while_input=False,
+        )
         while self.is_running:
-            with self.connection_lock:
-                connection = self.connection
-            if connection is None:
-                self._accept_driver_connection()
-                continue
             try:
-                chunk = connection.recv(64 * 1024)
-                if not chunk:
-                    self._drop_driver_connection(connection)
-                    continue
-                for assembled in self.protocol_reassembler.feed(chunk):
-                    self._process_assembled_packet(assembled)
+                # Large enough to detect/reject every oversized UDP datagram.
+                datagram, endpoint = self.sock.recvfrom(65536)
+                pkt_type, payload = parse_packet_header(datagram)
+                if self._accept_driver_packet(endpoint):
+                    self._process_packet(pkt_type, payload)
             except ValueError:
                 self.protocol_invalid_packets += 1
-                self._drop_driver_connection(connection)
             except socket.timeout:
                 continue
             except OSError:
-                self._drop_driver_connection(connection)
+                if not self.is_running:
+                    break
+                self._handle_heartbeat_failure()
             except Exception:
                 if not self.is_running:
                     break
                 self.is_running = False
+                self.stop_event.set()
                 raise
 
     def _try_capture_module_log(self, msg: str):
@@ -1069,26 +1048,17 @@ class DMACore:
 
     def _heartbeat_loop(self):
         while self.is_running:
+            self._expire_driver_online_if_stale()
             try:
-                # PMU keeps no receive IRP; HELO remains a compatibility send and
-                # may eventually hit the TCP send window when the driver is silent.
-                self._send_heartbeat()
+                if self.get_driver_endpoint() is not None:
+                    self._send_heartbeat()
             except (OSError, RuntimeError):
                 self._handle_heartbeat_failure()
-            self._expire_driver_online_if_stale()
-            time.sleep(HEARTBEAT_INTERVAL_SEC)
+            self.stop_event.wait(HEARTBEAT_INTERVAL_SEC)
 
     def _handle_heartbeat_failure(self):
-        with self.connection_lock:
-            connection = self.connection
-        if connection is not None:
-            self._emit_console_line(
-                "[!] PMU compatibility send failed; closing the TCP connection.",
-                defer_while_input=False,
-            )
-            self._drop_driver_connection(connection)
-            return
-        self._set_driver_connection_state(DriverConnectionState.DISCONNECTED)
+        # UDP send errors do not close the shared receive socket or prove liveness.
+        self._expire_driver_online_if_stale()
 
     def _set_driver_connection_state(self, state):
         if not isinstance(state, DriverConnectionState):
@@ -1103,27 +1073,22 @@ class DMACore:
                 message = "[*] Driver is ONLINE."
             elif state is DriverConnectionState.DISCONNECTED:
                 message = "[*] Driver is OFFLINE."
-            else:
-                message = "[*] Driver state: CONNECTED_WAITING_FRAME."
             self._emit_console_line(message, defer_while_input=False)
 
     def _set_driver_online(self, online):
         state = DriverConnectionState.ONLINE if online else DriverConnectionState.DISCONNECTED
         self._set_driver_connection_state(state)
 
-    def _mark_driver_packet_received(self):
-        self.last_driver_packet_ts = time.monotonic()
-        self._set_driver_connection_state(DriverConnectionState.ONLINE)
-
     def _expire_driver_online_if_stale(self):
-        if not self.driver_online or self.last_driver_packet_ts <= 0:
-            return
-        if time.monotonic() - self.last_driver_packet_ts > DRIVER_LIVENESS_TIMEOUT_SEC:
-            self._set_driver_connection_state(DriverConnectionState.CONNECTED_WAITING_FRAME)
+        with self.driver_endpoint_lock:
+            if (self.driver_endpoint is not None
+                    and self.expected_size == 0
+                    and time.monotonic() - self.last_driver_packet_ts > DRIVER_LIVENESS_TIMEOUT_SEC):
+                self.driver_endpoint = None
+                self._set_driver_connection_state(DriverConnectionState.DISCONNECTED)
 
     def _send_heartbeat(self):
-        payload = b"HELO".ljust(32, b"\x00")
-        self.send_to_driver(payload)
+        self.send_to_driver(HEARTBEAT)
         self.seq += 1
 
     def request_bytes(self, payload, size, timeout=3.0):
@@ -1150,7 +1115,11 @@ class DMACore:
             self.last_data_ts = start_ts
             self.expected_size = size
 
-            self.send_to_driver(payload)
+            try:
+                self.send_to_driver(payload)
+            except Exception:
+                self.expected_size = 0
+                raise
 
             requested_timeout = max(float(timeout), 1.0)
             transfer_budget = (size / DEFAULT_EXPECTED_TRANSFER_BPS) + DEFAULT_TRANSFER_GRACE_SEC
@@ -1189,10 +1158,11 @@ class DMACore:
 
     def shutdown(self):
         self.is_running = False
+        self.stop_event.set()
+        self.sock.close()
+        for thread in self.threads:
+            if thread is not threading.current_thread():
+                thread.join(timeout=2.0)
+        with self.driver_endpoint_lock:
+            self.driver_endpoint = None
         self._set_driver_online(False)
-        with self.connection_lock:
-            connection = self.connection
-            self.connection = None
-        if connection is not None:
-            connection.close()
-        self.listener.close()

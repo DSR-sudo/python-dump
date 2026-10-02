@@ -17,10 +17,10 @@ def main():
     core = DMACore(session_log=session_log) #
     api = DMAApi(core) #
 
-    log("Waiting for DMA Driver connection...")
+    log("Waiting for a plaintext UDP driver packet...")
     while not core.driver_online: 
         time.sleep(0.1)
-    log("Driver Connected!", "SUCCESS")
+    log("UDP driver online!", "SUCCESS")
 
     # 2. 初始化命令处理器
     handler = CommandHandler(api)
