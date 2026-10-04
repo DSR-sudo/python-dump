@@ -5,6 +5,7 @@ import queue
 import socket
 import subprocess
 import unittest
+import io
 from unittest.mock import patch
 
 import dma_core
@@ -58,6 +59,24 @@ class DriverTransportStateTest(unittest.TestCase):
         self.assertEqual(self.peer.recv(65536), HEARTBEAT)
         with self.assertRaises(ValueError):
             self.core.send_to_driver(b'arbitrary data')
+
+    def test_main_status_deduplicated_and_preserves_input(self):
+        self.core.begin_console_input()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.send_packet(payload=b'[PMU][STATUS] scan: waiting for game')
+            first_ts = self.core.main_status_ts
+            self.send_packet(payload=b'[PMU][STATUS] scan: waiting for game')
+            self.assertGreaterEqual(self.core.main_status_ts, first_ts)
+            self.assertEqual(out.getvalue(), '')
+            self.assertEqual(len(self.core.console_deferred_lines), 2)
+            self.core.end_console_input()
+        self.assertEqual(out.getvalue().count('scan: waiting for game'), 1)
+        self.assertIn('scan: waiting for game', self.core.format_status())
+        self.assertIn('frames=0', self.core.format_status())
+        self.core.last_driver_packet_ts -= DRIVER_LIVENESS_TIMEOUT_SEC + 1
+        self.core._expire_driver_online_if_stale()
+        self.assertIn('offline', self.core.format_status())
 
     def test_invalid_packet_does_not_block_next_datagram(self):
         for packet in (b'', b'\xffjunk', b'\x1a\x00\x00\x00old TCP'):
@@ -115,7 +134,7 @@ class DriverTransportStateTest(unittest.TestCase):
 
     @unittest.skipUnless(os.getenv('QEMU_PROXY_MAIN'), 'requires compiled C Business main')
     def test_c_business_main_duplex(self):
-        with subprocess.Popen([os.environ['QEMU_PROXY_MAIN'], self.address[0],
+        with subprocess.Popen([os.environ['QEMU_PROXY_MAIN'], 'log', self.address[0],
                                str(self.address[1]), 'C plaintext 中文', '3000'],
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as child:
             try:

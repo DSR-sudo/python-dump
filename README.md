@@ -8,6 +8,19 @@ DMA 通道仅使用明文 UDP。已删除 TCP 监听、流长度前缀、压缩�
 python3 main.py
 ```
 
+控制台无需等待远端上线即可输入命令。`status` 显示远端地址、最近包/状态时间及
+快照计数；`watch` 每两秒刷新，Ctrl+C 返回命令行。等待输入时后台消息暂存，回车
+后显示，避免破坏正在输入的命令；EOF/Ctrl+C（非 watch 内）正常退出。
+
+新版 main 使用同一 UDP 源端口每秒发送 LOG `[PMU][STATUS] ...`，启动等待、GPUUUID
+和扫描错误也可见；重复状态只更新在线时间，不重复打印/写日志。心跳仅代表 main
+进程存活，不代表扫描成功，请同时查看最近快照时间。旧版 main 不发送状态时，
+控制台明确显示未收到状态。main 是扫描发送端，不实现控制台的远程内存读写命令。
+
+在 OpenWrt/iStoreOS 上仅接收 UDP、无需交互控制台时，使用
+`python3 -u main.py --receiver-only`。该模式收到 SIGTERM 后关闭 UDP socket；
+`deploy/udp-receiver.init` 可安装为 procd 服务，以便开机自启并在退出后重启。
+
 默认监听 `0.0.0.0:53786`，可通过 `DMA_UDP_LISTEN_HOST`、`DMA_BIND_PORT` 配置。
 未设置 `DMA_BIND_PORT` 时兼容 `DMA_TARGET_PORT`，旧的 `DMA_TCP_LISTEN_HOST` 不再使用。
 IPv6 可设置 `DMA_UDP_LISTEN_HOST=::1`。先启动 Python，再启动 C 对端：
@@ -15,7 +28,7 @@ IPv6 可设置 `DMA_UDP_LISTEN_HOST=::1`。先启动 Python，再启动 C 对端
 ```sh
 cd ../qemu-proxy-client
 make -j4
-./build/x64/main 127.0.0.1 53786 'DRIVER_ONLINE' 3000
+./build/x64/main log 127.0.0.1 53786 'DRIVER_ONLINE' 3000
 ```
 
 C 示例创建一个线程发送 LOG，然后最多等待 3 秒接收一个命令或心跳并退出。

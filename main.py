@@ -1,5 +1,8 @@
 # main.py
 import atexit
+import signal
+import sys
+import threading
 import time
 from pathlib import Path
 from dma_core import DMACore
@@ -15,12 +18,20 @@ def main():
     
     # 1. 初始化 DMA 通信
     core = DMACore(session_log=session_log) #
+    if len(sys.argv) == 2 and sys.argv[1] == "--receiver-only":
+        stopped = threading.Event()
+        signal.signal(signal.SIGTERM, lambda _signum, _frame: stopped.set())
+        signal.signal(signal.SIGINT, lambda _signum, _frame: stopped.set())
+        try:
+            log("UDP receiver ready (Ctrl-C or SIGTERM to stop)")
+            stopped.wait()
+        finally:
+            core.shutdown()
+        return
     api = DMAApi(core) #
 
-    log("Waiting for a plaintext UDP driver packet...")
-    while not core.driver_online: 
-        time.sleep(0.1)
-    log("UDP driver online!", "SUCCESS")
+    log("Console ready. status: current state; watch: live state (Ctrl-C returns).")
+    log("Background messages are deferred while entering a command; Enter displays them.")
 
     # 2. 初始化命令处理器
     handler = CommandHandler(api)
@@ -40,6 +51,16 @@ def main():
 
             if cmd == "help":
                 print_detailed_help()
+                print("status: peer/main/snapshot state; watch: refresh state until Ctrl-C")
+            elif cmd == "status":
+                print(core.format_status())
+            elif cmd == "watch":
+                try:
+                    while True:
+                        print(core.format_status(), flush=True)
+                        time.sleep(2)
+                except KeyboardInterrupt:
+                    pass
             elif cmd == "attach":
                 handler.handle_attach(args)
             elif cmd == "pe_info":
@@ -106,7 +127,7 @@ def main():
             else:
                 log("Unknown command. Type 'help'.", "WARN")
 
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             break
         except Exception as e:
             log(f"Error: {e}", "ERROR")

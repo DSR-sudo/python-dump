@@ -112,6 +112,9 @@ class DMACore:
         self.driver_state_lock = threading.Lock()
         self.driver_endpoint = None
         self.last_driver_packet_ts = 0.0
+        self.main_status_lock = threading.Lock()
+        self.main_status = None
+        self.main_status_ts = 0.0
         self.protocol_invalid_packets = 0
         self.seq = 0
         self.rwvg_stream_detected = False
@@ -895,6 +898,13 @@ class DMACore:
 
     def _process_log_packet(self, payload):
         msg = payload.decode("utf-8", errors="ignore").strip()
+        if msg.startswith("[PMU][STATUS] "):
+            with self.main_status_lock:
+                changed = msg != self.main_status
+                self.main_status = msg
+                self.main_status_ts = time.monotonic()
+            if not changed:
+                return
         self._write_received_log(msg)
         self._try_capture_module_log(msg)
         consumed_region_log = self._try_capture_region_log(msg)
@@ -1073,7 +1083,25 @@ class DMACore:
                 message = "[*] Driver is ONLINE."
             elif state is DriverConnectionState.DISCONNECTED:
                 message = "[*] Driver is OFFLINE."
-            self._emit_console_line(message, defer_while_input=False)
+            self._emit_console_line(message)
+
+    def format_status(self):
+        now = time.monotonic()
+        with self.driver_endpoint_lock:
+            endpoint = self.driver_endpoint
+            age = now - self.last_driver_packet_ts if self.last_driver_packet_ts else None
+        with self.main_status_lock:
+            state = self.main_status or "No main status received (older senders send snapshots only)."
+            state_age = now - self.main_status_ts if self.main_status_ts else None
+        with self.actor_scan_lock:
+            frames = self.actor_scan_frames
+            snapshot_age = now - self.actor_scan_last_ts if self.actor_scan_last_ts else None
+            complete = self.actor_scan_complete
+        def elapsed(value):
+            return "never" if value is None else f"{value:.1f}s ago"
+        return (f"Peer: {endpoint or 'offline'} | last packet: {elapsed(age)}\n"
+                f"Main: {state} | last status: {elapsed(state_age)}\n"
+                f"Snapshots: frames={frames} complete={complete} last={elapsed(snapshot_age)}")
 
     def _set_driver_online(self, online):
         state = DriverConnectionState.ONLINE if online else DriverConnectionState.DISCONNECTED

@@ -11,6 +11,7 @@ suite = loader.loadTestsFromNames([
     "test_type6_view",
     "test_dma_protocol",
     "test_dma_transport_state",
+    "test_receiver_only",
 ])
 runner = unittest.TextTestRunner(verbosity=2)
 result = runner.run(suite)
