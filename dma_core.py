@@ -10,7 +10,7 @@ import re
 import math
 import queue
 from enum import Enum
-from actor_snapshot_radar import build_radar_snapshot
+from actor_snapshot_radar import build_radar_snapshot, ITEM_KINDS
 from dma_protocol import *
 from item_catalog import describe_item
 
@@ -22,6 +22,8 @@ HEARTBEAT_INTERVAL_SEC = 1.0
 DRIVER_LIVENESS_TIMEOUT_SEC = 3.0
 VERBOSE_EXPECTING_LOG = os.getenv("DMA_VERBOSE_EXPECTING", "0") == "1"
 DEFAULT_PLAYER_TTL_SEC = float(os.getenv("DMA_WEBRADAR_PLAYER_TTL", "1.5"))
+# v9：players-only 帧回放上一帧完整世界物体（Item/Container/DeadBox/Box）的最长时长。
+DEFAULT_ACTOR_ITEMS_TTL_MS = float(os.getenv("DMA_ACTOR_ITEMS_TTL_MS", "6000"))
 RWBASE_DECRYPT_LOG_ENABLED = os.getenv("RWBASE_DECRYPT_LOG", "1").strip().lower() not in ("0", "false", "off", "no")
 RWBASE_DECRYPT_LOG_PREFIX = "[CoordDecryptDebug][B64] "
 COORD_RAW_LOG_PREFIX = "[COORDRAW][SEND] "
@@ -204,6 +206,14 @@ class DMACore:
         self.actor_scan_duplicate_fragments = 0
         self.actor_scan_invalid_fragments = 0
         self.actor_scan_last_status = "awaiting_snapshot"
+        # v9 世界物体缓存：FULL 帧（完整重组完成）里的 Item/Container/DeadBox/Box 记录。
+        # players-only 帧（无 RWVG_ACTOR_SNAPSHOT_FLAG_FULL）在 TTL 内回放这份缓存，
+        # 使低频物资与高频玩家可以分开上报。/api/data 的 JSON 结构不因缓存改变。
+        # 与其余 actor_scan_* 状态一样由 actor_scan_lock 保护。
+        self.actor_scan_flags = 0                 # 当前快照的 v9 flags
+        self.actor_scan_world_items = []          # 最近一帧完整 FULL 快照的世界物体记录
+        self.actor_scan_world_items_ts = 0.0      # 缓存对应的 time.monotonic()
+        self.actor_scan_world_items_ttl_ms = float(DEFAULT_ACTOR_ITEMS_TTL_MS)
         self.console_lock = threading.Lock()
         self.console_input_active = False
         self.console_deferred_lines = []
@@ -368,10 +378,14 @@ class DMACore:
                 self.actor_scan_duplicate_fragments += 1
                 self.actor_scan_last_status = "duplicate_fragment"
                 return 0
+            self.actor_scan_flags = int(parsed.get("flags", 0) or 0)
             records = parsed.get("records") or []
             self.actor_scan_received_fragments.add(fragment_index)
             self._merge_actor_snapshot_records(records, now_ts)
             self.actor_scan_complete = len(self.actor_scan_received_fragments) == self.actor_scan_fragment_count
+            if self.actor_scan_complete:
+                # 只有完整重组完成的快照才允许刷新世界物体缓存；不完整帧不动缓存。
+                self._refresh_actor_world_items_locked(now_ts)
             self.actor_scan_last_status = "complete" if self.actor_scan_complete else "partial"
         self._record_actor_snapshot_frame(len(records), now_ts)
         return len(records)
@@ -381,6 +395,7 @@ class DMACore:
 
     def _start_actor_snapshot(self, parsed: dict, now_ts: float):
         self.actor_scan_version = int(parsed["version"])
+        self.actor_scan_flags = int(parsed.get("flags", 0) or 0)
         self.actor_scan_local_view = dict(parsed.get("local_view") or {})
         self.actor_scan_snapshot_id = int(parsed["snapshot_id"])
         self.actor_scan_fragment_count = int(parsed["fragment_count"])
@@ -420,6 +435,28 @@ class DMACore:
             stamped["_ts"] = now_ts
             self.actor_scan_entities[record_id] = stamped
 
+    def _refresh_actor_world_items_locked(self, now_ts: float):
+        """完整快照重组完成后刷新世界物体缓存（仅 FULL 帧；players-only 帧保留旧缓存）。"""
+        if not self.actor_scan_flags & RWVG_ACTOR_SNAPSHOT_FLAG_FULL:
+            return
+        self.actor_scan_world_items = [
+            dict(self.actor_scan_entities[record_id])
+            for record_id in self.actor_scan_order
+            if str(self.actor_scan_entities[record_id].get("kind_name") or "") in ITEM_KINDS
+        ]
+        self.actor_scan_world_items_ts = now_ts
+
+    def _fresh_actor_world_items_locked(self, now_ts: float) -> list:
+        """返回 TTL 内仍可回放的世界物体缓存；过期则丢弃（客户端停发全量后物资自然消失）。"""
+        if not self.actor_scan_world_items or self.actor_scan_world_items_ts <= 0.0:
+            return []
+        age_ms = (now_ts - self.actor_scan_world_items_ts) * 1000.0
+        if age_ms > self.actor_scan_world_items_ttl_ms:
+            self.actor_scan_world_items = []
+            self.actor_scan_world_items_ts = 0.0
+            return []
+        return self.actor_scan_world_items
+
     def _record_actor_snapshot_frame(self, record_count: int, now_ts: float):
         self.rwvg_stats["actor_scan_frames"] += 1
         self.rwvg_stats["actor_scan_entities"] += record_count
@@ -428,19 +465,39 @@ class DMACore:
         self.actor_scan_last_ts = now_ts
 
     def get_actor_scan_snapshot(self):
+        now_ts = time.monotonic()
         with self.actor_scan_lock:
             order = list(self.actor_scan_order)
             entities = dict(self.actor_scan_entities)
             local_view = dict(self.actor_scan_local_view)
             version = int(self.actor_scan_version)
+            flags = int(self.actor_scan_flags)
+            has_full_world = bool(flags & RWVG_ACTOR_SNAPSHOT_FLAG_FULL)
+            world_items = self._fresh_actor_world_items_locked(now_ts)
+            world_items_age_ms = (
+                max(0, int((now_ts - self.actor_scan_world_items_ts) * 1000.0))
+                if self.actor_scan_world_items_ts > 0.0 else -1
+            )
+            # FULL 帧自带完整世界物体，不再叠加缓存；players-only 帧在记录层拼上缓存，
+            # 这样 build_radar_snapshot 与 /api/data 的输出结构保持不变。
+            actors = [dict(entities[entity]) for entity in order if entity in entities]
+            merged_world_items = 0
+            if not has_full_world and world_items:
+                actors.extend(dict(record) for record in world_items)
+                merged_world_items = len(world_items)
         return {
-            "actors": [dict(entities[entity]) for entity in order if entity in entities],
-            "count": len(entities),
+            "actors": actors,
+            "count": len(actors),
             "frames": int(self.actor_scan_frames),
             "last_ts": float(self.actor_scan_last_ts or 0.0),
             "last_count": int(self.actor_scan_last_count),
             "has_data": self.actor_scan_snapshot_id is not None or bool(entities),
             "version": version,
+            "flags": flags,
+            "has_full_world": has_full_world,
+            "world_items_cached": len(world_items),
+            "world_items_merged": merged_world_items,
+            "world_items_age_ms": world_items_age_ms,
             "local_view": local_view,
             "snapshot_id": self.actor_scan_snapshot_id,
             "fragment_count": int(self.actor_scan_fragment_count),
@@ -452,6 +509,37 @@ class DMACore:
             "duplicate_fragments": int(self.actor_scan_duplicate_fragments),
             "invalid_fragments": int(self.actor_scan_invalid_fragments),
         }
+
+    def get_radar_data_version(self):
+        """60Hz 前端轮询用的廉价数据版本号（O(1)，不做任何序列化）。
+
+        /api/data 的负载只取决于下面这些计数器和时间戳：版本相同即可复用上一次
+        序列化好的 JSON；只要有一项变化就必须重新构建。
+        返回 None 表示无法廉价判定（旧 RWVG 玩家/物资回退路径，其负载随时钟与逐条
+        TTL 变化），调用方必须每次都重新构建。
+        """
+        now_ts = time.monotonic()
+        with self.actor_scan_lock:
+            # 与 get_actor_scan_snapshot 一致：过期的世界物体缓存会改变负载，先按 TTL 丢弃。
+            world_items = self._fresh_actor_world_items_locked(now_ts)
+            if self.actor_scan_snapshot_id is None and not self.actor_scan_entities:
+                return None
+            version = (
+                int(self.actor_scan_snapshot_id or 0),
+                int(self.actor_scan_frames),
+                len(self.actor_scan_entities),
+                len(world_items),
+                round(float(self.actor_scan_world_items_ts), 3),
+                int(self.actor_scan_flags),
+                bool(self.actor_scan_complete),
+                str(self.actor_scan_last_status),
+            )
+        with self.radar_lock:
+            if self.radar_players or self.radar_items:
+                return None
+            utils_ts = float(self.radar_latest_utils_ts or 0.0)
+        # utils 影响 local_player 与 meta.utils_present，因此其时间戳也是负载的一部分。
+        return (version, round(utils_ts, 3))
 
     def _start_current_rwvg_snapshot(self, parsed: dict, now_ts: float):
         self._append_send_thread_log({
@@ -544,6 +632,8 @@ class DMACore:
         return yaw_deg
 
     def get_radar_snapshot(self):
+        # v9：get_actor_scan_snapshot 已在记录层把 TTL 内的世界物体缓存并入 actors，
+        # 因此这里与 /api/data 的输出契约完全不变。
         actor_snapshot = self.get_actor_scan_snapshot()
         if actor_snapshot["has_data"]:
             return build_radar_snapshot(

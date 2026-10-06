@@ -16,6 +16,8 @@ WEAPON_FIELD = 1 << 7
 HERO_FIELD = 1 << 8
 ITEM_ID_FIELD = 1 << 9
 ITEM_QUALITY_FIELD = 1 << 10
+DIRECTION_FIELD = 1 << 11
+PASSWORD_FIELD = 1 << 12
 VIEW_LOCAL_PAWN_FIELD = 1 << 0
 VIEW_CONTROL_ROTATION_YAW_FIELD = 1 << 1
 ITEM_KINDS = frozenset(("Item", "Container", "DeadBox", "Box"))
@@ -135,6 +137,7 @@ def _item(
     raw_quality = record.get("item_quality", 0) if has_item_quality else 0
     item_quality = effective_item_quality(item_id, raw_quality)
     quality_label, quality_color = quality_display(item_quality)
+    has_password = bool(valid_fields & PASSWORD_FIELD)
     return {
         "id": entity_id,
         "type": "deadbody" if kind == "DeadBox" else "item",
@@ -145,6 +148,8 @@ def _item(
         "item_quality_label": quality_label,
         "item_quality_color": quality_color,
         "dead_box_name": kind if kind == "DeadBox" else "",
+        "password": int(record.get("password", 0) or 0),
+        "has_password": has_password,
         "position": position,
         "source_kind": kind,
     }
@@ -163,6 +168,8 @@ def _entity(
     has_max_health = not has_valid_fields or bool(valid_fields & MAX_HEALTH_FIELD)
     has_weapon = not has_valid_fields or bool(valid_fields & WEAPON_FIELD)
     has_hero = not has_valid_fields or bool(valid_fields & HERO_FIELD)
+    has_direction = bool(valid_fields & DIRECTION_FIELD)
+    direction = float(record.get("direction", 0.0) or 0.0) if has_direction else None
     return {
         "id": entity_id,
         "name": kind,
@@ -170,8 +177,8 @@ def _entity(
         "team_id": int(record.get("team_id", 0) or 0) if has_team else 0,
         "has_team": has_team,
         "position": position,
-        "orientation": None,
-        "has_orientation": False,
+        "orientation": direction,
+        "has_orientation": has_direction,
         "health": float(record.get("health", 0.0) or 0.0) if has_health else None,
         "max_health": float(record.get("max_health", 0.0) or 0.0) if has_max_health else None,
         "has_health": has_health,

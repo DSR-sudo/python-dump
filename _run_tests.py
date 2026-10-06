@@ -9,6 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 loader = unittest.TestLoader()
 suite = loader.loadTestsFromNames([
     "test_type6_view",
+    "test_type6_world_cache",
+    "test_webpage_clean_mode",
+    "test_webpage_pull_rate",
+    "test_radar_poll_cache",
     "test_dma_protocol",
     "test_dma_transport_state",
     "test_receiver_only",

@@ -29,17 +29,23 @@ RWVG_ACTOR_KIND_NAMES = {
     RWVG_ACTOR_KIND_AI: "AI",
 }
 
-RWVG_ACTOR_SNAPSHOT_VERSION = 7
+RWVG_ACTOR_SNAPSHOT_VERSION = 9
 RWVG_ACTOR_SNAPSHOT_PREFIX_FMT = "<HH"
 RWVG_ACTOR_SNAPSHOT_PREFIX_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_PREFIX_FMT)
-RWVG_ACTOR_SNAPSHOT_HEADER_FMT = "<HHIIIIQIIIIi"
+# v9：头部末尾追加 u32 flags（原先字段偏移不变），头部 48 -> 52 字节。
+RWVG_ACTOR_SNAPSHOT_HEADER_FMT = "<HHIIIIQIIIIiI"
 RWVG_ACTOR_SNAPSHOT_HEADER_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_HEADER_FMT)
-RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<BQQQIIIBQiIIHQQIIIIi"
+RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<BQQQIIIBQiIIHQQIIIIiIi"
 RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT)
 RWVG_ACTOR_SNAPSHOT_VIEW_HAS_LOCAL_PAWN = 1 << 0
 RWVG_ACTOR_SNAPSHOT_VIEW_HAS_CONTROL_ROTATION_YAW = 1 << 1
+# 置位表示这一帧携带完整世界物体集合（Item/Container/DeadBox/Box）；
+# 未置位表示这一帧只有角色（Player/Minion/Boss/AI），世界物体沿用上一帧。
+RWVG_ACTOR_SNAPSHOT_FLAG_FULL = 1 << 0
 RWVG_ACTOR_SNAPSHOT_HAS_ITEM_ID = 1 << 9
 RWVG_ACTOR_SNAPSHOT_HAS_ITEM_QUALITY = 1 << 10
+RWVG_ACTOR_SNAPSHOT_HAS_DIRECTION = 1 << 11
+RWVG_ACTOR_SNAPSHOT_HAS_PASSWORD = 1 << 12
 
 
 def _float_from_bits(bits: int) -> float:
@@ -58,7 +64,8 @@ def _parse_record(payload: bytes, offset: int, record_id: int):
     (kind, mesh, root_component, player_state,
      pos_x, pos_y, pos_z, position_source, last_db_position_tsc, team_id,
      health_bits, max_health_bits, weapon_id, hero_id, item_id, item_quality,
-     valid_fields, attempts, failures, first_failure) = values
+     valid_fields, attempts, failures, first_failure,
+     direction_bits, password) = values
     record = {
         "record_id": int(record_id), "kind": int(kind), "kind_name": _kind_name(kind),
         "mesh": int(mesh),
@@ -78,6 +85,9 @@ def _parse_record(payload: bytes, offset: int, record_id: int):
         "item_id_hex": f"0x{item_id:X}",
         "item_quality": int(item_quality),
         "item_name": item_name(item_id) if valid_fields & RWVG_ACTOR_SNAPSHOT_HAS_ITEM_ID else "",
+        "direction_bits": int(direction_bits),
+        "direction": _float_from_bits(direction_bits),
+        "password": int(password),
         "valid_fields": int(valid_fields),
         "diagnostics": {"attempts": int(attempts), "failures": int(failures), "first_failure": int(first_failure)},
     }
@@ -101,7 +111,7 @@ def _parse_snapshot(payload: bytes, record_count: int):
         return None
     (ignored_count, version, snapshot_id, fragment_index, fragment_count, total_record_count,
      local_pawn, yaw_bits, view_fields, attempts, failures,
-     first_failure) = struct.unpack_from(RWVG_ACTOR_SNAPSHOT_HEADER_FMT, payload, 0)
+     first_failure, flags) = struct.unpack_from(RWVG_ACTOR_SNAPSHOT_HEADER_FMT, payload, 0)
     if ignored_count != record_count or fragment_count == 0 or fragment_index >= fragment_count:
         return None
     if total_record_count == 0 and (record_count != 0 or fragment_count != 1):
@@ -116,6 +126,8 @@ def _parse_snapshot(payload: bytes, record_count: int):
         "records": records, "record_count": int(record_count), "version": int(version),
         "snapshot_id": int(snapshot_id), "fragment_index": int(fragment_index),
         "fragment_count": int(fragment_count), "total_record_count": int(total_record_count),
+        "flags": int(flags),
+        "has_full_world": bool(flags & RWVG_ACTOR_SNAPSHOT_FLAG_FULL),
         "local_view": {
             "local_pawn": int(local_pawn), "local_pawn_hex": f"0x{local_pawn:X}",
             "yaw_bits": int(yaw_bits), "yaw": yaw if math.isfinite(yaw) else None,

@@ -30,8 +30,12 @@
         #auth-submit { padding: 6px 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
         #auth-error { color: red; font-size: 12px; margin-top: 5px; display: none; }
         #auth-container.hidden { display: none; }
-        #resource-toggle { position: fixed; right: 16px; bottom: 16px; z-index: 200; min-width: 52px; min-height: 36px; padding: 8px 10px; background-color: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; }
+        #bottom-controls { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; gap: 8px; }
+        #resource-toggle, #clean-toggle { min-width: 52px; min-height: 36px; padding: 8px 10px; background-color: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
         #resource-toggle.active { background-color: #4CAF50; border-color: #6fcf73; }
+        #clean-toggle.active { background-color: #2196F3; border-color: #64b5f6; }
+        #resource-toggle:disabled { opacity: 0.45; cursor: default; }
+        #quality-filter.disabled { opacity: 0.45; pointer-events: none; }
         #quality-filter { position: fixed; top: 80px; right: 12px; z-index: 210; display: grid; gap: 5px; min-width: 104px; padding: 8px; background: rgba(35, 35, 35, 0.94); border: 1px solid #555; border-radius: 4px; font-size: 11px; }
         #quality-filter-title { color: #bbb; font-weight: bold; margin-bottom: 2px; }
         .quality-option { display: flex; align-items: center; gap: 5px; cursor: pointer; }
@@ -68,7 +72,10 @@
         <label class="quality-option"><input type="checkbox" data-quality="5" checked><span class="quality-swatch" style="background:#ffff00"></span>Gold</label>
         <label class="quality-option"><input type="checkbox" data-quality="6" checked><span class="quality-swatch" style="background:#ff3030"></span>Red</label>
     </div>
-    <button id="resource-toggle" class="active" type="button" aria-pressed="true">资源</button>
+    <div id="bottom-controls">
+        <button id="resource-toggle" class="active" type="button" aria-pressed="true">资源</button>
+        <button id="clean-toggle" type="button" aria-pressed="false" title="只显示玩家，隐藏物资与AI">纯净模式</button>
+    </div>
     <script>
     const mapDimensions = {
         "db.png":  { width: 1244, height: 956 },
@@ -169,10 +176,12 @@
         return text.replace(/\(\d+\)$/, '');
     }
 
-    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1, resourcesVisible = true;
+    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1, resourcesVisible = true, resourcesVisibleBeforeClean = true, cleanMode = false;
     var entitiesToRender = [];
     var itemsToRender = [];
     const selectedItemQualities = new Set([0, 1, 2, 3, 4, 5, 6]);
+    const DATA_POLL_INTERVAL_MS = 16;      // 60Hz 拉取：约 16.7ms 一帧
+    const DATA_REFRESH_FALLBACK_MS = 2000; // 超过该时长没有新数据就强制重建一次，避免一直吃缓存
     const mapContainer = document.getElementById('map-container'), map = document.getElementById('map');
 
     function applyMapTransform() { map.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`; }
@@ -270,20 +279,34 @@
 
     mapContainer.addEventListener('touchend', () => { isDragging = false; touchStartDistance = 0; });
     var firstData = true;
+    // 定时轮询：带上已渲染数据的版本 token，内容未变化时服务端回 204，
+    // 省掉每次数百 KB 的传输与解析；长期无变化时兜底请求一次强制重建。
+    var dataToken = null;
+    var dataChangedAt = Date.now();
 
     async function updateGameData(forceUpdate = false) {
         try {
             const authInput = document.getElementById('auth-input'), password = authInput.value.trim();
             const authContainer = document.getElementById('auth-container'), authError = document.getElementById('auth-error');
             if (!password) { authContainer.classList.remove('hidden'); return; }
-            const response = await fetch('/api/data', { headers: { 'X-Auth-Token': password } });
+            const headers = { 'X-Auth-Token': password };
+            if (!forceUpdate) {
+                if (Date.now() - dataChangedAt > DATA_REFRESH_FALLBACK_MS) headers['X-Data-No-Cache'] = '1';
+                else if (dataToken) headers['X-Data-Token'] = dataToken;
+            }
+            const response = await fetch('/api/data', { headers });
             if (response.status === 401) { authContainer.classList.remove('hidden'); authError.style.display = 'block'; localStorage.removeItem('authToken'); return; }
+            if (response.status === 204) return;
             localStorage.setItem('authToken', password);
             authError.style.display = 'none';
             authContainer.classList.add('hidden');
             if (firstData && !forceUpdate) { forceUpdate = true; firstData = false; }
             forceUpdate = true;
+            const token = response.headers.get('X-Data-Token');
             const data = await response.json();
+            // 收到完整负载即视为已与服务端同步（无论内容是否变化），否则兜底强制重建会每轮重触发。
+            dataChangedAt = Date.now();
+            if (token !== dataToken) dataToken = token;
             entitiesToRender = [...data.entities];
             itemsToRender = Array.isArray(data.items) ? [...data.items] : [];
             localPlayer = data.local_player;
@@ -298,12 +321,13 @@
             if (isFollowing) recenterView();
             map.innerHTML = '';
             entitiesToRender.forEach(entityData => {
+                const entityType = entityData.type || 'player';
+                if (cleanMode && entityType === 'ai') return;
                 const { position: map2DPos, rotation: correctedOrientation } = getTransformedData(entityData, currentMap);
                 const container = document.createElement('div');
                 container.className = 'entity-container';
                 const body = document.createElement('div');
                 body.className = 'entity-body';
-                const entityType = entityData.type || 'player';
                 const isAi = entityType === 'ai';
                 const isTeammate = !isAi && entityData.team_id === localPlayer?.team_id;
                 const isDead = entityData.has_health === true && Number(entityData.health) <= 0;
@@ -374,7 +398,7 @@
         const info = document.createElement('div');
         info.className = 'entity-info item-info';
         info.style.color = itemData.item_quality_color || '#ffeb3b';
-        info.textContent = itemLabel;
+        info.textContent = itemData.has_password ? `${itemLabel} 密码 ${itemData.password}` : itemLabel;
         container.appendChild(info);
         container.style.left = `${map2DPos.x}px`;
         container.style.top = `${map2DPos.y}px`;
@@ -383,7 +407,7 @@
 
     function refreshResourceMarkers() {
         document.querySelectorAll('.resource-marker').forEach(marker => marker.remove());
-        if (!resourcesVisible) return;
+        if (!resourcesVisible || cleanMode) return;
         itemsToRender
             .filter(item => selectedItemQualities.has(Number(item.item_quality) || 0))
             .forEach(renderRadarItemMarker);
@@ -402,6 +426,7 @@
         }
     }
     function loadSelection() { currentMap = localStorage.getItem('selectedMap') || 'db.png'; pendingPlayerSelection = localStorage.getItem('selectedPlayerId'); }
+    function loadToggles() { if (localStorage.getItem('cleanMode') === '1') setCleanMode(true, false); }
     function saveSelection() { localStorage.setItem('selectedMap', currentMap); localStorage.setItem('selectedPlayerId', selectedPlayerId || ''); }
 
     function selectMap(mapId) {
@@ -418,27 +443,58 @@
     }
 
     function selectPlayer(playerId) { selectedPlayerId = playerId; isFollowing = true; document.querySelectorAll('.player-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.playerId == (playerId || ''))); recenterView(); saveSelection(); }
-    function toggleResourceVisibility() {
-        resourcesVisible = !resourcesVisible;
+    function setResourceVisibility(visible) {
+        resourcesVisible = visible;
         const toggle = document.getElementById('resource-toggle');
         toggle.classList.toggle('active', resourcesVisible);
         toggle.setAttribute('aria-pressed', String(resourcesVisible));
-        if (resourcesVisible) {
+        if (resourcesVisible && !cleanMode) {
             refreshResourceMarkers();
             return;
         }
         document.querySelectorAll('.resource-marker').forEach(marker => marker.remove());
     }
+    function toggleResourceVisibility() { if (cleanMode) return; setResourceVisibility(!resourcesVisible); }
+    function applyCleanModeUi() {
+        const toggle = document.getElementById('clean-toggle');
+        toggle.classList.toggle('active', cleanMode);
+        toggle.setAttribute('aria-pressed', String(cleanMode));
+        document.getElementById('resource-toggle').disabled = cleanMode;
+        document.getElementById('quality-filter').classList.toggle('disabled', cleanMode);
+    }
+    // 纯净模式: 只保留玩家(自己/队友/敌人)，隐藏物资与人机
+    function setCleanMode(enabled, rerender = true) {
+        cleanMode = enabled;
+        if (cleanMode) {
+            resourcesVisibleBeforeClean = resourcesVisible;
+            setResourceVisibility(false);
+        } else {
+            setResourceVisibility(resourcesVisibleBeforeClean);
+        }
+        applyCleanModeUi();
+        localStorage.setItem('cleanMode', cleanMode ? '1' : '0');
+        if (rerender) updateGameData(true);
+    }
+    function toggleCleanMode() { setCleanMode(!cleanMode); }
     function updateMapButtons() { const container = document.getElementById('map-buttons'); container.innerHTML = ''; Object.keys(mapDimensions).forEach(id => { const button = document.createElement('button'); button.className = `map-btn ${currentMap === id ? 'active' : ''}`; button.textContent = id.split('.')[0].toUpperCase(); button.dataset.map = id; button.onclick = () => selectMap(id); container.appendChild(button); }); }
     function updatePlayerButtons() { const container = document.getElementById('player-buttons'); container.innerHTML = ''; const selfButton = document.createElement('button'); selfButton.className = `player-btn ${!selectedPlayerId || selectedPlayerId === '' ? 'active' : ''}`; selfButton.textContent = '自己'; selfButton.dataset.playerId = ''; selfButton.onclick = () => selectPlayer(null); container.appendChild(selfButton); var teamIndex = 1; teammates.forEach(t => { if (localPlayer && t.id === localPlayer.id) return; const button = document.createElement('button'); button.className = `player-btn ${selectedPlayerId == t.id ? 'active' : ''}`; button.textContent = `队友${ teamIndex}`; teamIndex++; button.dataset.playerId = t.id; button.onclick = () => selectPlayer(t.id); container.appendChild(button); }); }
     function loadAuth() { const savedPassword = localStorage.getItem('authToken'); if (savedPassword) { document.getElementById('auth-input').value = savedPassword; } }
 
     loadSelection();
     loadAuth();
+    loadToggles();
     updateMapButtons();
     selectMap(currentMap);
     updateGameData(true);
-    setInterval(updateGameData, 50);
+    // 目标 60Hz：一轮结束（含等待响应）后再等 16ms 发起下一轮，
+    // 网络慢时自动降速而不是堆积请求。
+    function scheduleGameDataPoll() {
+        setTimeout(async () => {
+            await updateGameData();
+            scheduleGameDataPoll();
+        }, DATA_POLL_INTERVAL_MS);
+    }
+    scheduleGameDataPoll();
     document.getElementById('auth-submit').addEventListener('click', () => {
         updateGameData(true);
     });
@@ -448,6 +504,7 @@
         }
     });
     document.getElementById('resource-toggle').addEventListener('click', toggleResourceVisibility);
+    document.getElementById('clean-toggle').addEventListener('click', toggleCleanMode);
     document.querySelectorAll('#quality-filter input[data-quality]').forEach(input => {
         input.addEventListener('change', () => {
             const quality = Number(input.dataset.quality);

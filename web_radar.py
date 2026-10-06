@@ -3,6 +3,7 @@ import mimetypes
 import os
 import random
 import threading
+import zlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
@@ -48,6 +49,12 @@ class WebRadarService:
         self._server = None
         self._thread = None
         self._running = False
+        # /api/data 的序列化结果缓存：前端 60Hz 轮询时绝大多数轮次数据没有变化，
+        # 用版本号命中缓存，避免每次轮询都重新构建并序列化数百 KB（路由器上约 90ms）。
+        self._game_data_lock = threading.Lock()
+        self._game_data_cached_version = None
+        self._game_data_body = b""
+        self._game_data_token = ""
 
         self.port = self._read_port_from_file(self.default_port)
         self.password = self._generate_password()
@@ -174,6 +181,37 @@ refresh();
                 "teammates": [],
             }
 
+    def _game_data_version(self):
+        """廉价版本号（O(1)，不序列化）；返回 None 表示无法判定，必须重新构建。"""
+        getter = getattr(self.core, "get_radar_data_version", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def get_game_data_payload(self, force=False):
+        """返回 /api/data 的 (body, token)。
+
+        版本号未变时直接复用上次序列化的 JSON —— 60Hz 轮询因此不会反复付出构建与
+        序列化成本，只有数据真正变化（约 2~4 次/秒）时才重新生成。
+        force=True 时忽略缓存重新构建，供前端在长时间无变化时兜底刷新。
+        """
+        version = None if force else self._game_data_version()
+        if version is not None:
+            with self._game_data_lock:
+                if version == self._game_data_cached_version and self._game_data_body:
+                    return self._game_data_body, self._game_data_token
+        body = json.dumps(self._build_game_data(), ensure_ascii=False).encode("utf-8")
+        token = format(zlib.crc32(body), "08x")
+        if version is not None:
+            with self._game_data_lock:
+                self._game_data_cached_version = version
+                self._game_data_body = body
+                self._game_data_token = token
+        return body, token
+
     def _build_rwvg_data(self):
         snapshot = self._build_game_data()
 
@@ -234,6 +272,9 @@ refresh();
         service = self
 
         class Handler(BaseHTTPRequestHandler):
+            # HTTP/1.1 保持长连接：60Hz 轮询时避免每帧都重建 TCP 连接。
+            protocol_version = "HTTP/1.1"
+
             def log_message(self, format, *args):
                 return
 
@@ -277,7 +318,23 @@ refresh();
                     if not self._is_authorized(query_token=query_token):
                         self._send_json({"error": "Unauthorized"}, status=401)
                         return
-                    self._send_json(service._build_game_data(), status=200)
+                    # 前端带上已渲染数据的 token；内容未变时回 204，不重复传输数百 KB。
+                    # nocache 请求总是重新构建并返回完整负载，忽略前端 token。
+                    forced = bool(query.get("nocache")) or bool(
+                        self.headers.get("X-Data-No-Cache", ""))
+                    body, token = service.get_game_data_payload(force=forced)
+                    if not forced and self.headers.get("X-Data-Token", "") == token:
+                        self.send_response(204)
+                        self.send_header("X-Data-Token", token)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("X-Data-Token", token)
+                    self.end_headers()
+                    self.wfile.write(body)
                     return
 
                 if path == "/api/rwvg":
