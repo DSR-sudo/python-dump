@@ -1,7 +1,7 @@
 // 校准模式前端冒烟测试: 用最小 DOM 桩运行 webpage.html 的内联脚本，
 // 断言点地图取点会按 offset/scale 换算成地图像素写进当前地图的 point2D、
-// 拖拽不取点、「用当前位置」填世界坐标、代码块可粘回 mapConverters，
-// 关闭校准后不再画十字标记。
+// 拖拽不取点、「用当前位置」填世界坐标、「用选中实体」填实体世界坐标（点实体标记
+// 是选中而不是取点）、代码块可粘回 mapConverters，关闭校准后不再画十字标记。
 // 用法: node test_webpage_calibration.js <webpage.html 绝对路径>
 const fs = require('fs');
 const vm = require('vm');
@@ -16,7 +16,7 @@ function makeEl(tag) {
         tagName: tag, children: [], dataset: {}, _class: new Set(),
         style: { setProperty(k, v) { this[k] = v; }, getPropertyValue(k) { return this[k]; } },
         title: '', textContent: '', value: '', disabled: false, className: '',
-        appendChild(c) { el.children.push(c); c.parent = el; return c; },
+        appendChild(c) { el.children.push(c); c.parent = el; c.parentNode = el; return c; },
         setAttribute(k, v) { el['attr_' + k] = v; },
         getAttribute(k) { return el['attr_' + k]; },
         addEventListener() {},
@@ -46,6 +46,7 @@ const ids = ['map-container', 'map', 'auth-input', 'auth-container', 'auth-error
              'map-buttons', 'player-buttons', 'auth-submit',
              'calibrate-toggle', 'calibrate-panel', 'cal-hint', 'cal-code',
              'cal-pick-1', 'cal-pick-2', 'cal-here-1', 'cal-here-2', 'cal-copy', 'cal-revert',
+             'cal-entity', 'cal-ent-1', 'cal-ent-2',
              'cal-w1x', 'cal-w1y', 'cal-m1x', 'cal-m1y', 'cal-w2x', 'cal-w2y', 'cal-m2x', 'cal-m2y'];
 const byId = {};
 ids.forEach(id => { byId[id] = makeEl('div'); });
@@ -60,6 +61,20 @@ const tap = (x, y) => { fire('mousedown', { clientX: x, clientY: y }); fire('cli
 function walk(root, out) { root.children.forEach(c => { out.push(c); walk(c, out); }); return out; }
 
 const store = { authToken: 'test-pw' };
+// 每轮 updateGameData 的快照内容；测试中途可改（例如让实体消失）
+const payload = {
+    entities: [
+        // 队友站在「后处理厂」附近，供「用选中实体」取世界坐标
+        { id: 'record:42', type: 'player', team_id: 1, position: { x: 175587.44, y: -240315.06 },
+          has_health: true, health: 88, max_health: 100, has_hero: false, has_weapon: false },
+    ],
+    // 玩家站在「后处理厂」附近，用于「用当前位置」取世界坐标
+    local_player: { id: 'local', team_id: 1, yaw: 0, position: { x: 175587.44, y: -240315.06 } },
+    teammates: [],
+    items: [
+        { id: 'record:77', type: 'item', item_quality: 3, item_name: '蓝物资', position: { x: 3000, y: 4000 } },
+    ],
+};
 const sandbox = {
     console, Math, JSON, Number, String, Object, Array, Set, Promise, isFinite, Date,
     setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0,
@@ -71,13 +86,7 @@ const sandbox = {
     fetch: async () => ({
         status: 200,
         headers: { get: () => null },
-        json: async () => ({
-            entities: [],
-            // 玩家站在「后处理厂」附近，用于「用当前位置」取世界坐标
-            local_player: { id: 'local', team_id: 1, yaw: 0, position: { x: 175587.44, y: -240315.06 } },
-            teammates: [],
-            items: [],
-        }),
+        json: async () => payload,
     }),
     window: { addEventListener() {} },
     document: {
@@ -139,6 +148,40 @@ function check(name, got, want) {
 
     sandbox.useCurrentPositionForPoint(1);
     check('当前位置: point3D_1 = 自己位置(一位小数)', converterOf('db.png').point3D_1, { x: 175587.4, y: -240315.1 });
+
+    // ---- 选中实体：点地图上的实体标记是「选中」，不是取点 ----
+    await sandbox.updateGameData(true);
+    const entityEl = map.children.find(c => c.dataset && c.dataset.entityId === 'record:42');
+    const itemEl = map.children.find(c => c.dataset && c.dataset.entityId === 'record:77');
+    check('实体标记: 带 data-entity-id', !!entityEl, true);
+    check('物资标记: 带 data-entity-id', !!itemEl, true);
+    check('选中提示: 初始为空', byId['cal-entity'].textContent.includes('无 —'), true);
+
+    const point1Before = converterOf('db.png').point2D_1;
+    fire('mousedown', { clientX: 500, clientY: 500 });
+    fire('click', { clientX: 500, clientY: 500, target: entityEl.children[0] });
+    check('点实体: 不取点', converterOf('db.png').point2D_1, point1Before);
+    check('点实体: 选中提示带坐标', byId['cal-entity'].textContent, '队友 (175587, -240315)');
+    check('点实体: 标记高亮', entityEl._class.has('calibrate-entity'), true);
+
+    fire('click', { clientX: 500, clientY: 500, target: itemEl.children[0] });
+    check('点物资: 选中提示', byId['cal-entity'].textContent, '蓝物资 (3000, 4000)');
+
+    fire('click', { clientX: 500, clientY: 500, target: entityEl.children[0] });
+    sandbox.useSelectedEntityForPoint(1);
+    check('用选中实体: point3D_1 = 实体坐标(一位小数)', converterOf('db.png').point3D_1, { x: 175587.4, y: -240315.1 });
+
+    // 实体从数据里消失：保留选中，但按钮不再生效
+    const keepEntities = payload.entities;
+    payload.entities = [];
+    await sandbox.updateGameData(true);
+    check('实体消失: 提示', byId['cal-entity'].textContent, '队友 — 已不在数据里');
+    const point2WorldBefore = converterOf('db.png').point3D_2;
+    sandbox.useSelectedEntityForPoint(2);
+    check('实体消失: 按钮不生效', converterOf('db.png').point3D_2, point2WorldBefore);
+    payload.entities = keepEntities;
+    await sandbox.updateGameData(true);
+    check('实体回来: 提示恢复', byId['cal-entity'].textContent, '队友 (175587, -240315)');
 
     const snippet = byId['cal-code'].value;
     check('代码块: 含地图键', snippet.includes('"db.png": {'), true);

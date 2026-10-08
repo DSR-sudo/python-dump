@@ -52,6 +52,8 @@
         #calibrate-panel input { width: 68px; padding: 3px 4px; background: #111; color: #eee; border: 1px solid #555; border-radius: 3px; font-size: 11px; }
         #cal-code { width: 100%; height: 74px; margin-top: 2px; padding: 4px; background: #111; color: #9cff9c; border: 1px solid #555; border-radius: 3px; font-family: monospace; font-size: 10px; resize: vertical; }
         .calibrate-marker { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border: 2px solid #ff5252; border-radius: 50%; color: #fff; font-size: 10px; line-height: 18px; text-align: center; text-shadow: 0 1px 2px #000; pointer-events: none; z-index: 30; }
+        .entity-container.calibrate-entity .entity-body { outline: 2px solid #40c4ff; outline-offset: 3px; }
+        #cal-entity { color: #9cdcff; }
     </style>
 </head>
 <body>
@@ -98,16 +100,21 @@
             <button id="cal-close" class="cal-btn" type="button">关闭</button>
         </div>
         <div class="cal-row">
+            <span class="cal-tag">选中</span><span id="cal-entity">无 — 校准模式下点地图上的角色/物资即可选中</span>
+        </div>
+        <div class="cal-row">
             <span class="cal-tag">点1</span>世界
             <input id="cal-w1x" type="number" step="1"><input id="cal-w1y" type="number" step="1">
             图上<input id="cal-m1x" type="number" step="0.01"><input id="cal-m1y" type="number" step="0.01">
             <button id="cal-here-1" class="cal-btn" type="button">用当前位置</button>
+            <button id="cal-ent-1" class="cal-btn" type="button">用选中实体</button>
         </div>
         <div class="cal-row">
             <span class="cal-tag">点2</span>世界
             <input id="cal-w2x" type="number" step="1"><input id="cal-w2y" type="number" step="1">
             图上<input id="cal-m2x" type="number" step="0.01"><input id="cal-m2y" type="number" step="0.01">
             <button id="cal-here-2" class="cal-btn" type="button">用当前位置</button>
+            <button id="cal-ent-2" class="cal-btn" type="button">用选中实体</button>
         </div>
         <textarea id="cal-code" readonly spellcheck="false"></textarea>
     </div>
@@ -146,13 +153,13 @@
             point3D_2: { x: 17252, y: 27568  },
             point2D_2: { x: 686, y: 789 }
         },
-        // AZ3（阿萨拉赛季）：校准点由官方地图页 getMapPos 公式反推，
-        // 后处理厂 / 废水堆放区 两个区域中心，实测往返误差 < 1px。
+        // AZ3（阿萨拉赛季）：实标两点。世界坐标量级与其他图一致（±数万），
+        // 与官方地图页 getMapPos 用的那套坐标（±数十万）不同源，不能混用。
         "az3.png": {
-            point3D_1: { x: 175587, y: -240315 },
-            point2D_1: { x: 574.26, y: 1301.27 },
-            point3D_2: { x: 241325, y: -170903 },
-            point2D_2: { x: 1453.60, y: 470.20 }
+            point3D_1: { x: 29596, y: 30011 },
+            point2D_1: { x: 1473.03, y: 452.71 },
+            point3D_2: { x: -37994, y: -42155 },
+            point2D_2: { x: 563.5, y: 1307.71 }
         },
     };
 
@@ -370,6 +377,7 @@
                 const { position: map2DPos, rotation: correctedOrientation } = getTransformedData(entityData, currentMap);
                 const container = document.createElement('div');
                 container.className = 'entity-container';
+                container.dataset.entityId = entityData.id;
                 const body = document.createElement('div');
                 body.className = 'entity-body';
                 const isAi = entityType === 'ai';
@@ -422,6 +430,7 @@
                 map.appendChild(container);
             });
             refreshResourceMarkers();
+            refreshCalibrationEntity();
             renderCalibrationMarkers();
         } catch (error) {
             console.error('获取游戏数据失败:', error);
@@ -434,6 +443,7 @@
         const container = document.createElement('div');
         container.className = 'entity-container';
         container.classList.add('resource-marker');
+        container.dataset.entityId = itemData.id;
         const itemLabel = itemData.dead_box_name || itemData.item_name || 'item';
         container.title = itemLabel;
         const body = document.createElement('div');
@@ -528,6 +538,8 @@
     // == 面板里的代码块可直接粘回 mapConverters；改动不落盘，刷新回到文件值。 ==
     // ===============================================================
     let calibrateMode = false, calibrateSlot = 1, pressX = 0, pressY = 0, lastTouchPickAt = 0, lastTouchCount = 0;
+    // 校准模式下点中的实体（角色/物资）；本地玩家链条不可信时用它取世界坐标
+    let calibrateEntity = null;
     // 每张图进入校准模式时的快照，供「还原」退回页面加载时（文件里）的值
     const calibrationBackups = {};
     const CALIBRATE_INPUT_IDS = ['cal-w1x', 'cal-w1y', 'cal-m1x', 'cal-m1y', 'cal-w2x', 'cal-w2y', 'cal-m2x', 'cal-m2y'];
@@ -594,6 +606,7 @@
     // 两个校准点在底图上的位置（1 红 2 蓝），随 #map 一起平移缩放
     function renderCalibrationMarkers() {
         document.querySelectorAll('.calibrate-marker').forEach(el => el.remove());
+        highlightCalibrationEntity();
         if (!calibrateMode) return;
         const converter = calibrationTarget(false);
         if (!converter) return;
@@ -630,6 +643,7 @@
         const toggle = document.getElementById('calibrate-toggle');
         if (toggle) { toggle.classList.toggle('active', calibrateMode); toggle.setAttribute('aria-pressed', String(calibrateMode)); }
         if (calibrateMode) { syncCalibrationInputs(); armCalibrateSlot(1); }
+        syncCalibrationEntityLine();
         renderCalibrationMarkers();
     }
 
@@ -667,6 +681,92 @@
         return true;
     }
 
+    // ---- 选中实体：校准模式下点地图上的角色/物资，用它的世界坐标当校准点 ----
+    // 实体坐标是雷达画点一直在用的那份数据；本地玩家链条不可信时改用它。
+    function calibrationEntityLabel(entity) {
+        if (entity.type === 'item' || entity.type === 'deadbody') {
+            return entity.dead_box_name || entity.item_name || '物资';
+        }
+        if (localPlayer && entity.id === localPlayer.id) return '自己';
+        if (entity.type === 'ai') return '人机';
+        if (localPlayer && entity.team_id === localPlayer.team_id) return '队友';
+        const hero = readableCatalogName(entity.hero_name, '');
+        return `玩家(队${entity.team_id})${hero ? ' ' + hero : ''}`;
+    }
+
+    function findCalibrationEntity(entityId) {
+        return entitiesToRender.find(e => e.id === entityId) || itemsToRender.find(i => i.id === entityId) || null;
+    }
+
+    function syncCalibrationEntityLine() {
+        const line = document.getElementById('cal-entity');
+        if (!line) return;
+        if (!calibrateEntity) { line.textContent = '无 — 校准模式下点地图上的角色/物资即可选中'; return; }
+        const position = calibrateEntity.position;
+        line.textContent = position
+            ? `${calibrateEntity.label} (${Math.round(position.x)}, ${Math.round(position.y)})`
+            : `${calibrateEntity.label} — 已不在数据里`;
+    }
+
+    function selectCalibrationEntity(entityId) {
+        if (!calibrateMode || !entityId) return false;
+        const found = findCalibrationEntity(entityId);
+        if (!found) return false;
+        calibrateEntity = {
+            id: entityId,
+            label: calibrationEntityLabel(found),
+            position: found.position ? { x: Number(found.position.x) || 0, y: Number(found.position.y) || 0 } : null,
+        };
+        syncCalibrationEntityLine();
+        renderCalibrationMarkers();
+        return true;
+    }
+
+    // 每次数据刷新后更新选中实体的位置；实体暂时消失时保留选中但标记无效。
+    function refreshCalibrationEntity() {
+        if (!calibrateEntity) return;
+        const found = findCalibrationEntity(calibrateEntity.id);
+        if (found) calibrateEntity.label = calibrationEntityLabel(found);
+        calibrateEntity.position = (found && found.position)
+            ? { x: Number(found.position.x) || 0, y: Number(found.position.y) || 0 }
+            : null;
+        syncCalibrationEntityLine();
+    }
+
+    function useSelectedEntityForPoint(n) {
+        if (!calibrateEntity || !calibrateEntity.position) return false;
+        const converter = calibrationTarget(true);
+        converter[Number(n) === 2 ? 'point3D_2' : 'point3D_1'] = {
+            x: Number(calibrateEntity.position.x.toFixed(1)),
+            y: Number(calibrateEntity.position.y.toFixed(1)),
+        };
+        delete transformerCache[currentMap];
+        syncCalibrationInputs();
+        checkCalibration(currentMap);
+        renderCalibrationMarkers();
+        return true;
+    }
+
+    // 点击/触摸落在实体标记上时取它的 id（沿 DOM 往上找 data-entity-id）
+    function calibrationEntityFromTarget(target) {
+        let node = target;
+        while (node && node !== mapContainer && node !== map) {
+            if (node.dataset && node.dataset.entityId) return node.dataset.entityId;
+            node = node.parentNode;
+        }
+        return null;
+    }
+
+    // 选中的实体画一圈高亮；#map 每次刷新会重建标记，所以重绘时一并刷一遍
+    function highlightCalibrationEntity() {
+        if (!map || !map.children) return;
+        Array.prototype.forEach.call(map.children, el => {
+            if (!el || !el.classList) return;
+            const isTarget = calibrateMode && !!calibrateEntity && el.dataset && el.dataset.entityId === calibrateEntity.id;
+            el.classList.toggle('calibrate-entity', isTarget);
+        });
+    }
+
     function revertCalibration() {
         const backup = calibrationBackups[currentMap];
         if (!backup) return false;
@@ -699,6 +799,8 @@
             if (pick) pick.onclick = () => armCalibrateSlot(n);
             const here = document.getElementById(`cal-here-${n}`);
             if (here) here.onclick = () => useCurrentPositionForPoint(n);
+            const ent = document.getElementById(`cal-ent-${n}`);
+            if (ent) ent.onclick = () => useSelectedEntityForPoint(n);
         });
         const copy = document.getElementById('cal-copy');
         if (copy) copy.onclick = copyCalibrationCode;
@@ -715,7 +817,12 @@
         lastTouchCount = (e.touches && e.touches.length) || 0;
         if (lastTouchCount === 1) { pressX = e.touches[0].clientX; pressY = e.touches[0].clientY; }
     });
-    mapContainer.addEventListener('click', (e) => { if (Date.now() - lastTouchPickAt > 600) pickCalibrationPoint(e.clientX, e.clientY); });
+    // 落在实体标记上的点按算「选中该实体」，其它位置才算取校准点
+    mapContainer.addEventListener('click', (e) => {
+        if (Date.now() - lastTouchPickAt <= 600) return;
+        if (selectCalibrationEntity(calibrationEntityFromTarget(e.target))) return;
+        pickCalibrationPoint(e.clientX, e.clientY);
+    });
     // 触摸端 touchstart 已 preventDefault，合成 click 不一定来，这里补一条取点路径。
     // 双指缩放走过的 touchstart 记下的 lastTouchCount > 1，抬指时不取点。
     mapContainer.addEventListener('touchend', (e) => {
@@ -723,6 +830,7 @@
         if (!e.touches || e.touches.length === 0) lastTouchCount = 0;
         if (wasPinch || !calibrateMode || !e.changedTouches || e.changedTouches.length !== 1) return;
         lastTouchPickAt = Date.now();
+        if (selectCalibrationEntity(calibrationEntityFromTarget(e.target))) return;
         pickCalibrationPoint(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
     });
 
