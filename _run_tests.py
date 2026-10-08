@@ -12,6 +12,7 @@ suite = loader.loadTestsFromNames([
     "test_type6_world_cache",
     "test_webpage_clean_mode",
     "test_webpage_pull_rate",
+    "test_webpage_calibration",
     "test_radar_poll_cache",
     "test_dma_protocol",
     "test_dma_transport_state",
