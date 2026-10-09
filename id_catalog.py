@@ -1,4 +1,4 @@
-"""HeroID and WeaponId display mappings from 数据转换.h."""
+"""HeroID and WeaponId display mappings."""
 
 HERO_NAMES = {
     88000000030: "红狼",
