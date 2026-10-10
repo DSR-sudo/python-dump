@@ -374,21 +374,22 @@
             entitiesToRender.forEach(entityData => {
                 const entityType = entityData.type || 'player';
                 if (cleanMode && entityType === 'ai') return;
+                const isAi = entityType === 'ai';
+                const isDead = entityData.has_health === true && Number(entityData.health) <= 0;
+                // 纯净模式只看活人：血量为零的角色整体隐藏（血环、名字武器、尸体都不画）
+                if (cleanMode && !isAi && isDead) return;
                 const { position: map2DPos, rotation: correctedOrientation } = getTransformedData(entityData, currentMap);
                 const container = document.createElement('div');
                 container.className = 'entity-container';
                 container.dataset.entityId = entityData.id;
                 const body = document.createElement('div');
                 body.className = 'entity-body';
-                const isAi = entityType === 'ai';
                 const isTeammate = !isAi && entityData.team_id === localPlayer?.team_id;
-                const isDead = entityData.has_health === true && Number(entityData.health) <= 0;
                 const health = Number(entityData.health);
                 const maxHealth = Number(entityData.max_health);
                 const hasHealth = entityData.has_health !== false && entityData.has_max_health !== false
                     && Number.isFinite(health)
                     && Number.isFinite(maxHealth) && maxHealth > 0;
-                // 纯净模式只看活人：血量为零的角色不再画血环
                 if (!isAi && hasHealth && !(cleanMode && health <= 0)) {
                     const healthRing = document.createElement('div');
                     const healthRatio = Math.max(0, Math.min(1, health / maxHealth));

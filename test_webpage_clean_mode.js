@@ -1,6 +1,6 @@
 // 纯净模式 (clean mode) 前端冒烟测试: 用最小 DOM 桩运行 webpage.html 的内联脚本，
-// 断言开启后只剩玩家(自己/队友/敌人)，物资与人机不再渲染，血量为零的角色也不再画血环，
-// 关闭后恢复。普通模式仍保留血量为零角色的血环。
+// 断言开启后只剩存活玩家，物资与人机不再渲染，血量为零的角色整体隐藏(血环、名字武器、尸体)，
+// 关闭后恢复。普通模式仍保留血量为零角色的血环与尸体。
 // 用法: node test_webpage_clean_mode.js <webpage.html 绝对路径>
 const fs = require('fs');
 const vm = require('vm');
@@ -106,6 +106,8 @@ const entityContainers = () => map.children.filter(c => String(c.className).incl
 const markers = () => map.children.filter(c => c._class.has('resource-marker'));
 const aiBadges = () => entityContainers().filter(c => c.children.some(ch => ch.textContent === 'A'));
 const healthRings = () => entityContainers().flatMap(c => c.children.filter(ch => ch._class.has('entity-health-ring') || String(ch.className).split(/\s+/).includes('entity-health-ring')));
+const deadBodies = () => entityContainers().filter(c => c.children.some(ch => String(ch.className).split(/\s+/).includes('entity-body') && ch._class.has('dead')));
+const infoLabels = () => entityContainers().flatMap(c => c.children.filter(ch => String(ch.className).split(/\s+/).includes('entity-info')));
 const itemLabels = () => markers().map(m => m.children.map(c => c.textContent).join('|'));
 
 let failures = 0;
@@ -121,16 +123,20 @@ function check(name, got, want) {
     check('默认: 人机圆点', aiBadges().length, 2);
     check('默认: 物资标记', markers().length, 2);
     check('默认: 血环(含血量为0的角色)', healthRings().length, 3);
+    check('默认: 尸体(血量为0的角色)', deadBodies().length, 1);
+    check('默认: 名字武器行(3 玩家)', infoLabels().length, 3);
     check('默认: 资源按钮 active', byId['resource-toggle']._class.has('active'), true);
     check('默认: 纯净按钮未激活', byId['clean-toggle']._class.has('active'), false);
     check('默认: 容器密码行', itemLabels().some(t => t.includes('密码 1234')), true);
 
     sandbox.toggleCleanMode();
     await sandbox.updateGameData(true);
-    check('纯净: 实体数(仅玩家)', entityContainers().length, 3);
+    check('纯净: 实体数(仅存活玩家)', entityContainers().length, 2);
     check('纯净: 人机圆点', aiBadges().length, 0);
     check('纯净: 物资标记', markers().length, 0);
     check('纯净: 血环只留存活角色', healthRings().length, 2);
+    check('纯净: 血量为0的角色尸体隐藏', deadBodies().length, 0);
+    check('纯净: 名字武器行只留存活角色', infoLabels().length, 2);
     check('纯净: 纯净按钮 active', byId['clean-toggle']._class.has('active'), true);
     check('纯净: 资源按钮取消激活', byId['resource-toggle']._class.has('active'), false);
     check('纯净: 资源按钮禁用', byId['resource-toggle'].disabled, true);
@@ -144,6 +150,7 @@ function check(name, got, want) {
     check('恢复: 人机圆点', aiBadges().length, 2);
     check('恢复: 物资标记', markers().length, 2);
     check('恢复: 血环', healthRings().length, 3);
+    check('恢复: 尸体', deadBodies().length, 1);
     check('恢复: 资源按钮重新启用', byId['resource-toggle'].disabled, false);
     check('恢复: 已持久化', store.cleanMode, '0');
 
