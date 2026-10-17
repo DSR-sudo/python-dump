@@ -16,6 +16,12 @@
         .entity-container { position: absolute; transform: translate(-50%, -50%); z-index: 10; }
         .entity-body { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 1px solid white; display: flex; justify-content: center; align-items: center; font-size: 8px; font-weight: bold; color: white; top: 50%; left: 50%; transform: translate(-50%, -50%); }
         .entity-direction { position: absolute; width: 1.5px; height: 12px; background-color: white; left: 50%; bottom: 50%; transform-origin: center bottom; }
+        .entity-gear { position: absolute; width: 5px; height: 11px; top: 50%; left: calc(50% + 13px); transform: translateY(-50%); display: flex; flex-direction: column; gap: 1px; pointer-events: none; }
+        .entity-gear.gear-left { left: auto; right: calc(50% + 13px); }
+        /* 上半头盔、下半护甲：颜色=等级（6红 5金 4紫 3绿，沿用物资品质色），
+           填充宽度=耐久/最大耐久，损耗越多像素越短。 */
+        .entity-gear-cell { flex: 1; border: 0.5px solid rgba(0,0,0,.7); border-radius: 1px; background: linear-gradient(to right, var(--tier-color, rgba(255,255,255,.14)) calc(var(--wear-ratio, 0) * 100%), rgba(255,255,255,.14) 0); }
+
         .entity-body.dead { width: 10px; height: 10px; background-color: transparent !important; border-width: 1.5px; }
         .entity-health-ring { position: absolute; width: 22px; height: 22px; border-radius: 50%; top: 50%; left: 50%; transform: translate(-50%, -50%); background: conic-gradient(var(--health-color) calc(var(--health-ratio) * 1turn), rgba(255,255,255,0.18) 0); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); pointer-events: none; }
         .entity-info { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); white-space: nowrap; color: #fff; text-shadow: 0 1px 2px #000; font-size: 9px; line-height: 11px; pointer-events: none; }
@@ -423,6 +429,31 @@
                     const weaponText = entityData.has_weapon === false ? '?' : readableCatalogName(entityData.weapon_name, '未知武器');
                     info.textContent = `${heroText} ${weaponText}`;
                     container.appendChild(info);
+                    /* v10 装备色条：血量环外侧的小矩形，上半头盔、下半护甲；
+                       颜色=等级（6红 5金 4紫 3绿），填充宽度=耐久百分比，损耗越多越短。
+                       左右侧按实体 id 哈希稳定伪随机，避免轮询重绘时左右抖动。 */
+                    if (entityData.has_helmet || entityData.has_armor) {
+                        const gear = document.createElement('div');
+                        gear.className = 'entity-gear';
+                        const entityId = String(entityData.id || '');
+                        let sideHash = 0;
+                        for (let i = 0; i < entityId.length; ++i) sideHash = (sideHash * 31 + entityId.charCodeAt(i)) | 0;
+                        if (sideHash & 1) gear.classList.add('gear-left');
+                        const gearCell = (has, level, current, max, color) => {
+                            const cell = document.createElement('div');
+                            cell.className = 'entity-gear-cell';
+                            if (has && Number(level) > 0) {
+                                const ratio = Math.max(0, Math.min(1, Number(current) / Math.max(1, Number(max))));
+                                /* 等级色由 python 端 quality_display 复用物资色板下发。 */
+                                cell.style.setProperty('--tier-color', color || '#c8c8c8');
+                                cell.style.setProperty('--wear-ratio', ratio.toString());
+                            }
+                            return cell;
+                        };
+                        gear.appendChild(gearCell(entityData.has_helmet, entityData.helmet_level, entityData.helmet_durability, entityData.helmet_max_durability, entityData.helmet_color));
+                        gear.appendChild(gearCell(entityData.has_armor, entityData.armor_level, entityData.armor_durability, entityData.armor_max_durability, entityData.armor_color));
+                        container.appendChild(gear);
+                    }
                 }
                 container.style.left = `${map2DPos.x}px`;
                 container.style.top = `${map2DPos.y}px`;

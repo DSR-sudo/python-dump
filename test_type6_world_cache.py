@@ -39,6 +39,7 @@ def _record(kind: int, x: float, item_id: int = 0, team_id: int = 0,
         team_id, _bits(100.0), _bits(100.0), 0, 0, item_id, 0,
         valid_fields, 1, 0, 0,
         0, 0,
+        0, 0, 0, 0, 0, 0,
     )
 
 
@@ -123,7 +124,7 @@ class Type6WorldCacheTest(unittest.TestCase):
             "snapshot_status", "source", "type6_view_present", "utils_age_ms",
             "utils_present",
         ])
-        self.assertEqual(radar["meta"]["source"], "actor_snapshot_v9")
+        self.assertEqual(radar["meta"]["source"], "actor_snapshot_v10")
         self.assertEqual(len(radar["entities"]), 1)
         self.assertEqual([item["id"] for item in radar["items"]], full_item_ids)
         self.assertEqual([item["item_name"] for item in radar["items"]],

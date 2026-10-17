@@ -29,13 +29,15 @@ RWVG_ACTOR_KIND_NAMES = {
     RWVG_ACTOR_KIND_AI: "AI",
 }
 
-RWVG_ACTOR_SNAPSHOT_VERSION = 9
+RWVG_ACTOR_SNAPSHOT_VERSION = 10
 RWVG_ACTOR_SNAPSHOT_PREFIX_FMT = "<HH"
 RWVG_ACTOR_SNAPSHOT_PREFIX_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_PREFIX_FMT)
 # v9：头部末尾追加 u32 flags（原先字段偏移不变），头部 48 -> 52 字节。
 RWVG_ACTOR_SNAPSHOT_HEADER_FMT = "<HHIIIIQIIIIiI"
 RWVG_ACTOR_SNAPSHOT_HEADER_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_HEADER_FMT)
-RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<BQQQIIIBQiIIHQQIIIIiIi"
+# v10：记录末尾追加 6×u32 装备块（helmet_level/helmet_durability/helmet_max_durability/
+# armor_level/armor_durability/armor_max_durability，耐久为 f32 位型），记录 104 -> 128 字节。
+RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT = "<BQQQIIIBQiIIHQQIIIIiIi" "iIIiII"
 RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE = struct.calcsize(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_FMT)
 RWVG_ACTOR_SNAPSHOT_VIEW_HAS_LOCAL_PAWN = 1 << 0
 RWVG_ACTOR_SNAPSHOT_VIEW_HAS_CONTROL_ROTATION_YAW = 1 << 1
@@ -46,6 +48,9 @@ RWVG_ACTOR_SNAPSHOT_HAS_ITEM_ID = 1 << 9
 RWVG_ACTOR_SNAPSHOT_HAS_ITEM_QUALITY = 1 << 10
 RWVG_ACTOR_SNAPSHOT_HAS_DIRECTION = 1 << 11
 RWVG_ACTOR_SNAPSHOT_HAS_PASSWORD = 1 << 12
+# v10 装备块：仅真人记录置位，且只有槽位读成功且确实穿了（item_id!=0）才置位。
+RWVG_ACTOR_SNAPSHOT_HAS_HELMET = 1 << 13
+RWVG_ACTOR_SNAPSHOT_HAS_ARMOR = 1 << 14
 
 
 def _float_from_bits(bits: int) -> float:
@@ -65,7 +70,9 @@ def _parse_record(payload: bytes, offset: int, record_id: int):
      pos_x, pos_y, pos_z, position_source, last_db_position_tsc, team_id,
      health_bits, max_health_bits, weapon_id, hero_id, item_id, item_quality,
      valid_fields, attempts, failures, first_failure,
-     direction_bits, password) = values
+     direction_bits, password,
+     helmet_level, helmet_durability_bits, helmet_max_durability_bits,
+     armor_level, armor_durability_bits, armor_max_durability_bits) = values
     record = {
         "record_id": int(record_id), "kind": int(kind), "kind_name": _kind_name(kind),
         "mesh": int(mesh),
@@ -88,6 +95,12 @@ def _parse_record(payload: bytes, offset: int, record_id: int):
         "direction_bits": int(direction_bits),
         "direction": _float_from_bits(direction_bits),
         "password": int(password),
+        "helmet_level": int(helmet_level),
+        "helmet_durability": _float_from_bits(helmet_durability_bits),
+        "helmet_max_durability": _float_from_bits(helmet_max_durability_bits),
+        "armor_level": int(armor_level),
+        "armor_durability": _float_from_bits(armor_durability_bits),
+        "armor_max_durability": _float_from_bits(armor_max_durability_bits),
         "valid_fields": int(valid_fields),
         "diagnostics": {"attempts": int(attempts), "failures": int(failures), "first_failure": int(first_failure)},
     }

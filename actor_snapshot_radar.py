@@ -18,6 +18,8 @@ ITEM_ID_FIELD = 1 << 9
 ITEM_QUALITY_FIELD = 1 << 10
 DIRECTION_FIELD = 1 << 11
 PASSWORD_FIELD = 1 << 12
+HELMET_FIELD = 1 << 13
+ARMOR_FIELD = 1 << 14
 VIEW_LOCAL_PAWN_FIELD = 1 << 0
 VIEW_CONTROL_ROTATION_YAW_FIELD = 1 << 1
 ITEM_KINDS = frozenset(("Item", "Container", "DeadBox", "Box"))
@@ -170,6 +172,9 @@ def _entity(
     has_hero = not has_valid_fields or bool(valid_fields & HERO_FIELD)
     has_direction = bool(valid_fields & DIRECTION_FIELD)
     direction = float(record.get("direction", 0.0) or 0.0) if has_direction else None
+    # v10 装备块：只发真人头盔/护甲的等级与耐久（C 端仅在 PMU_PLAYER 上读取）。
+    has_helmet = bool(valid_fields & HELMET_FIELD)
+    has_armor = bool(valid_fields & ARMOR_FIELD)
     return {
         "id": entity_id,
         "name": kind,
@@ -189,6 +194,18 @@ def _entity(
         "hero_id": int(record.get("hero_id", 0) or 0) if has_hero else None,
         "hero_id_hex": str(record.get("hero_id_hex") or "0x0") if has_hero else None,
         "hero_name": str(record.get("hero_name") or "") if has_hero else None,
+        "helmet_level": int(record.get("helmet_level", 0) or 0) if has_helmet else None,
+        # 复用物资品质色板（item_descriptor.QUALITY_DISPLAY：1白2绿3蓝4紫5金6红），
+        # 网页端直接用色值，不在 JS 里维护第二份色板。
+        "helmet_color": quality_display(int(record.get("helmet_level", 0) or 0))[1] if has_helmet else None,
+        "helmet_durability": float(record.get("helmet_durability", 0.0) or 0.0) if has_helmet else None,
+        "helmet_max_durability": float(record.get("helmet_max_durability", 0.0) or 0.0) if has_helmet else None,
+        "armor_level": int(record.get("armor_level", 0) or 0) if has_armor else None,
+        "armor_color": quality_display(int(record.get("armor_level", 0) or 0))[1] if has_armor else None,
+        "armor_durability": float(record.get("armor_durability", 0.0) or 0.0) if has_armor else None,
+        "armor_max_durability": float(record.get("armor_max_durability", 0.0) or 0.0) if has_armor else None,
+        "has_helmet": has_helmet,
+        "has_armor": has_armor,
         "has_weapon": has_weapon,
         "has_hero": has_hero,
         "source_kind": kind,

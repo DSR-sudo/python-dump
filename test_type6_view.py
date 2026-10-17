@@ -64,6 +64,7 @@ def _build_type6_frame(
         player_valid_fields,
         1, 0, 0,
         direction_bits, 0,
+        0, 0, 0, 0, 0, 0,
     )
     item_valid_fields = POSITION_FIELD | ITEM_ID_FIELD | (1 << 10)
     if password is not None:
@@ -77,6 +78,7 @@ def _build_type6_frame(
         item_valid_fields,
         1, 0, 0,
         0, int(password or 0),
+        0, 0, 0, 0, 0, 0,
     )
     record_count = 2 if include_item else 1
     header = struct.pack(
@@ -113,9 +115,9 @@ class Type6ViewTest(unittest.TestCase):
         parsed = parse_rwvg_actor_scan_payload(_build_type6_frame())
 
         self.assertIsNotNone(parsed)
-        self.assertEqual(RWVG_ACTOR_SNAPSHOT_VERSION, 9)
+        self.assertEqual(RWVG_ACTOR_SNAPSHOT_VERSION, 10)
         self.assertEqual(RWVG_ACTOR_SNAPSHOT_HEADER_SIZE, 52)
-        self.assertEqual(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE, 104)
+        self.assertEqual(RWVG_ACTOR_SNAPSHOT_RECORD_FIXED_SIZE, 128)
         self.assertEqual(RWVG_ACTOR_SNAPSHOT_FLAG_FULL, 1)
         self.assertEqual(parsed["local_view"]["local_pawn"], LOCAL_PAWN)
         self.assertEqual(parsed["local_view"]["yaw"], 135.5)

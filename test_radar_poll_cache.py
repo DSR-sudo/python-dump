@@ -47,6 +47,7 @@ def _record(kind: int, x: float, item_id: int = 0, team_id: int = 0,
         team_id, _bits(100.0), _bits(100.0), 0, 0, item_id, 0,
         valid_fields, 1, 0, 0,
         0, 0,
+        0, 0, 0, 0, 0, 0,
     )
 
 
