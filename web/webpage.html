@@ -155,7 +155,7 @@
             <canvas id="ego-minimap-canvas"></canvas>
             <div id="ego-minimap-label">100m</div>
         </div>
-        <div id="ego-hint">拖动画面微调 yaw / pitch · Esc 退出</div>
+        <div id="ego-hint">点击 AI / 队友 / 敌人圆柱体切换视角 · 拖动画面微调 yaw / pitch · Esc 退出</div>
     </div>
     <script>
     const mapDimensions = {
@@ -268,6 +268,8 @@
     // 视角模式状态：egoTargetKey 用 mesh 稳定锁定目标，避免快照 record_id 漂移
     let egoMode = false, egoTargetKey = null, egoTargetId = null, egoFovDeg = Math.max(45, Math.min(120, Number(localStorage.getItem('egoFov') || 90) || 90));
     let egoYawOffset = 0, egoPitchOffset = 0, egoDragging = false, egoDragX = 0, egoDragY = 0;
+    // 圆柱体点击切换视角：每帧记录屏幕包围盒做命中测试；egoHoverKey 只负责高亮。
+    let egoHitRegions = [], egoHoverKey = null, egoPressX = 0, egoPressY = 0, egoPressMoved = false;
     let selectedEntityKey = null;
     // 后端按客户端 id 做订阅裁剪：视角模式/纯净模式/资源/品质都下沉到服务端
     const EGO_RADIUS_CM = 10000;
@@ -689,11 +691,64 @@
         return self || localPlayer || null;
     }
 
+    // 真人玩家的头盔/护甲槽；AI 没有装备读数，直接返回 null。
+    function playerGear(entity) {
+        if (!entity || (entity.type || 'player') === 'ai') return null;
+        const piece = (has, level, durability, maxDurability, color) => {
+            const max = Number(maxDurability);
+            if (!has || !Number.isFinite(max) || max <= 0) return null;
+            return {
+                level: Number(level) || 0,
+                cur: Math.max(0, Number(durability) || 0),
+                max,
+                color: color || '#c8c8c8'
+            };
+        };
+        const helmet = piece(entity.has_helmet, entity.helmet_level,
+            entity.helmet_durability, entity.helmet_max_durability, entity.helmet_color);
+        const armor = piece(entity.has_armor, entity.armor_level,
+            entity.armor_durability, entity.armor_max_durability, entity.armor_color);
+        return (helmet || armor) ? { helmet, armor } : null;
+    }
+
     function egoTargetPitch(target) {
         if (!target) return 0;
         if (target.has_view_pitch && Number.isFinite(Number(target.view_pitch))) return Number(target.view_pitch);
         if (target.pitch !== undefined && Number.isFinite(Number(target.pitch))) return Number(target.pitch);
         return 0;
+    }
+
+    // 命中测试：egoHitRegions 是这一帧画出的圆柱屏幕盒，取 zc 最小的那个（最靠前）。
+    function egoEntityAt(clientX, clientY) {
+        const rect = egoCanvas.getBoundingClientRect();
+        const x = clientX - rect.left, y = clientY - rect.top;
+        let best = null;
+        for (const region of egoHitRegions) {
+            if (x < region.x1 || x > region.x2 || y < region.y1 || y > region.y2) continue;
+            if (!best || region.zc < best.zc) best = region;
+        }
+        return best ? best.entity : null;
+    }
+
+    // 点击圆柱体：把相机换成那个角色，重置手动微调，并让后端按新目标重新裁剪 100m。
+    function switchEgoViewpoint(entity) {
+        if (!entity) return;
+        const key = entity.key || null;
+        const id = entity.id || null;
+        if (key ? key === egoTargetKey : (id && id === egoTargetId)) return;
+        egoTargetKey = key;
+        egoTargetId = id;
+        egoYawOffset = 0;
+        egoPitchOffset = 0;
+        egoHoverKey = null;
+        // 同步地图选中状态/队友按钮，但不 recenter，避免背后地图跳动。
+        selectedPlayerId = id;
+        selectedEntityKey = key;
+        document.querySelectorAll('.player-btn').forEach(btn =>
+            btn.classList.toggle('active', btn.dataset.playerId == (id || '')));
+        saveSelection();
+        pushSubscription(true);
+        renderEgoView();
     }
 
     function resizeEgoCanvas() {
@@ -955,6 +1010,7 @@
             return { sx, sy, zc, dz, dist: Math.hypot(dx, dy, dz) };
         };
 
+        egoHitRegions = [];
         const localTeam = localPlayer && Number.isFinite(Number(localPlayer.team_id)) ? Number(localPlayer.team_id) : null;
         const targetKey = target.key || null;
         const targetId = target.id || null;
@@ -1006,6 +1062,29 @@
             const color = d.isAi ? '#FFA726' : (d.isTeammate ? '#69F0AE' : '#FF5252');
             const capH = clampNumber(focal * 175 / d.zc, 7, 56);
             const capW = Math.max(3, capH * 0.42);
+            // 仅真人玩家有装备读数：圆柱外一圈双半环，上半头盔、下半护甲，
+            // 弧长=耐久百分比，颜色用后端算好的品质色。
+            const gear = playerGear(d.entity);
+            let gearRx = 0;
+            if (gear) {
+                gearRx = capW / 2 + clampNumber(capH * 0.16, 3.5, 9);
+                const gearRy = capH / 2 + clampNumber(capH * 0.06, 2, 5);
+                egoCtx.lineWidth = clampNumber(capH * 0.09, 2, 4);
+                egoCtx.strokeStyle = 'rgba(255,255,255,.10)';
+                egoCtx.beginPath();
+                egoCtx.ellipse(d.sx, d.sy, gearRx, gearRy, 0, 0, Math.PI * 2);
+                egoCtx.stroke();
+                const drawGearArc = (piece, start) => {
+                    if (!piece) return;
+                    egoCtx.strokeStyle = piece.color;
+                    egoCtx.beginPath();
+                    egoCtx.ellipse(d.sx, d.sy, gearRx, gearRy, 0,
+                        start, start + Math.PI * clampNumber(piece.cur / piece.max, 0, 1));
+                    egoCtx.stroke();
+                };
+                drawGearArc(gear.helmet, Math.PI); // 上半环
+                drawGearArc(gear.armor, 0);        // 下半环
+            }
             egoCtx.fillStyle = color;
             egoCtx.strokeStyle = 'rgba(0,0,0,.85)';
             egoCtx.lineWidth = 1;
@@ -1014,6 +1093,41 @@
             else egoCtx.rect(d.sx - capW / 2, d.sy - capH / 2, capW, capH);
             egoCtx.fill();
             egoCtx.stroke();
+            if (gear) {
+                // 耐久值贴在护甲环右侧：头盔在上、护甲在下。
+                egoCtx.font = '10px Arial';
+                egoCtx.textAlign = 'left';
+                const textX = d.sx + gearRx + 4;
+                if (gear.helmet) {
+                    egoCtx.fillStyle = gear.helmet.color;
+                    egoCtx.fillText(`盔 ${Math.round(gear.helmet.cur)}/${Math.round(gear.helmet.max)}`,
+                        textX, d.sy - Math.max(3, capH * 0.12));
+                }
+                if (gear.armor) {
+                    egoCtx.fillStyle = gear.armor.color;
+                    egoCtx.fillText(`甲 ${Math.round(gear.armor.cur)}/${Math.round(gear.armor.max)}`,
+                        textX, d.sy + Math.max(10, capH * 0.34));
+                }
+            }
+            // 悬停高亮：提示这个圆柱可以点击切换视角。
+            const hitKey = d.entity.key || d.entity.id;
+            if (hitKey && hitKey === egoHoverKey) {
+                egoCtx.strokeStyle = 'rgba(255,255,255,.9)';
+                egoCtx.lineWidth = 1.5;
+                egoCtx.beginPath();
+                if (egoCtx.roundRect) egoCtx.roundRect(d.sx - capW / 2 - 3, d.sy - capH / 2 - 3, capW + 6, capH + 6, (capW + 6) / 2);
+                else egoCtx.rect(d.sx - capW / 2 - 3, d.sy - capH / 2 - 3, capW + 6, capH + 6);
+                egoCtx.stroke();
+            }
+            egoHitRegions.push({
+                entity: d.entity,
+                key: hitKey,
+                x1: d.sx - Math.max(capW / 2 + 4, 10),
+                x2: d.sx + Math.max(capW / 2 + 4, 10),
+                y1: d.sy - capH / 2 - 4,
+                y2: d.sy + capH / 2 + 4,
+                zc: d.zc
+            });
             const dzM = d.dz / 100;
             const heightText = Math.abs(dzM) >= 0.5 ? ` ${dzM > 0 ? '↑' : '↓'}${Math.abs(dzM).toFixed(1)}m` : '';
             const kindLabel = d.isAi ? 'AI' : (d.isTeammate ? '队友' : '敌人');
@@ -1439,10 +1553,21 @@
     });
     egoCanvas.addEventListener('pointerdown', (e) => {
         egoDragging = true; egoDragX = e.clientX; egoDragY = e.clientY;
+        egoPressX = e.clientX; egoPressY = e.clientY; egoPressMoved = false;
         if (egoCanvas.setPointerCapture) egoCanvas.setPointerCapture(e.pointerId);
     });
     egoCanvas.addEventListener('pointermove', (e) => {
-        if (!egoDragging) return;
+        if (!egoDragging) {
+            // 悬停命中：指针变手型并描边，提示可以点击切换。
+            const hovered = egoEntityAt(e.clientX, e.clientY);
+            const key = hovered ? (hovered.key || hovered.id) : null;
+            egoCanvas.style.cursor = hovered ? 'pointer' : 'crosshair';
+            if (key !== egoHoverKey) { egoHoverKey = key; renderEgoView(); }
+            return;
+        }
+        // 先过 5px 阈值再开始转视角，避免单击时的抖动改变 yaw/pitch。
+        if (!egoPressMoved && Math.hypot(e.clientX - egoPressX, e.clientY - egoPressY) > 5) egoPressMoved = true;
+        if (!egoPressMoved) return;
         const dx = e.clientX - egoDragX, dy = e.clientY - egoDragY;
         egoDragX = e.clientX; egoDragY = e.clientY;
         egoYawOffset += dx * 0.35;
@@ -1453,8 +1578,20 @@
         egoDragging = false;
         if (e && egoCanvas.releasePointerCapture) { try { egoCanvas.releasePointerCapture(e.pointerId); } catch (_) {} }
     };
-    egoCanvas.addEventListener('pointerup', endEgoDrag);
+    egoCanvas.addEventListener('pointerup', (e) => {
+        const wasClick = egoDragging && !egoPressMoved;
+        endEgoDrag(e);
+        if (!wasClick) return;
+        const entity = egoEntityAt(e.clientX, e.clientY);
+        if (entity) switchEgoViewpoint(entity);
+    });
     egoCanvas.addEventListener('pointercancel', endEgoDrag);
+    egoCanvas.addEventListener('pointerleave', () => {
+        if (egoDragging || !egoHoverKey) return;
+        egoHoverKey = null;
+        egoCanvas.style.cursor = 'crosshair';
+        renderEgoView();
+    });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && egoMode) exitEgoMode(); });
     window.addEventListener('resize', () => { if (egoMode) { resizeEgoCanvas(); resizeEgoMinimap(); renderEgoView(); } });
     // 后端重启/页面长时间挂起后订阅可能丢失；每 10 秒重发一次（请求体很小）。

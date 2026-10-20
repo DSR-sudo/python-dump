@@ -364,11 +364,14 @@ refresh();
 
         entities = []
         for entity in entities_in:
-            if clean and str(entity.get("type") or "") == "ai":
+            # 视角目标就是相机本身：即使纯净模式会隐藏 AI/尸体，也不能把目标裁掉，
+            # 否则前端会变成“目标已丢失”。只保留它一个，其他同类仍然不下发。
+            is_target = entity is target
+            if clean and not is_target and str(entity.get("type") or "") == "ai":
                 continue
-            if clean and not alive(entity):
+            if clean and not is_target and not alive(entity):
                 continue
-            if not within(entity):
+            if not is_target and not within(entity):
                 continue
             entities.append(entity)
 
