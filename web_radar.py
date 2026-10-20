@@ -3,6 +3,7 @@ import mimetypes
 import os
 import random
 import threading
+import time
 import zlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -55,6 +56,13 @@ class WebRadarService:
         self._game_data_cached_version = None
         self._game_data_body = b""
         self._game_data_token = ""
+        self._game_data_snapshot = None
+        # 每客户端订阅：clean/resources/qualities/ego 过滤在服务端完成，
+        # 只把该客户端需要的实体和物资放进 /api/data，降低 60Hz 轮询流量。
+        self._client_lock = threading.Lock()
+        self._client_subs = {}
+        self._client_cache = {}
+        self._client_last_seen = {}
 
         self.port = self._read_port_from_file(self.default_port)
         self.password = self._generate_password()
@@ -191,6 +199,23 @@ refresh();
         except Exception:
             return None
 
+    def _build_game_data_cached(self, version):
+        """同一版本只构建一次全量快照；按客户端过滤时共享这份快照。"""
+        if version is not None:
+            with self._game_data_lock:
+                if version == self._game_data_cached_version and self._game_data_snapshot is not None:
+                    return self._game_data_snapshot
+        snapshot = self._build_game_data()
+        if version is not None:
+            with self._game_data_lock:
+                if version == self._game_data_cached_version and self._game_data_snapshot is not None:
+                    return self._game_data_snapshot
+                self._game_data_cached_version = version
+                self._game_data_snapshot = snapshot
+                self._game_data_body = b""
+                self._game_data_token = ""
+        return snapshot
+
     def get_game_data_payload(self, force=False):
         """返回 /api/data 的 (body, token)。
 
@@ -203,13 +228,206 @@ refresh();
             with self._game_data_lock:
                 if version == self._game_data_cached_version and self._game_data_body:
                     return self._game_data_body, self._game_data_token
-        body = json.dumps(self._build_game_data(), ensure_ascii=False).encode("utf-8")
+        snapshot = self._build_game_data_cached(version)
+        body = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
         token = format(zlib.crc32(body), "08x")
         if version is not None:
             with self._game_data_lock:
-                self._game_data_cached_version = version
-                self._game_data_body = body
-                self._game_data_token = token
+                if version == self._game_data_cached_version:
+                    self._game_data_body = body
+                    self._game_data_token = token
+        return body, token
+
+    MAX_CLIENT_SUBS = 32
+
+    @staticmethod
+    def _normalize_subscription(payload):
+        """把前端订阅压成稳定结构，未知/越界值一律回落默认。"""
+        if not isinstance(payload, dict):
+            return {}
+        clean = bool(payload.get("clean"))
+        resources = bool(payload.get("resources", True))
+        raw_qualities = payload.get("qualities")
+        if isinstance(raw_qualities, list):
+            qualities = sorted({int(q) for q in raw_qualities if isinstance(q, (int, float))})
+        else:
+            qualities = list(range(7))
+        raw_ego = payload.get("ego")
+        ego = raw_ego if isinstance(raw_ego, dict) else {}
+        ego_out = {}
+        target_key = str(ego.get("target_key") or "").strip()[:64]
+        target_id = str(ego.get("target_id") or "").strip()[:64]
+        if ego.get("enabled") and (target_key or target_id):
+            try:
+                radius_cm = int(ego.get("radius_cm") or 10000)
+            except (TypeError, ValueError):
+                radius_cm = 10000
+            ego_out = {
+                "target_key": target_key,
+                "target_id": target_id,
+                "radius_cm": max(1000, min(200000, radius_cm)),
+            }
+        return {
+            "clean": clean,
+            "resources": resources,
+            "qualities": qualities,
+            "ego": ego_out,
+        }
+
+    @staticmethod
+    def _subscription_signature(subscription):
+        raw = json.dumps(subscription, sort_keys=True, ensure_ascii=False)
+        return zlib.crc32(raw.encode("utf-8"))
+
+    @staticmethod
+    def _is_default_subscription(subscription):
+        return (
+            not subscription.get("clean")
+            and bool(subscription.get("resources", True))
+            and not subscription.get("ego")
+            and set(subscription.get("qualities") or []) >= set(range(7))
+        )
+
+    def set_client_subscription(self, client_id, payload):
+        client_id = str(client_id or "").strip()[:64]
+        if not client_id:
+            return False
+        subscription = self._normalize_subscription(payload)
+        with self._client_lock:
+            self._client_subs[client_id] = subscription
+            self._client_cache.pop(client_id, None)
+            self._client_last_seen[client_id] = time.monotonic()
+            if len(self._client_subs) > self.MAX_CLIENT_SUBS:
+                oldest = min(self._client_last_seen, key=self._client_last_seen.get)
+                self._client_subs.pop(oldest, None)
+                self._client_cache.pop(oldest, None)
+                self._client_last_seen.pop(oldest, None)
+        return True
+
+    @staticmethod
+    def _filter_radar_snapshot(snapshot, subscription):
+        """按订阅裁剪一份雷达快照；返回新 dict，不修改缓存里的原对象。"""
+        if not isinstance(snapshot, dict) or not subscription:
+            return snapshot
+        clean = bool(subscription.get("clean"))
+        resources = bool(subscription.get("resources", True))
+        qualities = set(subscription.get("qualities") or [])
+        ego = subscription.get("ego") or {}
+        target_key = str(ego.get("target_key") or "")
+        target_id = str(ego.get("target_id") or "")
+        radius_cm = int(ego.get("radius_cm") or 0)
+        radius_sq = radius_cm * radius_cm
+
+        def coords(value):
+            position = value.get("position") if isinstance(value, dict) else None
+            if not isinstance(position, dict):
+                return None
+            try:
+                return (
+                    float(position.get("x") or 0.0),
+                    float(position.get("y") or 0.0),
+                    float(position.get("z") or 0.0),
+                )
+            except (TypeError, ValueError):
+                return None
+
+        def alive(entity):
+            if entity.get("has_health") is False:
+                return True
+            try:
+                return float(entity.get("health") or 0.0) > 0.0
+            except (TypeError, ValueError):
+                return True
+
+        entities_in = snapshot.get("entities") or []
+        target = None
+        if target_key or target_id:
+            for entity in entities_in:
+                if target_key and str(entity.get("key") or "") == target_key:
+                    target = entity
+                    break
+                if target_id and str(entity.get("id") or "") == target_id:
+                    target = entity
+                    break
+        origin = coords(target) if target is not None else None
+
+        def within(value):
+            if radius_sq <= 0 or origin is None:
+                return True
+            point = coords(value)
+            if point is None:
+                return False
+            dx = point[0] - origin[0]
+            dy = point[1] - origin[1]
+            dz = point[2] - origin[2]
+            return dx * dx + dy * dy + dz * dz <= radius_sq
+
+        entities = []
+        for entity in entities_in:
+            if clean and str(entity.get("type") or "") == "ai":
+                continue
+            if clean and not alive(entity):
+                continue
+            if not within(entity):
+                continue
+            entities.append(entity)
+
+        items = []
+        if resources and not clean:
+            for item in snapshot.get("items") or []:
+                try:
+                    quality = int(item.get("item_quality", 0) or 0)
+                except (TypeError, ValueError):
+                    quality = 0
+                if quality not in qualities:
+                    continue
+                if not within(item):
+                    continue
+                items.append(item)
+
+        entity_ids = {str(entity.get("id") or "") for entity in entities}
+        teammates = [
+            teammate for teammate in (snapshot.get("teammates") or [])
+            if str(teammate.get("id") or "") in entity_ids
+        ]
+
+        filtered = dict(snapshot)
+        filtered["entities"] = entities
+        filtered["items"] = items
+        filtered["teammates"] = teammates
+        meta = dict(snapshot.get("meta") or {})
+        meta["entity_count"] = len(entities)
+        meta["item_count"] = len(items)
+        meta["teammate_count"] = len(teammates)
+        meta["player_count"] = sum(1 for entity in entities if str(entity.get("type") or "") != "ai")
+        meta["ai_count"] = sum(1 for entity in entities if str(entity.get("type") or "") == "ai")
+        filtered["meta"] = meta
+        return filtered
+
+    def get_client_game_payload(self, client_id, force=False):
+        """/api/data 的按客户端裁剪版本；无订阅或全默认时复用全局缓存。"""
+        client_id = str(client_id or "").strip()[:64]
+        if not client_id:
+            return self.get_game_data_payload(force=force)
+        with self._client_lock:
+            subscription = dict(self._client_subs.get(client_id) or {})
+            self._client_last_seen[client_id] = time.monotonic()
+        if not subscription or self._is_default_subscription(subscription):
+            return self.get_game_data_payload(force=force)
+        signature = self._subscription_signature(subscription)
+        version = None if force else self._game_data_version()
+        if version is not None:
+            with self._client_lock:
+                cached = self._client_cache.get(client_id)
+            if cached and cached[0] == version and cached[1] == signature:
+                return cached[3], cached[2]
+        snapshot = self._filter_radar_snapshot(
+            self._build_game_data_cached(version), subscription)
+        body = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
+        token = format(zlib.crc32(body), "08x")
+        if version is not None:
+            with self._client_lock:
+                self._client_cache[client_id] = (version, signature, token, body)
         return body, token
 
     def _build_rwvg_data(self):
@@ -287,6 +505,13 @@ refresh();
                     or query_token == "963007"
                 )
 
+            def _client_id(self):
+                client_id = (self.headers.get("X-Client-Id", "") or "").strip()
+                if not client_id:
+                    query = parse_qs(urlparse(self.path).query)
+                    client_id = (query.get("client_id") or [""])[0].strip()
+                return client_id[:64]
+
             def _send_json(self, payload, status=200):
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
@@ -302,6 +527,35 @@ refresh();
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def do_POST(self):
+                parsed = urlparse(self.path)
+                if parsed.path != "/api/subscription":
+                    self._send_json({"error": "Not Found"}, status=404)
+                    return
+                query = parse_qs(parsed.query)
+                query_token = (query.get("token") or [""])[0].strip()
+                if not self._is_authorized(query_token=query_token):
+                    self._send_json({"error": "Unauthorized"}, status=401)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0") or 0)
+                except ValueError:
+                    length = 0
+                if length <= 0 or length > 16384:
+                    self._send_json({"error": "Bad Request"}, status=400)
+                    return
+                try:
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                except Exception:
+                    self._send_json({"error": "Bad Request"}, status=400)
+                    return
+                if not service.set_client_subscription(self._client_id(), payload):
+                    self._send_json({"error": "Bad Request"}, status=400)
+                    return
+                self.send_response(204)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def do_GET(self):
                 parsed = urlparse(self.path)
@@ -322,7 +576,7 @@ refresh();
                     # nocache 请求总是重新构建并返回完整负载，忽略前端 token。
                     forced = bool(query.get("nocache")) or bool(
                         self.headers.get("X-Data-No-Cache", ""))
-                    body, token = service.get_game_data_payload(force=forced)
+                    body, token = service.get_client_game_payload(self._client_id(), force=forced)
                     if not forced and self.headers.get("X-Data-Token", "") == token:
                         self.send_response(204)
                         self.send_header("X-Data-Token", token)
