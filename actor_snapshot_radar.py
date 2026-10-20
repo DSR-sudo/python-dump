@@ -17,9 +17,10 @@ HERO_FIELD = 1 << 8
 ITEM_ID_FIELD = 1 << 9
 ITEM_QUALITY_FIELD = 1 << 10
 DIRECTION_FIELD = 1 << 11
-PASSWORD_FIELD = 1 << 12
+VIEW_PITCH_FIELD = 1 << 12
 HELMET_FIELD = 1 << 13
 ARMOR_FIELD = 1 << 14
+LOCAL_PAWN_RECORD_FIELD = 1 << 15
 VIEW_LOCAL_PAWN_FIELD = 1 << 0
 VIEW_CONTROL_ROTATION_YAW_FIELD = 1 << 1
 ITEM_KINDS = frozenset(("Item", "Container", "DeadBox", "Box"))
@@ -62,16 +63,18 @@ def _local_player_from_snapshot(
     required_fields = VIEW_LOCAL_PAWN_FIELD | VIEW_CONTROL_ROTATION_YAW_FIELD
     if view_fields & required_fields != required_fields or not bool(view.get("has_yaw")):
         return None
-    local_pawn = int(view.get("local_pawn", 0) or 0)
-    local_id = f"0x{local_pawn:X}"
+    # 记录里没有 actor 指针，无法用 local_pawn 反查；C 端在读本地 pawn 时
+    # 置位 PMU_LOCAL，这里按标志匹配。朝向取头部 yaw（ControlRotation），
+    # 比记录里的 root+0x204 身体朝向更接近真实视角。
     for index, entity in enumerate(entities):
-        if entity.get("id") != local_id:
+        if not entity.get("is_local"):
             continue
         yaw = float(view["yaw"])
         entities[index] = {**entity, "orientation": yaw, "has_orientation": True}
         return {
-            "id": local_id, "team_id": int(entity.get("team_id", 0) or 0),
-            "camp_id": 0, "yaw": yaw, "position": dict(entity["position"]),
+            "id": entity["id"], "team_id": int(entity.get("team_id", 0) or 0),
+            "camp_id": 0, "yaw": yaw, "pitch": entity.get("view_pitch"),
+            "position": dict(entity["position"]),
             "neck_position": dict(entity["position"]),
         }
     return None
@@ -139,7 +142,7 @@ def _item(
     raw_quality = record.get("item_quality", 0) if has_item_quality else 0
     item_quality = effective_item_quality(item_id, raw_quality)
     quality_label, quality_color = quality_display(item_quality)
-    has_password = bool(valid_fields & PASSWORD_FIELD)
+    # 容器密码从未发布（容器整体排除出快照），bit 12 现用于角色视角俯仰。
     return {
         "id": entity_id,
         "type": "deadbody" if kind == "DeadBox" else "item",
@@ -150,8 +153,8 @@ def _item(
         "item_quality_label": quality_label,
         "item_quality_color": quality_color,
         "dead_box_name": kind if kind == "DeadBox" else "",
-        "password": int(record.get("password", 0) or 0),
-        "has_password": has_password,
+        "password": 0,
+        "has_password": False,
         "position": position,
         "source_kind": kind,
     }
@@ -172,6 +175,9 @@ def _entity(
     has_hero = not has_valid_fields or bool(valid_fields & HERO_FIELD)
     has_direction = bool(valid_fields & DIRECTION_FIELD)
     direction = float(record.get("direction", 0.0) or 0.0) if has_direction else None
+    has_view_pitch = bool(valid_fields & VIEW_PITCH_FIELD)
+    view_pitch = float(record.get("view_pitch", 0.0) or 0.0) if has_view_pitch else None
+    is_local_pawn = bool(valid_fields & LOCAL_PAWN_RECORD_FIELD)
     # v10 装备块：只发真人头盔/护甲的等级与耐久（C 端仅在 PMU_PLAYER 上读取）。
     has_helmet = bool(valid_fields & HELMET_FIELD)
     has_armor = bool(valid_fields & ARMOR_FIELD)
@@ -184,6 +190,9 @@ def _entity(
         "position": position,
         "orientation": direction,
         "has_orientation": has_direction,
+        "view_pitch": view_pitch,
+        "has_view_pitch": has_view_pitch,
+        "is_local": is_local_pawn,
         "health": float(record.get("health", 0.0) or 0.0) if has_health else None,
         "max_health": float(record.get("max_health", 0.0) or 0.0) if has_max_health else None,
         "has_health": has_health,

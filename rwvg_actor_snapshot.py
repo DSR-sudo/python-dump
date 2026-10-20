@@ -47,14 +47,18 @@ RWVG_ACTOR_SNAPSHOT_FLAG_FULL = 1 << 0
 RWVG_ACTOR_SNAPSHOT_HAS_ITEM_ID = 1 << 9
 RWVG_ACTOR_SNAPSHOT_HAS_ITEM_QUALITY = 1 << 10
 RWVG_ACTOR_SNAPSHOT_HAS_DIRECTION = 1 << 11
-RWVG_ACTOR_SNAPSHOT_HAS_PASSWORD = 1 << 12
+# v8+ 记录槽位：原为容器密码，容器已排除出快照故恒为 0；现复用为角色视角俯仰
+# （角度制 f32 位型）。bit 15 标记本地 pawn 那条记录。
+RWVG_ACTOR_SNAPSHOT_HAS_VIEW_PITCH = 1 << 12
+RWVG_ACTOR_SNAPSHOT_HAS_LOCAL = 1 << 15
 # v10 装备块：仅真人记录置位，且只有槽位读成功且确实穿了（item_id!=0）才置位。
 RWVG_ACTOR_SNAPSHOT_HAS_HELMET = 1 << 13
 RWVG_ACTOR_SNAPSHOT_HAS_ARMOR = 1 << 14
 
 
 def _float_from_bits(bits: int) -> float:
-    return struct.unpack("<f", struct.pack("<I", bits))[0]
+    # 字段可能按有符号 i 解包（如视角俯仰槽），先掩回 32 位再解释为 f32。
+    return struct.unpack("<f", struct.pack("<I", int(bits) & 0xFFFFFFFF))[0]
 
 
 def _kind_name(kind: int) -> str:
@@ -70,7 +74,7 @@ def _parse_record(payload: bytes, offset: int, record_id: int):
      pos_x, pos_y, pos_z, position_source, last_db_position_tsc, team_id,
      health_bits, max_health_bits, weapon_id, hero_id, item_id, item_quality,
      valid_fields, attempts, failures, first_failure,
-     direction_bits, password,
+     direction_bits, view_pitch_bits,
      helmet_level, helmet_durability_bits, helmet_max_durability_bits,
      armor_level, armor_durability_bits, armor_max_durability_bits) = values
     record = {
@@ -94,7 +98,10 @@ def _parse_record(payload: bytes, offset: int, record_id: int):
         "item_name": item_name(item_id) if valid_fields & RWVG_ACTOR_SNAPSHOT_HAS_ITEM_ID else "",
         "direction_bits": int(direction_bits),
         "direction": _float_from_bits(direction_bits),
-        "password": int(password),
+        "view_pitch_bits": int(view_pitch_bits) & 0xFFFFFFFF,
+        "view_pitch": _float_from_bits(view_pitch_bits),
+        "has_view_pitch": bool(valid_fields & RWVG_ACTOR_SNAPSHOT_HAS_VIEW_PITCH),
+        "is_local": bool(valid_fields & RWVG_ACTOR_SNAPSHOT_HAS_LOCAL),
         "helmet_level": int(helmet_level),
         "helmet_durability": _float_from_bits(helmet_durability_bits),
         "helmet_max_durability": _float_from_bits(helmet_max_durability_bits),
