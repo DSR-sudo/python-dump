@@ -178,11 +178,16 @@ def _entity(
     has_view_pitch = bool(valid_fields & VIEW_PITCH_FIELD)
     view_pitch = float(record.get("view_pitch", 0.0) or 0.0) if has_view_pitch else None
     is_local_pawn = bool(valid_fields & LOCAL_PAWN_RECORD_FIELD)
+    # record_id 是快照内序号，跨帧可能变化；mesh 指针在 actor 生命周期内稳定，
+    # 供前端持续锁定"视角目标"。
+    mesh = int(record.get("mesh", 0) or 0)
+    stable_key = f"mesh:{mesh:X}" if mesh else entity_id
     # v10 装备块：只发真人头盔/护甲的等级与耐久（C 端仅在 PMU_PLAYER 上读取）。
     has_helmet = bool(valid_fields & HELMET_FIELD)
     has_armor = bool(valid_fields & ARMOR_FIELD)
     return {
         "id": entity_id,
+        "key": stable_key,
         "name": kind,
         "type": "ai" if kind in AI_KINDS else "player",
         "team_id": int(record.get("team_id", 0) or 0) if has_team else 0,

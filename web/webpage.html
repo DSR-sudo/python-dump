@@ -60,6 +60,19 @@
         .calibrate-marker { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border: 2px solid #ff5252; border-radius: 50%; color: #fff; font-size: 10px; line-height: 18px; text-align: center; text-shadow: 0 1px 2px #000; pointer-events: none; z-index: 30; }
         .entity-container.calibrate-entity .entity-body { outline: 2px solid #40c4ff; outline-offset: 3px; }
         #cal-entity { color: #9cdcff; }
+        /* 视角模式：以选中角色的眼睛为相机，客户端投影 xyz+yaw+pitch，服务端只提供数据 */
+        #ego-toggle { min-width: 52px; min-height: 36px; padding: 8px 10px; background-color: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+        #ego-toggle:disabled { opacity: 0.45; cursor: default; }
+        #ego-view { position: fixed; inset: 0; z-index: 300; background: #000; display: none; }
+        #ego-view.open { display: block; }
+        #ego-canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+        #ego-hud { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 10px; background: rgba(18,18,18,.8); border: 1px solid #333; border-radius: 6px; color: #ddd; font-size: 12px; line-height: 1.4; }
+        #ego-hud .ego-title { font-weight: bold; color: #9cdcff; }
+        #ego-hud button { padding: 5px 9px; background: #444; color: #eee; border: 1px solid #666; border-radius: 4px; font-size: 12px; cursor: pointer; }
+        #ego-hud button:hover { background: #555; }
+        #ego-hud input[type=range] { width: 110px; vertical-align: middle; }
+        #ego-hud .ego-small { color: #999; font-size: 11px; }
+        #ego-hint { position: absolute; left: 10px; bottom: 10px; color: #777; font-size: 11px; text-shadow: 0 1px 2px #000; pointer-events: none; }
     </style>
 </head>
 <body>
@@ -94,6 +107,7 @@
     <div id="bottom-controls">
         <button id="resource-toggle" class="active" type="button" aria-pressed="true">资源</button>
         <button id="clean-toggle" type="button" aria-pressed="false" title="只显示玩家，隐藏物资与AI">纯净模式</button>
+        <button id="ego-toggle" type="button" title="以选中角色的视角查看前方（先点地图上的角色选中）">视角</button>
         <button id="calibrate-toggle" type="button" aria-pressed="false" title="点地图取点，微调当前地图的校准">校准</button>
     </div>
     <div id="calibrate-panel">
@@ -123,6 +137,17 @@
             <button id="cal-ent-2" class="cal-btn" type="button">用选中实体</button>
         </div>
         <textarea id="cal-code" readonly spellcheck="false"></textarea>
+    </div>
+    <div id="ego-view">
+        <canvas id="ego-canvas"></canvas>
+        <div id="ego-hud">
+            <span class="ego-title" id="ego-target">视角: —</span>
+            <label>FOV <input id="ego-fov" type="range" min="45" max="120" step="1" value="90"><span id="ego-fov-value">90°</span></label>
+            <span id="ego-angles" class="ego-small">yaw — · pitch —</span>
+            <button id="ego-reset" type="button" title="清除拖动微调，回到角色真实朝向">重置视角</button>
+            <button id="ego-exit" type="button">退出</button>
+        </div>
+        <div id="ego-hint">拖动画面微调 yaw / pitch · Esc 退出</div>
     </div>
     <script>
     const mapDimensions = {
@@ -232,6 +257,10 @@
     }
 
     let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1, resourcesVisible = true, resourcesVisibleBeforeClean = true, cleanMode = false;
+    // 视角模式状态：egoTargetKey 用 mesh 稳定锁定目标，避免快照 record_id 漂移
+    let egoMode = false, egoTargetKey = null, egoTargetId = null, egoFovDeg = Math.max(45, Math.min(120, Number(localStorage.getItem('egoFov') || 90) || 90));
+    let egoYawOffset = 0, egoPitchOffset = 0, egoDragging = false, egoDragX = 0, egoDragY = 0;
+    let selectedEntityKey = null;
     var entitiesToRender = [];
     var itemsToRender = [];
     const selectedItemQualities = new Set([0, 1, 2, 3, 4, 5, 6]);
@@ -373,6 +402,7 @@
             }
             if (forceUpdate || data.teammates.length !== teammates.length) updatePlayerButtons();
             if (pendingPlayerSelection !== null) { selectPlayer(pendingPlayerSelection); pendingPlayerSelection = null; }
+            if (egoMode) { renderEgoView(); return; }
             if (isFollowing) recenterView();
             map.innerHTML = '';
             entitiesToRender.forEach(entityData => {
@@ -529,7 +559,256 @@
         updateGameData(true);
     }
 
-    function selectPlayer(playerId) { selectedPlayerId = playerId; isFollowing = true; document.querySelectorAll('.player-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.playerId == (playerId || ''))); recenterView(); saveSelection(); }
+    function selectPlayer(playerId) {
+        selectedPlayerId = playerId;
+        const selected = playerId ? entitiesToRender.find(e => e.id == playerId) : null;
+        selectedEntityKey = selected ? (selected.key || null) : null;
+        isFollowing = true;
+        document.querySelectorAll('.player-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.playerId == (playerId || '')));
+        if (egoMode) {
+            egoTargetKey = selectedEntityKey;
+            egoTargetId = playerId || null;
+            egoYawOffset = 0;
+            egoPitchOffset = 0;
+            renderEgoView();
+        }
+        recenterView();
+        saveSelection();
+    }
+
+    // ===============================================================
+    // == 视角模式：选中角色后，以它的眼睛为相机把 xyz 投影到黑屏 ==
+    // == 服务端只提供 xyz + yaw + view_pitch，投影全部在客户端完成 ==
+    // ===============================================================
+    const egoView = document.getElementById('ego-view');
+    const egoCanvas = document.getElementById('ego-canvas');
+    const egoCtx = egoCanvas.getContext('2d');
+    let egoCanvasW = 0, egoCanvasH = 0;
+
+    function clampNumber(value, lo, hi) { return Math.max(lo, Math.min(hi, value)); }
+
+    function entityFromTarget(target) {
+        let el = target;
+        while (el && el !== mapContainer) {
+            if (el.classList && el.classList.contains('entity-container')) {
+                return entitiesToRender.find(e => e.id === el.dataset.entityId) || null;
+            }
+            el = el.parentElement;
+        }
+        return null;
+    }
+
+    function resolveEgoTarget() {
+        if (egoTargetKey) {
+            const byKey = entitiesToRender.find(e => e.key === egoTargetKey);
+            if (byKey) return byKey;
+        }
+        if (egoTargetId) {
+            const byId = entitiesToRender.find(e => e.id === egoTargetId);
+            if (byId) { egoTargetKey = byId.key || null; return byId; }
+            // UTILS 回退的本地玩家不在快照实体列表里，直接用它
+            if (localPlayer && localPlayer.id === egoTargetId) return localPlayer;
+            // 之前选中的目标暂时不在这一帧里，别偷偷换成别人
+            return null;
+        }
+        let self = entitiesToRender.find(e => e.is_local);
+        if (!self && localPlayer) self = entitiesToRender.find(e => e.id === localPlayer.id);
+        return self || localPlayer || null;
+    }
+
+    function egoTargetPitch(target) {
+        if (!target) return 0;
+        if (target.has_view_pitch && Number.isFinite(Number(target.view_pitch))) return Number(target.view_pitch);
+        if (target.pitch !== undefined && Number.isFinite(Number(target.pitch))) return Number(target.pitch);
+        return 0;
+    }
+
+    function resizeEgoCanvas() {
+        const rect = egoView.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        egoCanvasW = Math.max(1, Math.round(rect.width));
+        egoCanvasH = Math.max(1, Math.round(rect.height));
+        egoCanvas.width = Math.round(egoCanvasW * dpr);
+        egoCanvas.height = Math.round(egoCanvasH * dpr);
+        egoCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function enterEgoMode() {
+        let target = null;
+        if (selectedPlayerId) {
+            target = entitiesToRender.find(e => e.id == selectedPlayerId)
+                || (selectedEntityKey ? entitiesToRender.find(e => e.key === selectedEntityKey) : null)
+                || null;
+            if (!target) return; // 选中的角色暂时不在快照里
+        } else {
+            target = entitiesToRender.find(e => e.is_local)
+                || (localPlayer ? entitiesToRender.find(e => e.id === localPlayer.id) : null)
+                || localPlayer || null;
+        }
+        if (!target || !target.position) return;
+        egoTargetKey = target.key || selectedEntityKey || null;
+        egoTargetId = target.id || null;
+        egoYawOffset = 0;
+        egoPitchOffset = 0;
+        egoMode = true;
+        egoView.classList.add('open');
+        document.getElementById('ego-toggle')?.classList.add('active');
+        resizeEgoCanvas();
+        renderEgoView();
+    }
+
+    function exitEgoMode() {
+        if (!egoMode) return;
+        egoMode = false;
+        egoView.classList.remove('open');
+        document.getElementById('ego-toggle')?.classList.remove('active');
+        updateGameData(true);
+    }
+
+    function toggleEgoMode() { egoMode ? exitEgoMode() : enterEgoMode(); }
+
+    function renderEgoView() {
+        if (!egoMode) return;
+        if (!egoCanvasW || !egoCanvasH) resizeEgoCanvas();
+        const w = egoCanvasW, h = egoCanvasH;
+        egoCtx.fillStyle = '#000';
+        egoCtx.fillRect(0, 0, w, h);
+        const target = resolveEgoTarget();
+        const targetLabel = document.getElementById('ego-target');
+        if (!target || !target.position) {
+            targetLabel.textContent = '视角: 目标已丢失';
+            return;
+        }
+        const camX = Number(target.position.x) || 0;
+        const camY = Number(target.position.y) || 0;
+        const camZ = Number(target.position.z) || 0;
+        const baseYaw = Number(target.orientation ?? target.yaw ?? 0) || 0;
+        const basePitch = egoTargetPitch(target);
+        const yawDeg = baseYaw + egoYawOffset;
+        const pitchDeg = clampNumber(basePitch + egoPitchOffset, -85, 85);
+        const yaw = yawDeg * Math.PI / 180, pitch = pitchDeg * Math.PI / 180;
+        const cp = Math.cos(pitch), sp = Math.sin(pitch);
+        const cy = Math.cos(yaw), sy = Math.sin(yaw);
+        const Fx = cp * cy, Fy = cp * sy, Fz = sp;
+        const Rx = -sy, Ry = cy;
+        const Ux = -sp * cy, Uy = -sp * sy, Uz = cp;
+        const focal = (w / 2) / Math.tan((egoFovDeg * Math.PI / 180) / 2);
+        const near = 100; // cm，1m 内不画，避免自己/贴脸目标糊屏
+
+        // 地平线：黑屏上唯一的纵向参照，抬头它下移、低头它上移
+        const horizonY = h / 2 + focal * Math.tan(pitch);
+        if (horizonY > -2 && horizonY < h + 2) {
+            egoCtx.strokeStyle = 'rgba(120,150,180,.35)';
+            egoCtx.lineWidth = 1;
+            egoCtx.beginPath();
+            egoCtx.moveTo(0, horizonY);
+            egoCtx.lineTo(w, horizonY);
+            egoCtx.stroke();
+            egoCtx.fillStyle = 'rgba(120,150,180,.55)';
+            egoCtx.font = '10px Arial';
+            egoCtx.textAlign = 'left';
+            egoCtx.fillText('地平线', 8, clampNumber(horizonY - 4, 12, h - 4));
+        }
+
+        const project = (p) => {
+            const dx = Number(p.x) - camX, dy = Number(p.y) - camY, dz = Number(p.z) - camZ;
+            const zc = dx * Fx + dy * Fy + dz * Fz;
+            if (!(zc > near)) return null;
+            const xc = dx * Rx + dy * Ry;
+            const yc = dx * Ux + dy * Uy + dz * Uz;
+            const sx = w / 2 + focal * xc / zc;
+            const sy = h / 2 - focal * yc / zc;
+            if (sx < -40 || sx > w + 40 || sy < -40 || sy > h + 40) return null;
+            return { sx, sy, zc, dz };
+        };
+
+        const localTeam = localPlayer && Number.isFinite(Number(localPlayer.team_id)) ? Number(localPlayer.team_id) : null;
+        const targetKey = target.key || null;
+        const targetId = target.id || null;
+        const drawables = [];
+        for (const entity of entitiesToRender) {
+            if (targetKey ? entity.key === targetKey : (targetId && entity.id === targetId)) continue;
+            const type = entity.type || 'player';
+            const isAi = type === 'ai';
+            if (cleanMode && isAi) continue;
+            if (entity.has_health !== false && Number(entity.health) <= 0) continue;
+            if (!entity.position) continue;
+            const p = project(entity.position);
+            if (!p) continue;
+            const isTeammate = !isAi && localTeam !== null && Number(entity.team_id) === localTeam;
+            drawables.push({ kind: 'entity', entity, isAi, isTeammate, ...p });
+        }
+        if (resourcesVisible && !cleanMode) {
+            for (const item of itemsToRender) {
+                if (!selectedItemQualities.has(Number(item.item_quality) || 0)) continue;
+                if (!item.position) continue;
+                const p = project(item.position);
+                if (!p || p.zc > 8000) continue;
+                drawables.push({ kind: 'item', item, ...p });
+            }
+        }
+        drawables.sort((a, b) => b.zc - a.zc);
+
+        for (const d of drawables) {
+            const distM = d.zc / 100;
+            if (d.kind === 'item') {
+                const color = d.item.item_quality_color || '#ffeb3b';
+                const size = clampNumber(focal * 35 / d.zc, 3, 9);
+                egoCtx.fillStyle = color;
+                egoCtx.strokeStyle = 'rgba(0,0,0,.8)';
+                egoCtx.lineWidth = 1;
+                egoCtx.beginPath();
+                egoCtx.rect(d.sx - size / 2, d.sy - size / 2, size, size);
+                egoCtx.fill();
+                egoCtx.stroke();
+                if (d.zc < 6000) {
+                    egoCtx.fillStyle = color;
+                    egoCtx.font = '10px Arial';
+                    egoCtx.textAlign = 'center';
+                    const itemName = readableCatalogName(d.item.item_name, d.item.type === 'deadbody' ? '尸体' : '物资');
+                    egoCtx.fillText(`${itemName} ${distM.toFixed(0)}m`, d.sx, d.sy + size + 10);
+                }
+                continue;
+            }
+            const color = d.isAi ? '#FFA726' : (d.isTeammate ? '#69F0AE' : '#FF5252');
+            const capH = clampNumber(focal * 175 / d.zc, 7, 56);
+            const capW = Math.max(3, capH * 0.42);
+            egoCtx.fillStyle = color;
+            egoCtx.strokeStyle = 'rgba(0,0,0,.85)';
+            egoCtx.lineWidth = 1;
+            egoCtx.beginPath();
+            if (egoCtx.roundRect) egoCtx.roundRect(d.sx - capW / 2, d.sy - capH / 2, capW, capH, capW / 2);
+            else egoCtx.rect(d.sx - capW / 2, d.sy - capH / 2, capW, capH);
+            egoCtx.fill();
+            egoCtx.stroke();
+            const dzM = d.dz / 100;
+            const heightText = Math.abs(dzM) >= 0.5 ? ` ${dzM > 0 ? '↑' : '↓'}${Math.abs(dzM).toFixed(1)}m` : '';
+            const kindLabel = d.isAi ? 'AI' : (d.isTeammate ? '队友' : '敌人');
+            egoCtx.fillStyle = color;
+            egoCtx.font = '11px Arial';
+            egoCtx.textAlign = 'center';
+            egoCtx.fillText(`${kindLabel} ${distM.toFixed(0)}m${heightText}`, d.sx, d.sy - capH / 2 - 5);
+        }
+
+        // 准星
+        egoCtx.strokeStyle = 'rgba(255,255,255,.8)';
+        egoCtx.lineWidth = 1;
+        egoCtx.beginPath();
+        egoCtx.moveTo(w / 2 - 7, h / 2); egoCtx.lineTo(w / 2 - 2, h / 2);
+        egoCtx.moveTo(w / 2 + 2, h / 2); egoCtx.lineTo(w / 2 + 7, h / 2);
+        egoCtx.moveTo(w / 2, h / 2 - 7); egoCtx.lineTo(w / 2, h / 2 - 2);
+        egoCtx.moveTo(w / 2, h / 2 + 2); egoCtx.lineTo(w / 2, h / 2 + 7);
+        egoCtx.stroke();
+
+        const targetName = target.is_local ? '自己'
+            : (target.type === 'ai' ? 'AI' : readableCatalogName(target.hero_name, '玩家'));
+        targetLabel.textContent = `视角: ${targetName}`;
+        const hasRealPitch = (target.has_view_pitch && Number.isFinite(Number(target.view_pitch)))
+            || (target.pitch !== undefined && Number.isFinite(Number(target.pitch)));
+        document.getElementById('ego-angles').textContent =
+            `yaw ${yawDeg.toFixed(0)}° · pitch ${pitchDeg.toFixed(1)}° (${hasRealPitch ? '实测' : '自由'})`;
+    }
+
     function setResourceVisibility(visible) {
         resourcesVisible = visible;
         const toggle = document.getElementById('resource-toggle');
@@ -847,19 +1126,34 @@
         lastTouchCount = (e.touches && e.touches.length) || 0;
         if (lastTouchCount === 1) { pressX = e.touches[0].clientX; pressY = e.touches[0].clientY; }
     });
-    // 落在实体标记上的点按算「选中该实体」，其它位置才算取校准点
+    // 点实体标记=选中该角色（视角模式的目标）；校准模式下仍走取校准点
     mapContainer.addEventListener('click', (e) => {
         if (Date.now() - lastTouchPickAt <= 600) return;
         if (selectCalibrationEntity(calibrationEntityFromTarget(e.target))) return;
-        pickCalibrationPoint(e.clientX, e.clientY);
+        if (calibrateMode) { pickCalibrationPoint(e.clientX, e.clientY); return; }
+        const entity = entityFromTarget(e.target);
+        if (entity) selectPlayer(entity.id);
     });
-    // 触摸端 touchstart 已 preventDefault，合成 click 不一定来，这里补一条取点路径。
-    // 双指缩放走过的 touchstart 记下的 lastTouchCount > 1，抬指时不取点。
+    // 双击角色直接进入它的视角
+    mapContainer.addEventListener('dblclick', (e) => {
+        if (calibrateMode) return;
+        const entity = entityFromTarget(e.target);
+        if (!entity) return;
+        selectPlayer(entity.id);
+        enterEgoMode();
+    });
+    // 触摸端 touchstart 已 preventDefault，合成 click 不一定来，这里补一条路径。
+    // 双指缩放走过的 touchstart 记下的 lastTouchCount > 1，抬指时不处理。
     mapContainer.addEventListener('touchend', (e) => {
         const wasPinch = lastTouchCount > 1;
         if (!e.touches || e.touches.length === 0) lastTouchCount = 0;
-        if (wasPinch || !calibrateMode || !e.changedTouches || e.changedTouches.length !== 1) return;
+        if (wasPinch || !e.changedTouches || e.changedTouches.length !== 1) return;
         lastTouchPickAt = Date.now();
+        if (!calibrateMode) {
+            const entity = entityFromTarget(e.target);
+            if (entity) selectPlayer(entity.id);
+            return;
+        }
         if (selectCalibrationEntity(calibrationEntityFromTarget(e.target))) return;
         pickCalibrationPoint(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
     });
@@ -894,6 +1188,38 @@
     });
     document.getElementById('resource-toggle').addEventListener('click', toggleResourceVisibility);
     document.getElementById('clean-toggle').addEventListener('click', toggleCleanMode);
+    document.getElementById('ego-toggle').addEventListener('click', toggleEgoMode);
+    document.getElementById('ego-exit').addEventListener('click', exitEgoMode);
+    document.getElementById('ego-reset').addEventListener('click', () => { egoYawOffset = 0; egoPitchOffset = 0; renderEgoView(); });
+    const egoFovInput = document.getElementById('ego-fov');
+    egoFovInput.value = String(Math.round(egoFovDeg));
+    document.getElementById('ego-fov-value').textContent = `${Math.round(egoFovDeg)}°`;
+    egoFovInput.addEventListener('input', () => {
+        egoFovDeg = clampNumber(Number(egoFovInput.value) || 90, 45, 120);
+        document.getElementById('ego-fov-value').textContent = `${Math.round(egoFovDeg)}°`;
+        localStorage.setItem('egoFov', String(egoFovDeg));
+        renderEgoView();
+    });
+    egoCanvas.addEventListener('pointerdown', (e) => {
+        egoDragging = true; egoDragX = e.clientX; egoDragY = e.clientY;
+        if (egoCanvas.setPointerCapture) egoCanvas.setPointerCapture(e.pointerId);
+    });
+    egoCanvas.addEventListener('pointermove', (e) => {
+        if (!egoDragging) return;
+        const dx = e.clientX - egoDragX, dy = e.clientY - egoDragY;
+        egoDragX = e.clientX; egoDragY = e.clientY;
+        egoYawOffset += dx * 0.35;
+        egoPitchOffset = clampNumber(egoPitchOffset - dy * 0.25, -85, 85);
+        renderEgoView();
+    });
+    const endEgoDrag = (e) => {
+        egoDragging = false;
+        if (e && egoCanvas.releasePointerCapture) { try { egoCanvas.releasePointerCapture(e.pointerId); } catch (_) {} }
+    };
+    egoCanvas.addEventListener('pointerup', endEgoDrag);
+    egoCanvas.addEventListener('pointercancel', endEgoDrag);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && egoMode) exitEgoMode(); });
+    window.addEventListener('resize', () => { if (egoMode) { resizeEgoCanvas(); renderEgoView(); } });
     document.querySelectorAll('#quality-filter input[data-quality]').forEach(input => {
         input.addEventListener('change', () => {
             const quality = Number(input.dataset.quality);
