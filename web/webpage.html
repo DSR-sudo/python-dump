@@ -278,6 +278,152 @@
      * 的 -90 修正就是把捕获的胶囊中心帧换算回这个脚底帧），真实眼睛约在脚底 +160cm。
      * 相机若放在脚底，所有同高角色会恰好落在地平线上，一低头就整体出屏消失。 */
     const EGO_EYE_HEIGHT_CM = 160;
+    /* ---- 视角模式实体插值 / 航位推算（零 guest 成本，全部在前端做） ----
+     * 快照只有几 Hz，按快照直接渲染位置会一格一格跳。这里做经典实体插值：
+     * 每个角色保留最近几帧采样（打点用客户端收到时刻 performance.now()，不改协议），
+     * 相机和所有角色共用同一渲染时钟 renderTime = now − delay（delay ≈ 1.5×实测
+     * 快照间隔，自适应并夹在 180–450ms），在相邻两帧之间 lerp，rAF 60fps 完全平滑。
+     * 快照断流（加密 mesh 数据可陈旧 ~650ms）时用最近两帧速度限幅外推一小段，
+     * 超时停住；新采样造成 >1m 的跳变时向新估计短促阻尼收敛，不硬跳。 */
+    const EGO_INTERP_HISTORY_MS = 2000;      // 采样保留时长
+    const EGO_INTERP_MAX_SAMPLES = 8;        // 每实体最多保留帧数
+    const EGO_INTERP_MAX_SPEED_CMPS = 1500;  // 外推速度上限（15m/s，超出按脏数据夹紧）
+    const EGO_INTERP_MAX_EXTRAP_MS = 350;    // 超出最新一帧后最多外推时长，之后停住
+    const egoPoseHistory = new Map();        // key -> { samples, lastSeen, lastRender, blend }
+    let egoInterpDelayMs = 260;              // 渲染延迟：1.5×快照间隔（EWMA 自适应）
+    let egoLastSampleAt = 0, egoSnapshotIntervalEwma = 0;
+
+    function egoPoseKeyOf(entity) { return entity.key || `id:${entity.id}`; }
+
+    function egoAngleLerp(a, b, u) {
+        // 角度按最短弧插值，yaw/pitch 的 ±180°/360° 包裹都不会绕远路
+        const delta = ((b - a + 540) % 360) - 180;
+        return a + delta * u;
+    }
+
+    // updateGameData 每收到一份快照调用一次：给在场角色（含自己）各追加一帧采样。
+    function egoPushPoseSamples() {
+        const now = performance.now();
+        if (egoLastSampleAt > 0 && now > egoLastSampleAt + 30) {
+            const interval = now - egoLastSampleAt;
+            egoSnapshotIntervalEwma = egoSnapshotIntervalEwma
+                ? egoSnapshotIntervalEwma * 0.8 + interval * 0.2 : interval;
+            egoInterpDelayMs = clampNumber(egoSnapshotIntervalEwma * 1.5, 180, 450);
+        }
+        egoLastSampleAt = now;
+        const feed = (entity) => {
+            if (!entity || !entity.position) return;
+            const key = egoPoseKeyOf(entity);
+            let entry = egoPoseHistory.get(key);
+            if (!entry) {
+                entry = { samples: [], lastSeen: 0, lastRender: null, blend: null };
+                egoPoseHistory.set(key, entry);
+            }
+            // pitch 存净化后的值（远程角色恒 0，本机为归一化后的 ControlRotation），
+            // 避免把 RemoteViewPitch 的脏值插回相机。
+            entry.samples.push({
+                t: now,
+                x: Number(entity.position.x) || 0,
+                y: Number(entity.position.y) || 0,
+                z: Number(entity.position.z) || 0,
+                yaw: Number(entity.orientation ?? entity.yaw ?? 0) || 0,
+                pitch: egoTargetPitch(entity),
+            });
+            entry.lastSeen = now;
+            // 至少留 1 帧：清空会让后续 samples[0].t 取值崩溃
+            while (entry.samples.length > 1
+                && (entry.samples.length > EGO_INTERP_MAX_SAMPLES
+                    || entry.samples[0].t < now - EGO_INTERP_HISTORY_MS)) entry.samples.shift();
+        };
+        for (const entity of entitiesToRender) {
+            const type = entity.type || 'player';
+            if (type === 'ai' || type === 'player') feed(entity);
+        }
+        // 自己被服务端裁掉时（罕见），UTILS 回退对象也要有采样，否则相机没有插值源
+        if (localPlayer && !entitiesToRender.some(e => e.id === localPlayer.id)) feed(localPlayer);
+        for (const [key, entry] of egoPoseHistory) {
+            if (now - entry.lastSeen > 3000) egoPoseHistory.delete(key);
+        }
+    }
+
+    // 取某实体在 renderTime 的位姿；每帧对每个实体只调用一次（内部有阻尼状态）。
+    // 无采样历史返回 null，调用方回落到快照原值。
+    function egoInterpPose(entity, renderTime) {
+        const entry = egoPoseHistory.get(egoPoseKeyOf(entity));
+        if (!entry || entry.samples.length === 0) return null;
+        const samples = entry.samples;
+        let x, y, z, yaw, pitch;
+        let s0 = null;
+        for (let i = samples.length - 1; i >= 0; --i) {
+            if (samples[i].t <= renderTime) { s0 = samples[i]; break; }
+        }
+        if (s0) {
+            const index = samples.indexOf(s0);
+            const s1 = samples[index + 1] || null;
+            if (s1) {
+                // 常规插值：renderTime 落在相邻两帧之间
+                const u = clampNumber((renderTime - s0.t) / Math.max(1, s1.t - s0.t), 0, 1);
+                x = s0.x + (s1.x - s0.x) * u;
+                y = s0.y + (s1.y - s0.y) * u;
+                z = s0.z + (s1.z - s0.z) * u;
+                yaw = egoAngleLerp(s0.yaw, s1.yaw, u);
+                pitch = egoAngleLerp(s0.pitch, s1.pitch, u);
+            } else {
+                // renderTime 在最新一帧之后：断流/延迟抖动，按最近两帧速度外推
+                const prev = samples[index - 1];
+                const ahead = renderTime - s0.t;
+                const cap = Math.min(ahead, EGO_INTERP_MAX_EXTRAP_MS);
+                if (prev && ahead > 0) {
+                    const dt = s0.t - prev.t;
+                    if (dt >= 30) {
+                        let vx = (s0.x - prev.x) / dt, vy = (s0.y - prev.y) / dt, vz = (s0.z - prev.z) / dt;
+                        const speed = Math.hypot(vx, vy, vz);
+                        const scale = speed > EGO_INTERP_MAX_SPEED_CMPS
+                            ? EGO_INTERP_MAX_SPEED_CMPS / speed : 1;
+                        x = s0.x + vx * scale * cap;
+                        y = s0.y + vy * scale * cap;
+                        z = s0.z + vz * scale * cap;
+                        const yawRate = clampNumber(((s0.yaw - prev.yaw + 540) % 360 - 180) / dt, -240, 240);
+                        yaw = s0.yaw + yawRate * cap;
+                    } else { x = s0.x; y = s0.y; z = s0.z; yaw = s0.yaw; }
+                } else { x = s0.x; y = s0.y; z = s0.z; yaw = s0.yaw; }
+                pitch = s0.pitch; // 俯仰外推容易发散，保持最后一帧
+            }
+        } else {
+            // renderTime 早于最老一帧（刚进视角/刚切目标）：贴最老一帧，等采样追上
+            const oldest = samples[0];
+            x = oldest.x; y = oldest.y; z = oldest.z; yaw = oldest.yaw; pitch = oldest.pitch;
+        }
+        // 新采样与外推估计相差 >1m 时，从上一次渲染位姿短促阻尼收敛，不硬跳
+        if (entry.lastRender) {
+            const jump = Math.hypot(x - entry.lastRender.x, y - entry.lastRender.y, z - entry.lastRender.z);
+            if (jump > 100) entry.blend = { from: { ...entry.lastRender }, t0: renderTime, dur: 160 };
+        }
+        if (entry.blend) {
+            const u = clampNumber((renderTime - entry.blend.t0) / entry.blend.dur, 0, 1);
+            const f = entry.blend.from;
+            x = f.x + (x - f.x) * u;
+            y = f.y + (y - f.y) * u;
+            z = f.z + (z - f.z) * u;
+            yaw = egoAngleLerp(f.yaw, yaw, u);
+            pitch = f.pitch + (pitch - f.pitch) * u;
+            if (u >= 1) entry.blend = null;
+        }
+        entry.lastRender = { x, y, z, yaw, pitch };
+        return entry.lastRender;
+    }
+
+    // rAF 渲染循环：视角模式下 60fps 重绘，数据轮询只喂采样不再触发渲染。
+    let egoRafId = 0;
+    function egoRenderLoop() {
+        egoRafId = 0;
+        if (!egoMode) return;
+        renderEgoView();
+        egoRafId = requestAnimationFrame(egoRenderLoop);
+    }
+    function egoEnsureRenderLoop() {
+        if (egoMode && !egoRafId) egoRafId = requestAnimationFrame(egoRenderLoop);
+    }
     // 用 sessionStorage：同一浏览器的多个标签页各自订阅，避免互相覆盖后端状态。
     let clientId = sessionStorage.getItem('radarClientId') || '';
     if (!clientId) {
@@ -435,7 +581,7 @@
             }
             if (forceUpdate || data.teammates.length !== teammates.length) updatePlayerButtons();
             if (pendingPlayerSelection !== null) { selectPlayer(pendingPlayerSelection); pendingPlayerSelection = null; }
-            if (egoMode) { renderEgoView(); return; }
+            if (egoMode) { egoPushPoseSamples(); return; } // 渲染交给 rAF 循环，数据只喂插值采样
             if (isFollowing) recenterView();
             map.innerHTML = '';
             entitiesToRender.forEach(entityData => {
@@ -831,7 +977,7 @@
         return (mapAngle - worldAngle) * 180 / Math.PI;
     }
 
-    function drawEgoMinimap(target, yawDeg) {
+    function drawEgoMinimap(target, yawDeg, poseByEntity) {
         if (!egoMiniW || !egoMiniH) resizeEgoMinimap();
         const w = egoMiniW, h = egoMiniH;
         const cx = w / 2, cy = h / 2, radius = Math.min(w, h) / 2 - 2;
@@ -907,14 +1053,18 @@
         const localTeam = localPlayer && Number.isFinite(Number(localPlayer.team_id))
             ? Number(localPlayer.team_id) : null;
         for (const entity of entitiesToRender) {
-            if (!entity.position || !within(entity.position)) continue;
+            if (!entity.position) continue;
+            // 小地图实体点同样用插值位姿，和主视图同一时钟，避免双速漂移
+            const pose = poseByEntity ? poseByEntity.get(entity) : null;
+            const ePos = pose ? { x: pose.x, y: pose.y, z: pose.z } : entity.position;
+            if (!within(ePos)) continue;
             const isAi = (entity.type || 'player') === 'ai';
             if (cleanMode && isAi) continue;
             const dead = entity.has_health !== false && Number(entity.health) <= 0;
             let color = isAi ? '#FFA726'
                 : (localTeam !== null && Number(entity.team_id) === localTeam ? '#69F0AE' : '#FF5252');
             if (dead) color = 'rgba(160,160,160,.7)';
-            const point = toMini(entity.position);
+            const point = toMini(ePos);
             ctx.fillStyle = color;
             ctx.beginPath(); ctx.arc(point.x, point.y, 2.4, 0, Math.PI * 2); ctx.fill();
         }
@@ -967,11 +1117,13 @@
         resizeEgoMinimap();
         pushSubscription(true);
         renderEgoView();
+        egoEnsureRenderLoop();
     }
 
     function exitEgoMode() {
         if (!egoMode) return;
         egoMode = false;
+        if (egoRafId) { cancelAnimationFrame(egoRafId); egoRafId = 0; }
         egoView.classList.remove('open');
         document.getElementById('ego-toggle')?.classList.remove('active');
         pushSubscription(true);
@@ -992,12 +1144,20 @@
             targetLabel.textContent = '视角: 目标已丢失';
             return;
         }
-        const camX = Number(target.position.x) || 0;
-        const camY = Number(target.position.y) || 0;
+        // ---- 插值位姿：相机与所有角色共用同一渲染时钟 renderTime ----
+        // 每个实体每帧只算一次位姿（内部有阻尼收敛状态），主视图和小地图复用。
+        const renderTime = performance.now() - egoInterpDelayMs;
+        const poseByEntity = new Map();
+        for (const e of entitiesToRender) poseByEntity.set(e, egoInterpPose(e, renderTime));
+        const camPose = poseByEntity.has(target)
+            ? poseByEntity.get(target)
+            : egoInterpPose(target, renderTime);
+        const camX = Number(camPose ? camPose.x : target.position.x) || 0;
+        const camY = Number(camPose ? camPose.y : target.position.y) || 0;
         // 相机抬到眼睛高度：wire z 是脚底，直接用会把相机埋在脚里。
-        const camZ = (Number(target.position.z) || 0) + EGO_EYE_HEIGHT_CM;
-        const baseYaw = Number(target.orientation ?? target.yaw ?? 0) || 0;
-        const basePitch = egoTargetPitch(target);
+        const camZ = (Number(camPose ? camPose.z : target.position.z) || 0) + EGO_EYE_HEIGHT_CM;
+        const baseYaw = Number(camPose ? camPose.yaw : (target.orientation ?? target.yaw ?? 0)) || 0;
+        const basePitch = camPose ? camPose.pitch : egoTargetPitch(target);
         const yawDeg = baseYaw + egoYawOffset;
         const pitchDeg = clampNumber(basePitch + egoPitchOffset, -85, 85);
         const yaw = yawDeg * Math.PI / 180, pitch = pitchDeg * Math.PI / 180;
@@ -1050,11 +1210,16 @@
             if (cleanMode && isAi) continue;
             if (entity.has_health !== false && Number(entity.health) <= 0) continue;
             if (!entity.position) continue;
+            /* 插值位姿（无历史时回落快照原值）：锚点/距离标签都用它，和相机同一时钟。 */
+            const pose = poseByEntity.get(entity);
+            const basePos = pose
+                ? { x: pose.x, y: pose.y, z: pose.z }
+                : entity.position;
             /* AI/minion 的 wire z 读的是 root 胶囊中心（脚底 + 约 90cm，与 SuperVT 的
              * 明文/minion 路径一致），画之前对齐到脚底，和真人共用同一锚点。 */
             const anchor = isAi
-                ? { ...entity.position, z: Number(entity.position.z) - 90 }
-                : entity.position;
+                ? { ...basePos, z: Number(basePos.z) - 90 }
+                : basePos;
             const p = project(anchor);
             if (!p || p.dist > EGO_RADIUS_CM) continue;
             // 圆柱从脚底向上 175cm：头顶可见而只有脚底出屏时仍要画。
@@ -1196,7 +1361,9 @@
                 || (target.pitch !== undefined && Number.isFinite(Number(target.pitch))));
         document.getElementById('ego-angles').textContent =
             `yaw ${yawDeg.toFixed(0)}° · pitch ${pitchDeg.toFixed(1)}° (${hasRealPitch ? '实测' : '自由'})`;
-        drawEgoMinimap(target, yawDeg);
+        drawEgoMinimap(
+            { ...target, position: { x: camX, y: camY, z: camZ - EGO_EYE_HEIGHT_CM } },
+            yawDeg, poseByEntity);
     }
 
     function setResourceVisibility(visible) {
