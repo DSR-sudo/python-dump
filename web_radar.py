@@ -57,7 +57,7 @@ class WebRadarService:
         self._game_data_body = b""
         self._game_data_token = ""
         self._game_data_snapshot = None
-        # 每客户端订阅：clean/resources/qualities/ego 过滤在服务端完成，
+        # 每客户端订阅：clean/resources/deadbox/qualities/ego 过滤在服务端完成，
         # 只把该客户端需要的实体和物资放进 /api/data，降低 60Hz 轮询流量。
         self._client_lock = threading.Lock()
         self._client_subs = {}
@@ -247,6 +247,8 @@ refresh();
             return {}
         clean = bool(payload.get("clean"))
         resources = bool(payload.get("resources", True))
+        # 玩家盒子（死亡盒）不占品质桶：单独开关，默认开；旧客户端不发该键时保持显示。
+        deadbox = bool(payload.get("deadbox", True))
         raw_qualities = payload.get("qualities")
         if isinstance(raw_qualities, list):
             qualities = sorted({int(q) for q in raw_qualities if isinstance(q, (int, float))})
@@ -270,6 +272,7 @@ refresh();
         return {
             "clean": clean,
             "resources": resources,
+            "deadbox": deadbox,
             "qualities": qualities,
             "ego": ego_out,
         }
@@ -284,6 +287,7 @@ refresh();
         return (
             not subscription.get("clean")
             and bool(subscription.get("resources", True))
+            and bool(subscription.get("deadbox", True))
             and not subscription.get("ego")
             and set(subscription.get("qualities") or []) >= set(range(7))
         )
@@ -311,6 +315,7 @@ refresh();
             return snapshot
         clean = bool(subscription.get("clean"))
         resources = bool(subscription.get("resources", True))
+        deadbox = bool(subscription.get("deadbox", True))
         qualities = set(subscription.get("qualities") or [])
         ego = subscription.get("ego") or {}
         target_key = str(ego.get("target_key") or "")
@@ -378,12 +383,18 @@ refresh();
         items = []
         if resources and not clean:
             for item in snapshot.get("items") or []:
-                try:
-                    quality = int(item.get("item_quality", 0) or 0)
-                except (TypeError, ValueError):
-                    quality = 0
-                if quality not in qualities:
-                    continue
+                # 玩家盒子不看品质（品质恒为 0），只看 deadbox 开关；
+                # 其余物资仍按品质集合裁剪。
+                if str(item.get("type") or "") == "deadbody":
+                    if not deadbox:
+                        continue
+                else:
+                    try:
+                        quality = int(item.get("item_quality", 0) or 0)
+                    except (TypeError, ValueError):
+                        quality = 0
+                    if quality not in qualities:
+                        continue
                 if not within(item):
                     continue
                 items.append(item)

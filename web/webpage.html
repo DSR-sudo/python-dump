@@ -98,15 +98,16 @@
     <div id="map-container">
         <div id="map"></div>
     </div>
-    <div id="quality-filter" aria-label="Item quality filter">
-        <div id="quality-filter-title">Item Quality</div>
-        <label class="quality-option"><input type="checkbox" data-quality="0" checked><span class="quality-swatch" style="background:#c8c8c8"></span>None</label>
-        <label class="quality-option"><input type="checkbox" data-quality="1" checked><span class="quality-swatch" style="background:#f7f7f7"></span>White</label>
-        <label class="quality-option"><input type="checkbox" data-quality="2" checked><span class="quality-swatch" style="background:#14d914"></span>Green</label>
-        <label class="quality-option"><input type="checkbox" data-quality="3" checked><span class="quality-swatch" style="background:#4876ff"></span>Blue</label>
-        <label class="quality-option"><input type="checkbox" data-quality="4" checked><span class="quality-swatch" style="background:#e066ff"></span>Purple</label>
-        <label class="quality-option"><input type="checkbox" data-quality="5" checked><span class="quality-swatch" style="background:#ffff00"></span>Gold</label>
-        <label class="quality-option"><input type="checkbox" data-quality="6" checked><span class="quality-swatch" style="background:#ff3030"></span>Red</label>
+    <div id="quality-filter" aria-label="资源等级筛选">
+        <div id="quality-filter-title">资源等级筛选</div>
+        <label class="quality-option"><input type="checkbox" data-deadbox="1" checked><span class="quality-swatch" style="background:#c8c8c8"></span>玩家盒子</label>
+        <label class="quality-option"><input type="checkbox" data-quality="0" checked><span class="quality-swatch" style="background:#c8c8c8"></span>无品质</label>
+        <label class="quality-option"><input type="checkbox" data-quality="1" checked><span class="quality-swatch" style="background:#f7f7f7"></span>白级</label>
+        <label class="quality-option"><input type="checkbox" data-quality="2" checked><span class="quality-swatch" style="background:#14d914"></span>绿级</label>
+        <label class="quality-option"><input type="checkbox" data-quality="3" checked><span class="quality-swatch" style="background:#4876ff"></span>蓝级</label>
+        <label class="quality-option"><input type="checkbox" data-quality="4" checked><span class="quality-swatch" style="background:#e066ff"></span>紫级</label>
+        <label class="quality-option"><input type="checkbox" data-quality="5" checked><span class="quality-swatch" style="background:#ffff00"></span>金级</label>
+        <label class="quality-option"><input type="checkbox" data-quality="6" checked><span class="quality-swatch" style="background:#ff3030"></span>红级</label>
     </div>
     <div id="bottom-controls">
         <button id="resource-toggle" class="active" type="button" aria-pressed="true">资源</button>
@@ -285,6 +286,12 @@
     var entitiesToRender = [];
     var itemsToRender = [];
     const selectedItemQualities = new Set([0, 1, 2, 3, 4, 5, 6]);
+    // 玩家盒子（真人死亡盒）不占品质桶：从“无品质”里拆出来，单独开关控制。
+    let deadBodiesVisible = true;
+    function itemPassesFilter(item) {
+        if (item.type === 'deadbody') return deadBodiesVisible;
+        return selectedItemQualities.has(Number(item.item_quality) || 0);
+    }
     const DATA_POLL_INTERVAL_MS = 16;      // 60Hz 拉取：约 16.7ms 一帧
     const DATA_REFRESH_FALLBACK_MS = 2000; // 超过该时长没有新数据就强制重建一次，避免一直吃缓存
     const mapContainer = document.getElementById('map-container'), map = document.getElementById('map');
@@ -526,7 +533,9 @@
         container.className = 'entity-container';
         container.classList.add('resource-marker');
         container.dataset.entityId = itemData.id;
-        const itemLabel = itemData.dead_box_name || itemData.item_name || 'item';
+        const itemLabel = itemData.type === 'deadbody'
+            ? '玩家盒子'
+            : (itemData.item_name || '物资');
         container.title = itemLabel;
         const body = document.createElement('div');
         body.className = 'entity-body item-body';
@@ -547,7 +556,7 @@
         document.querySelectorAll('.resource-marker').forEach(marker => marker.remove());
         if (!resourcesVisible || cleanMode) return;
         itemsToRender
-            .filter(item => selectedItemQualities.has(Number(item.item_quality) || 0))
+            .filter(itemPassesFilter)
             .forEach(renderRadarItemMarker);
     }
 
@@ -615,6 +624,7 @@
         return {
             clean: cleanMode,
             resources: resourcesVisible,
+            deadbox: deadBodiesVisible,
             qualities: Array.from(selectedItemQualities).sort((a, b) => a - b),
             ego: egoOn
                 ? { enabled: true, target_key: egoTargetKey || '', target_id: egoTargetId || '', radius_cm: EGO_RADIUS_CM }
@@ -896,7 +906,7 @@
         if (resourcesVisible && !cleanMode) {
             for (const item of itemsToRender) {
                 if (!item.position || !within(item.position)) continue;
-                if (!selectedItemQualities.has(Number(item.item_quality) || 0)) continue;
+                if (!itemPassesFilter(item)) continue;
                 const point = toMini(item.position);
                 ctx.fillStyle = item.item_quality_color || '#ffeb3b';
                 ctx.fillRect(point.x - 1.4, point.y - 1.4, 2.8, 2.8);
@@ -1029,7 +1039,7 @@
         }
         if (resourcesVisible && !cleanMode) {
             for (const item of itemsToRender) {
-                if (!selectedItemQualities.has(Number(item.item_quality) || 0)) continue;
+                if (!itemPassesFilter(item)) continue;
                 if (!item.position) continue;
                 const p = project(item.position);
                 if (!p || p.dist > EGO_RADIUS_CM) continue;
@@ -1054,7 +1064,7 @@
                     egoCtx.fillStyle = color;
                     egoCtx.font = '10px Arial';
                     egoCtx.textAlign = 'center';
-                    const itemName = readableCatalogName(d.item.item_name, d.item.type === 'deadbody' ? '尸体' : '物资');
+                    const itemName = readableCatalogName(d.item.item_name, d.item.type === 'deadbody' ? '玩家盒子' : '物资');
                     egoCtx.fillText(`${itemName} ${distM.toFixed(0)}m`, d.sx, d.sy + size + 10);
                 }
                 continue;
@@ -1344,8 +1354,9 @@
     // ---- 选中实体：校准模式下点地图上的角色/物资，用它的世界坐标当校准点 ----
     // 实体坐标是雷达画点一直在用的那份数据；本地玩家链条不可信时改用它。
     function calibrationEntityLabel(entity) {
-        if (entity.type === 'item' || entity.type === 'deadbody') {
-            return entity.dead_box_name || entity.item_name || '物资';
+        if (entity.type === 'deadbody') return '玩家盒子';
+        if (entity.type === 'item') {
+            return entity.item_name || '物资';
         }
         if (localPlayer && entity.id === localPlayer.id) return '自己';
         if (entity.type === 'ai') return '人机';
@@ -1601,6 +1612,13 @@
             const quality = Number(input.dataset.quality);
             if (input.checked) selectedItemQualities.add(quality);
             else selectedItemQualities.delete(quality);
+            pushSubscription();
+            refreshResourceMarkers();
+        });
+    });
+    document.querySelectorAll('#quality-filter input[data-deadbox]').forEach(input => {
+        input.addEventListener('change', () => {
+            deadBodiesVisible = input.checked;
             pushSubscription();
             refreshResourceMarkers();
         });

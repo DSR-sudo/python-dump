@@ -6,13 +6,14 @@ from typing import Any
 
 
 QUALITY_DISPLAY = {
-    0: ("None", "#c8c8c8"),
-    1: ("White", "#f7f7f7"),
-    2: ("Green", "#14d914"),
-    3: ("Blue", "#4876ff"),
-    4: ("Purple", "#e066ff"),
-    5: ("Gold", "#ffff00"),
-    6: ("Red", "#ff3030"),
+    # 等级文案对齐 SuperVT（显示白级/绿级/蓝级/紫级/金级/红级物品）。
+    0: ("无品质", "#c8c8c8"),
+    1: ("白级", "#f7f7f7"),
+    2: ("绿级", "#14d914"),
+    3: ("蓝级", "#4876ff"),
+    4: ("紫级", "#e066ff"),
+    5: ("金级", "#ffff00"),
+    6: ("红级", "#ff3030"),
 }
 
 FORCED_RED_ITEM_IDS = frozenset({
