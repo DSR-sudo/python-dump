@@ -727,6 +727,11 @@
 
     function egoTargetPitch(target) {
         if (!target) return 0;
+        /* 远程角色（AI/其他玩家）的 view_pitch 来自 RemoteViewPitch 单字节解码，
+         * 负值在该字段里不可靠（俯仰过零会跳到 ±85°）。参考副机透视的做法：
+         * 远程角色只用身体朝向（root yaw），俯仰按水平 0 处理，需要时手动拖拽。
+         * 只有本机自己（is_local，ControlRotation 全精度浮点）才信任实测俯仰。 */
+        if (!target.is_local) return 0;
         if (target.has_view_pitch && Number.isFinite(Number(target.view_pitch))) return Number(target.view_pitch);
         if (target.pitch !== undefined && Number.isFinite(Number(target.pitch))) return Number(target.pitch);
         return 0;
@@ -1047,7 +1052,9 @@
             const p = project(anchor);
             if (!p || p.dist > EGO_RADIUS_CM) continue;
             // 圆柱从脚底向上 175cm：头顶可见而只有脚底出屏时仍要画。
-            const capH = clampNumber(focal * 175 / p.zc, 7, 56);
+            // 像高按真实 175cm 投影，不再夹到 56px：近处目标本就该占半屏，
+            // 压扁会让画出的"头顶"比真实头顶低最多一米，准星对齐完全失真。
+            const capH = clampNumber(focal * 175 / p.zc, 7, h);
             if (p.sy - capH > h + 40 || p.sy < -40) continue;
             const isTeammate = !isAi && localTeam !== null && Number(entity.team_id) === localTeam;
             drawables.push({ kind: 'entity', entity, isAi, isTeammate, capH, ...p });
@@ -1178,8 +1185,9 @@
         const targetName = target.is_local ? '自己'
             : (target.type === 'ai' ? 'AI' : readableCatalogName(target.hero_name, '玩家'));
         targetLabel.textContent = `视角: ${targetName}`;
-        const hasRealPitch = (target.has_view_pitch && Number.isFinite(Number(target.view_pitch)))
-            || (target.pitch !== undefined && Number.isFinite(Number(target.pitch)));
+        const hasRealPitch = target.is_local
+            && ((target.has_view_pitch && Number.isFinite(Number(target.view_pitch)))
+                || (target.pitch !== undefined && Number.isFinite(Number(target.pitch))));
         document.getElementById('ego-angles').textContent =
             `yaw ${yawDeg.toFixed(0)}° · pitch ${pitchDeg.toFixed(1)}° (${hasRealPitch ? '实测' : '自由'})`;
         drawEgoMinimap(target, yawDeg);
