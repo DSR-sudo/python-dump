@@ -274,6 +274,10 @@
     let selectedEntityKey = null;
     // 后端按客户端 id 做订阅裁剪：视角模式/纯净模式/资源/品质都下沉到服务端
     const EGO_RADIUS_CM = 10000;
+    /* 相机高度：wire 上的 z 是脚底（Mesh ComponentToWorld 平移，SuperVT 语义；hook 路径
+     * 的 -90 修正就是把捕获的胶囊中心帧换算回这个脚底帧），真实眼睛约在脚底 +160cm。
+     * 相机若放在脚底，所有同高角色会恰好落在地平线上，一低头就整体出屏消失。 */
+    const EGO_EYE_HEIGHT_CM = 160;
     // 用 sessionStorage：同一浏览器的多个标签页各自订阅，避免互相覆盖后端状态。
     let clientId = sessionStorage.getItem('radarClientId') || '';
     if (!clientId) {
@@ -979,7 +983,8 @@
         }
         const camX = Number(target.position.x) || 0;
         const camY = Number(target.position.y) || 0;
-        const camZ = Number(target.position.z) || 0;
+        // 相机抬到眼睛高度：wire z 是脚底，直接用会把相机埋在脚里。
+        const camZ = (Number(target.position.z) || 0) + EGO_EYE_HEIGHT_CM;
         const baseYaw = Number(target.orientation ?? target.yaw ?? 0) || 0;
         const basePitch = egoTargetPitch(target);
         const yawDeg = baseYaw + egoYawOffset;
@@ -1016,7 +1021,9 @@
             const yc = dx * Ux + dy * Uy + dz * Uz;
             const sx = w / 2 + focal * xc / zc;
             const sy = h / 2 - focal * yc / zc;
-            if (sx < -40 || sx > w + 40 || sy < -40 || sy > h + 40) return null;
+            /* 只裁横向：角色圆柱从脚底向上 175cm，低头/抬头时脚底点出屏而头顶仍在屏内，
+             * 纵向裁剪由各消费方按自身高度做。 */
+            if (sx < -40 || sx > w + 40) return null;
             return { sx, sy, zc, dz, dist: Math.hypot(dx, dy, dz) };
         };
 
@@ -1032,17 +1039,26 @@
             if (cleanMode && isAi) continue;
             if (entity.has_health !== false && Number(entity.health) <= 0) continue;
             if (!entity.position) continue;
-            const p = project(entity.position);
+            /* AI/minion 的 wire z 读的是 root 胶囊中心（脚底 + 约 90cm，与 SuperVT 的
+             * 明文/minion 路径一致），画之前对齐到脚底，和真人共用同一锚点。 */
+            const anchor = isAi
+                ? { ...entity.position, z: Number(entity.position.z) - 90 }
+                : entity.position;
+            const p = project(anchor);
             if (!p || p.dist > EGO_RADIUS_CM) continue;
+            // 圆柱从脚底向上 175cm：头顶可见而只有脚底出屏时仍要画。
+            const capH = clampNumber(focal * 175 / p.zc, 7, 56);
+            if (p.sy - capH > h + 40 || p.sy < -40) continue;
             const isTeammate = !isAi && localTeam !== null && Number(entity.team_id) === localTeam;
-            drawables.push({ kind: 'entity', entity, isAi, isTeammate, ...p });
+            drawables.push({ kind: 'entity', entity, isAi, isTeammate, capH, ...p });
         }
         if (resourcesVisible && !cleanMode) {
             for (const item of itemsToRender) {
                 if (!itemPassesFilter(item)) continue;
                 if (!item.position) continue;
                 const p = project(item.position);
-                if (!p || p.dist > EGO_RADIUS_CM) continue;
+                // 物资是点状标记，纵向按点裁剪。
+                if (!p || p.dist > EGO_RADIUS_CM || p.sy < -40 || p.sy > h + 40) continue;
                 drawables.push({ kind: 'item', item, ...p });
             }
         }
@@ -1070,25 +1086,26 @@
                 continue;
             }
             const color = d.isAi ? '#FFA726' : (d.isTeammate ? '#69F0AE' : '#FF5252');
-            const capH = clampNumber(focal * 175 / d.zc, 7, 56);
+            const capH = d.capH;   // 脚底向上 175cm 的投影像高，过滤阶段已算好
             const capW = Math.max(3, capH * 0.42);
             // 仅真人玩家有装备读数：圆柱外一圈双半环，上半头盔、下半护甲，
-            // 弧长=耐久百分比，颜色用后端算好的品质色。
+            // 弧长=耐久百分比，颜色用后端算好的品质色。环挂在胸颈高度。
             const gear = playerGear(d.entity);
             let gearRx = 0;
             if (gear) {
+                const gearCy = d.sy - capH * 0.62;
                 gearRx = capW / 2 + clampNumber(capH * 0.16, 3.5, 9);
                 const gearRy = capH / 2 + clampNumber(capH * 0.06, 2, 5);
                 egoCtx.lineWidth = clampNumber(capH * 0.09, 2, 4);
                 egoCtx.strokeStyle = 'rgba(255,255,255,.10)';
                 egoCtx.beginPath();
-                egoCtx.ellipse(d.sx, d.sy, gearRx, gearRy, 0, 0, Math.PI * 2);
+                egoCtx.ellipse(d.sx, gearCy, gearRx, gearRy, 0, 0, Math.PI * 2);
                 egoCtx.stroke();
                 const drawGearArc = (piece, start) => {
                     if (!piece) return;
                     egoCtx.strokeStyle = piece.color;
                     egoCtx.beginPath();
-                    egoCtx.ellipse(d.sx, d.sy, gearRx, gearRy, 0,
+                    egoCtx.ellipse(d.sx, gearCy, gearRx, gearRy, 0,
                         start, start + Math.PI * clampNumber(piece.cur / piece.max, 0, 1));
                     egoCtx.stroke();
                 };
@@ -1099,24 +1116,25 @@
             egoCtx.strokeStyle = 'rgba(0,0,0,.85)';
             egoCtx.lineWidth = 1;
             egoCtx.beginPath();
-            if (egoCtx.roundRect) egoCtx.roundRect(d.sx - capW / 2, d.sy - capH / 2, capW, capH, capW / 2);
-            else egoCtx.rect(d.sx - capW / 2, d.sy - capH / 2, capW, capH);
+            // 圆柱锚定脚底(d.sy)向上 175cm：头在 capH 顶端，和真实身高一致。
+            if (egoCtx.roundRect) egoCtx.roundRect(d.sx - capW / 2, d.sy - capH, capW, capH, capW / 2);
+            else egoCtx.rect(d.sx - capW / 2, d.sy - capH, capW, capH);
             egoCtx.fill();
             egoCtx.stroke();
             if (gear) {
-                // 耐久值贴在护甲环右侧：头盔在上、护甲在下。
+                // 耐久值贴在护甲环右侧：头盔在头部、护甲在胸部。
                 egoCtx.font = '10px Arial';
                 egoCtx.textAlign = 'left';
                 const textX = d.sx + gearRx + 4;
                 if (gear.helmet) {
                     egoCtx.fillStyle = gear.helmet.color;
                     egoCtx.fillText(`盔 ${Math.round(gear.helmet.cur)}/${Math.round(gear.helmet.max)}`,
-                        textX, d.sy - Math.max(3, capH * 0.12));
+                        textX, d.sy - capH * 0.78);
                 }
                 if (gear.armor) {
                     egoCtx.fillStyle = gear.armor.color;
                     egoCtx.fillText(`甲 ${Math.round(gear.armor.cur)}/${Math.round(gear.armor.max)}`,
-                        textX, d.sy + Math.max(10, capH * 0.34));
+                        textX, d.sy - capH * 0.45);
                 }
             }
             // 悬停高亮：提示这个圆柱可以点击切换视角。
@@ -1125,8 +1143,8 @@
                 egoCtx.strokeStyle = 'rgba(255,255,255,.9)';
                 egoCtx.lineWidth = 1.5;
                 egoCtx.beginPath();
-                if (egoCtx.roundRect) egoCtx.roundRect(d.sx - capW / 2 - 3, d.sy - capH / 2 - 3, capW + 6, capH + 6, (capW + 6) / 2);
-                else egoCtx.rect(d.sx - capW / 2 - 3, d.sy - capH / 2 - 3, capW + 6, capH + 6);
+                if (egoCtx.roundRect) egoCtx.roundRect(d.sx - capW / 2 - 3, d.sy - capH - 3, capW + 6, capH + 6, (capW + 6) / 2);
+                else egoCtx.rect(d.sx - capW / 2 - 3, d.sy - capH - 3, capW + 6, capH + 6);
                 egoCtx.stroke();
             }
             egoHitRegions.push({
@@ -1134,8 +1152,8 @@
                 key: hitKey,
                 x1: d.sx - Math.max(capW / 2 + 4, 10),
                 x2: d.sx + Math.max(capW / 2 + 4, 10),
-                y1: d.sy - capH / 2 - 4,
-                y2: d.sy + capH / 2 + 4,
+                y1: d.sy - capH - 4,
+                y2: d.sy + 4,
                 zc: d.zc
             });
             const dzM = d.dz / 100;
@@ -1144,7 +1162,7 @@
             egoCtx.fillStyle = color;
             egoCtx.font = '11px Arial';
             egoCtx.textAlign = 'center';
-            egoCtx.fillText(`${kindLabel} ${distM.toFixed(0)}m${heightText}`, d.sx, d.sy - capH / 2 - 5);
+            egoCtx.fillText(`${kindLabel} ${distM.toFixed(0)}m${heightText}`, d.sx, d.sy - capH - 5);
         }
 
         // 准星
