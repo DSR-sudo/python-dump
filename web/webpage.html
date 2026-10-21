@@ -732,9 +732,15 @@
          * 远程角色只用身体朝向（root yaw），俯仰按水平 0 处理，需要时手动拖拽。
          * 只有本机自己（is_local，ControlRotation 全精度浮点）才信任实测俯仰。 */
         if (!target.is_local) return 0;
-        if (target.has_view_pitch && Number.isFinite(Number(target.view_pitch))) return Number(target.view_pitch);
-        if (target.pitch !== undefined && Number.isFinite(Number(target.pitch))) return Number(target.pitch);
-        return 0;
+        let raw = null;
+        if (target.has_view_pitch && Number.isFinite(Number(target.view_pitch))) raw = Number(target.view_pitch);
+        else if (target.pitch !== undefined && Number.isFinite(Number(target.pitch))) raw = Number(target.pitch);
+        if (raw === null) return 0;
+        /* 实测：本游戏把向下俯仰存成 [0,360) 包裹角（-5° 存为 355°），
+         * 不归一化会被 ±85° 夹逼显示成 +85°。统一折回 (-180,180]。 */
+        if (raw > 180) raw -= 360;
+        else if (raw < -180) raw += 360;
+        return raw;
     }
 
     // 命中测试：egoHitRegions 是这一帧画出的圆柱屏幕盒，取 zc 最小的那个（最靠前）。
