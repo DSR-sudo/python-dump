@@ -61,8 +61,6 @@
         .entity-container.calibrate-entity .entity-body { outline: 2px solid #40c4ff; outline-offset: 3px; }
         #cal-entity { color: #9cdcff; }
         /* 视角模式：以选中角色的眼睛为相机，客户端投影 xyz+yaw+pitch，服务端只提供数据 */
-        #ego-toggle { min-width: 52px; min-height: 36px; padding: 8px 10px; background-color: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
-        #ego-toggle:disabled { opacity: 0.45; cursor: default; }
         #ego-view { position: fixed; inset: 0; z-index: 300; background: #000; display: none; }
         #ego-view.open { display: block; }
         #ego-canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
@@ -112,7 +110,6 @@
     <div id="bottom-controls">
         <button id="resource-toggle" class="active" type="button" aria-pressed="true">资源</button>
         <button id="clean-toggle" type="button" aria-pressed="false" title="只显示玩家，隐藏物资与AI">纯净模式</button>
-        <button id="ego-toggle" type="button" title="以选中角色的视角查看前方（先点地图上的角色选中）">视角</button>
         <button id="calibrate-toggle" type="button" aria-pressed="false" title="点地图取点，微调当前地图的校准">校准</button>
     </div>
     <div id="calibrate-panel">
@@ -265,7 +262,7 @@
         return text.replace(/\(\d+\)$/, '');
     }
 
-    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, isDragging = false, lastX = 0, lastY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, touchStartDistance = 0, touchStartScale = 1, resourcesVisible = true, resourcesVisibleBeforeClean = true, cleanMode = false;
+    let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, resourcesVisible = true, resourcesVisibleBeforeClean = true, cleanMode = false;
     // 视角模式状态：egoTargetKey 用 mesh 稳定锁定目标，避免快照 record_id 漂移
     let egoMode = false, egoTargetKey = null, egoTargetId = null, egoFovDeg = Math.max(45, Math.min(120, Number(localStorage.getItem('egoFov') || 90) || 90));
     let egoYawOffset = 0, egoPitchOffset = 0, egoDragging = false, egoDragX = 0, egoDragY = 0;
@@ -450,16 +447,12 @@
 
     window.addEventListener('resize', () => { if (isFollowing) recenterView(); });
 
-    mapContainer.addEventListener('mousedown', (e) => { isDragging = true; isFollowing = false; lastX = e.clientX; lastY = e.clientY; e.preventDefault(); });
-    mapContainer.addEventListener('mousemove', (e) => { if (isDragging) { offsetX += e.clientX - lastX; offsetY += e.clientY - lastY; lastX = e.clientX; lastY = e.clientY; applyMapTransform(); } });
-    mapContainer.addEventListener('mouseup', () => isDragging = false);
-    mapContainer.addEventListener('mouseleave', () => isDragging = false);
-
     // ===============================================================
     // == 修改点 1: 重写鼠标滚轮缩放逻辑 ==
     // ===============================================================
     mapContainer.addEventListener('wheel', (e) => {
         e.preventDefault();
+        cancelMapGesture();
         isFollowing = false;
 
         const rect = mapContainer.getBoundingClientRect();
@@ -483,63 +476,6 @@
         applyMapTransform();
     });
 
-    mapContainer.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        isFollowing = false;
-        if (e.touches.length === 1) {
-            isDragging = true;
-            lastX = e.touches[0].clientX;
-            lastY = e.touches[0].clientY;
-        } else if (e.touches.length === 2) {
-            isDragging = false;
-            const t1 = e.touches[0], t2 = e.touches[1];
-            touchStartDistance = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-            touchStartScale = scale;
-        }
-    });
-
-    // ===============================================================
-    // == 修改点 2: 重写触摸移动（双指缩放）逻辑 ==
-    // ===============================================================
-    mapContainer.addEventListener('touchmove', (e) => {
-        e.preventDefault();
-        if (e.touches.length === 1 && isDragging) {
-            const touch = e.touches[0];
-            offsetX += touch.clientX - lastX;
-            offsetY += touch.clientY - lastY;
-            lastX = touch.clientX;
-            lastY = touch.clientY;
-            applyMapTransform();
-        } else if (e.touches.length === 2) {
-            const t1 = e.touches[0], t2 = e.touches[1];
-
-            // 计算双指中心点
-            const midX = (t1.clientX + t2.clientX) / 2;
-            const midY = (t1.clientY + t2.clientY) / 2;
-            const rect = mapContainer.getBoundingClientRect();
-            const touchCenterX = midX - rect.left;
-            const touchCenterY = midY - rect.top;
-
-            // 计算当前在触摸中心点的地图坐标
-            const mapPointX = (touchCenterX - offsetX) / scale;
-            const mapPointY = (touchCenterY - offsetY) / scale;
-
-            // 计算新的缩放比例
-            const distance = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-            if (touchStartDistance > 0) {
-                const newScale = touchStartScale * (distance / touchStartDistance);
-                scale = Math.min(Math.max(0.2, newScale), 5);
-
-                // 重新计算 offsetX 和 offsetY，以保持触摸中心点对应的地图坐标不变
-                offsetX = touchCenterX - mapPointX * scale;
-                offsetY = touchCenterY - mapPointY * scale;
-
-                applyMapTransform();
-            }
-        }
-    });
-
-    mapContainer.addEventListener('touchend', () => { isDragging = false; touchStartDistance = 0; });
     var firstData = true;
     // 定时轮询：带上已渲染数据的版本 token，内容未变化时服务端回 204，
     // 省掉每次数百 KB 的传输与解析；长期无变化时兜底请求一次强制重建。
@@ -727,6 +663,7 @@
     function saveSelection() { localStorage.setItem('selectedMap', currentMap); localStorage.setItem('selectedPlayerId', selectedPlayerId || ''); }
 
     function selectMap(mapId) {
+        cancelMapGesture();
         currentMap = mapId;
         map.style.backgroundImage = `url('/image/${currentMap}')`;
         const dims = mapDimensions[mapId] || { width: 1000, height: 1000 };
@@ -741,6 +678,7 @@
     }
 
     function selectPlayer(playerId) {
+        cancelMapGesture();
         selectedPlayerId = playerId;
         const selected = playerId ? entitiesToRender.find(e => e.id == playerId) : null;
         selectedEntityKey = selected ? (selected.key || null) : null;
@@ -826,7 +764,7 @@
         let el = target;
         while (el && el !== mapContainer) {
             if (el.classList && el.classList.contains('entity-container')) {
-                return entitiesToRender.find(e => e.id === el.dataset.entityId) || null;
+                return entitiesToRender.find(e => String(e.id) === el.dataset.entityId) || null;
             }
             el = el.parentElement;
         }
@@ -1112,7 +1050,6 @@
         egoPitchOffset = 0;
         egoMode = true;
         egoView.classList.add('open');
-        document.getElementById('ego-toggle')?.classList.add('active');
         resizeEgoCanvas();
         resizeEgoMinimap();
         pushSubscription(true);
@@ -1125,12 +1062,9 @@
         egoMode = false;
         if (egoRafId) { cancelAnimationFrame(egoRafId); egoRafId = 0; }
         egoView.classList.remove('open');
-        document.getElementById('ego-toggle')?.classList.remove('active');
         pushSubscription(true);
         updateGameData(true);
     }
-
-    function toggleEgoMode() { egoMode ? exitEgoMode() : enterEgoMode(); }
 
     function renderEgoView() {
         if (!egoMode) return;
@@ -1406,7 +1340,7 @@
     // == 校准模式：点地图取点，实时改当前地图的 point2D/point3D ==
     // == 面板里的代码块可直接粘回 mapConverters；改动不落盘，刷新回到文件值。 ==
     // ===============================================================
-    let calibrateMode = false, calibrateSlot = 1, pressX = 0, pressY = 0, lastTouchPickAt = 0, lastTouchCount = 0;
+    let calibrateMode = false, calibrateSlot = 1, pressX = 0, pressY = 0;
     // 校准模式下点中的实体（角色/物资）；本地玩家链条不可信时用它取世界坐标
     let calibrateEntity = null;
     // 每张图进入校准模式时的快照，供「还原」退回页面加载时（文件里）的值
@@ -1503,6 +1437,7 @@
     }
 
     function setCalibrateMode(enabled) {
+        cancelMapGesture();
         calibrateMode = !!enabled;
         if (calibrateMode && !calibrationBackups[currentMap]) {
             calibrationBackups[currentMap] = JSON.parse(JSON.stringify(calibrationTarget(true)));
@@ -1682,42 +1617,120 @@
         });
     }
 
-    mapContainer.addEventListener('mousedown', (e) => { pressX = e.clientX; pressY = e.clientY; });
-    mapContainer.addEventListener('touchstart', (e) => {
-        lastTouchCount = (e.touches && e.touches.length) || 0;
-        if (lastTouchCount === 1) { pressX = e.touches[0].clientX; pressY = e.touches[0].clientY; }
-    });
-    // 点实体标记=选中该角色（视角模式的目标）；校准模式下仍走取校准点
-    mapContainer.addEventListener('click', (e) => {
-        if (Date.now() - lastTouchPickAt <= 600) return;
-        if (selectCalibrationEntity(calibrationEntityFromTarget(e.target))) return;
-        if (calibrateMode) { pickCalibrationPoint(e.clientX, e.clientY); return; }
-        const entity = entityFromTarget(e.target);
-        if (entity) selectPlayer(entity.id);
-    });
-    // 双击角色直接进入它的视角
-    mapContainer.addEventListener('dblclick', (e) => {
-        if (calibrateMode) return;
-        const entity = entityFromTarget(e.target);
-        if (!entity) return;
-        selectPlayer(entity.id);
-        enterEgoMode();
-    });
-    // 触摸端 touchstart 已 preventDefault，合成 click 不一定来，这里补一条路径。
-    // 双指缩放走过的 touchstart 记下的 lastTouchCount > 1，抬指时不处理。
-    mapContainer.addEventListener('touchend', (e) => {
-        const wasPinch = lastTouchCount > 1;
-        if (!e.touches || e.touches.length === 0) lastTouchCount = 0;
-        if (wasPinch || !e.changedTouches || e.changedTouches.length !== 1) return;
-        lastTouchPickAt = Date.now();
-        if (!calibrateMode) {
-            const entity = entityFromTarget(e.target);
-            if (entity) selectPlayer(entity.id);
+    // 快照会重建 DOM，按角色身份识别双击；单击等待结束后才居中，避免第二击落空。
+    const ENTITY_DOUBLE_CLICK_MS = 350;
+    let pendingEntityClick = null, entityClickTimer = null;
+
+    function cancelEntityClick() {
+        clearTimeout(entityClickTimer);
+        entityClickTimer = null;
+        pendingEntityClick = null;
+    }
+
+    function handleEntityClick(entity, clientX, clientY) {
+        if (egoMode || Math.hypot(clientX - pressX, clientY - pressY) > 8) {
+            cancelEntityClick();
             return;
         }
-        if (selectCalibrationEntity(calibrationEntityFromTarget(e.target))) return;
-        pickCalibrationPoint(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+        if (!entity) { cancelEntityClick(); return; }
+        const key = egoPoseKeyOf(entity);
+        const now = Date.now();
+        const doubleClick = pendingEntityClick && pendingEntityClick.key === key
+            && now - pendingEntityClick.at <= ENTITY_DOUBLE_CLICK_MS
+            && Math.hypot(clientX - pendingEntityClick.x, clientY - pendingEntityClick.y) <= 8;
+        cancelEntityClick();
+        if (doubleClick) {
+            selectPlayer(entity.id);
+            enterEgoMode();
+            return;
+        }
+        pendingEntityClick = { key, at: now, x: clientX, y: clientY };
+        entityClickTimer = setTimeout(() => {
+            cancelEntityClick();
+            if (calibrateMode || egoMode) return;
+            const current = entitiesToRender.find(e => egoPoseKeyOf(e) === key);
+            if (current) selectPlayer(current.id);
+        }, ENTITY_DOUBLE_CLICK_MS);
+    }
+
+    // 捕获在不会被快照替换的容器上，按下后即使角色 DOM 被删除仍收到抬起事件。
+    const mapPointers = new Map();
+    let mapGestureCancelled = false;
+
+    function cancelMapGesture() {
+        cancelEntityClick();
+        mapGestureCancelled = true;
+    }
+
+    mapContainer.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0 || egoMode) return;
+        e.preventDefault();
+        isFollowing = false;
+        if (!mapPointers.size) mapGestureCancelled = false;
+        const entity = entityFromTarget(e.target);
+        mapPointers.set(e.pointerId, {
+            x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
+            key: entity ? egoPoseKeyOf(entity) : null,
+            calibrationEntity: calibrateMode ? calibrationEntityFromTarget(e.target) : null,
+            calibrationMode: calibrateMode,
+        });
+        if (mapPointers.size > 1) cancelMapGesture();
+        else if (!entity) cancelEntityClick();
+        // 第二次按下时暂停单击计时，避免尚未抬起就发生居中。
+        else if (pendingEntityClick) { clearTimeout(entityClickTimer); entityClickTimer = null; }
+        mapContainer.setPointerCapture(e.pointerId);
     });
+
+    mapContainer.addEventListener('pointermove', (e) => {
+        const pointer = mapPointers.get(e.pointerId);
+        if (!pointer) return;
+        const oldX = pointer.x, oldY = pointer.y;
+        pointer.x = e.clientX; pointer.y = e.clientY;
+        if (Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) > 8) cancelMapGesture();
+        if (mapPointers.size === 1) {
+            offsetX += pointer.x - oldX; offsetY += pointer.y - oldY;
+        } else if (mapPointers.size === 2) {
+            const other = [...mapPointers.values()].find(p => p !== pointer);
+            const oldDistance = Math.hypot(oldX - other.x, oldY - other.y);
+            const distance = Math.hypot(pointer.x - other.x, pointer.y - other.y);
+            const rect = mapContainer.getBoundingClientRect();
+            const oldMidX = (oldX + other.x) / 2 - rect.left;
+            const oldMidY = (oldY + other.y) / 2 - rect.top;
+            const newScale = oldDistance > 0 ? Math.min(5, Math.max(0.2, scale * distance / oldDistance)) : scale;
+            offsetX = (pointer.x + other.x) / 2 - rect.left - (oldMidX - offsetX) * newScale / scale;
+            offsetY = (pointer.y + other.y) / 2 - rect.top - (oldMidY - offsetY) * newScale / scale;
+            scale = newScale;
+        }
+        applyMapTransform();
+    });
+
+    mapContainer.addEventListener('pointerup', (e) => {
+        const pointer = mapPointers.get(e.pointerId);
+        if (!pointer) return;
+        mapPointers.delete(e.pointerId);
+        if (mapContainer.hasPointerCapture(e.pointerId)) mapContainer.releasePointerCapture(e.pointerId);
+        if (mapGestureCancelled || mapPointers.size || pointer.calibrationMode !== calibrateMode
+            || Math.hypot(e.clientX - pointer.startX, e.clientY - pointer.startY) > 8) {
+            cancelEntityClick();
+            return;
+        }
+        pressX = pointer.startX; pressY = pointer.startY;
+        if (calibrateMode) {
+            cancelEntityClick();
+            if (!selectCalibrationEntity(pointer.calibrationEntity)) pickCalibrationPoint(e.clientX, e.clientY);
+            return;
+        }
+        const entity = entitiesToRender.find(e => egoPoseKeyOf(e) === pointer.key);
+        handleEntityClick(entity, e.clientX, e.clientY);
+    });
+    const cancelMapPointer = (e) => {
+        if (!mapPointers.has(e.pointerId)) return;
+        mapPointers.delete(e.pointerId);
+        cancelMapGesture();
+    };
+    mapContainer.addEventListener('pointercancel', cancelMapPointer);
+    mapContainer.addEventListener('lostpointercapture', cancelMapPointer);
+    window.addEventListener('blur', () => { mapPointers.clear(); cancelMapGesture(); });
 
     function updateMapButtons() { const container = document.getElementById('map-buttons'); container.innerHTML = ''; Object.keys(mapDimensions).forEach(id => { const button = document.createElement('button'); button.className = `map-btn ${currentMap === id ? 'active' : ''}`; button.textContent = id.split('.')[0].toUpperCase(); button.dataset.map = id; button.onclick = () => selectMap(id); container.appendChild(button); }); }
     function updatePlayerButtons() { const container = document.getElementById('player-buttons'); container.innerHTML = ''; const selfButton = document.createElement('button'); selfButton.className = `player-btn ${!selectedPlayerId || selectedPlayerId === '' ? 'active' : ''}`; selfButton.textContent = '自己'; selfButton.dataset.playerId = ''; selfButton.onclick = () => selectPlayer(null); container.appendChild(selfButton); var teamIndex = 1; teammates.forEach(t => { if (localPlayer && t.id === localPlayer.id) return; const button = document.createElement('button'); button.className = `player-btn ${selectedPlayerId == t.id ? 'active' : ''}`; button.textContent = `队友${ teamIndex}`; teamIndex++; button.dataset.playerId = t.id; button.onclick = () => selectPlayer(t.id); container.appendChild(button); }); }
@@ -1749,7 +1762,6 @@
     });
     document.getElementById('resource-toggle').addEventListener('click', toggleResourceVisibility);
     document.getElementById('clean-toggle').addEventListener('click', toggleCleanMode);
-    document.getElementById('ego-toggle').addEventListener('click', toggleEgoMode);
     document.getElementById('ego-exit').addEventListener('click', exitEgoMode);
     document.getElementById('ego-reset').addEventListener('click', () => { egoYawOffset = 0; egoPitchOffset = 0; renderEgoView(); });
     const egoFovInput = document.getElementById('ego-fov');
