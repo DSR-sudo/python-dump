@@ -374,7 +374,8 @@
                     const dt = s0.t - prev.t;
                     if (dt >= 30) {
                         let vx = (s0.x - prev.x) / dt, vy = (s0.y - prev.y) / dt, vz = (s0.z - prev.z) / dt;
-                        const speed = Math.hypot(vx, vy, vz);
+                        // vx/vy/vz 为 cm/ms；转为 cm/s 后再与限速比较。
+                        const speed = Math.hypot(vx, vy, vz) * 1000;
                         const scale = speed > EGO_INTERP_MAX_SPEED_CMPS
                             ? EGO_INTERP_MAX_SPEED_CMPS / speed : 1;
                         x = s0.x + vx * scale * cap;
@@ -392,7 +393,8 @@
             x = oldest.x; y = oldest.y; z = oldest.z; yaw = oldest.yaw; pitch = oldest.pitch;
         }
         // 新采样与外推估计相差 >1m 时，从上一次渲染位姿短促阻尼收敛，不硬跳
-        if (entry.lastRender) {
+        // 已开始的收敛保留起点和时钟，新采样只更新目标，避免每帧重置导致冻结。
+        if (entry.lastRender && !entry.blend) {
             const jump = Math.hypot(x - entry.lastRender.x, y - entry.lastRender.y, z - entry.lastRender.z);
             if (jump > 100) entry.blend = { from: { ...entry.lastRender }, t0: renderTime, dur: 160 };
         }

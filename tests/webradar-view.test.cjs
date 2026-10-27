@@ -6,6 +6,72 @@ const html = fs.readFileSync(`${__dirname}/../web/webpage.html`, 'utf8');
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script);
 
+function poseSample(t, x, y = 0, z = 0) {
+    return { t, x, y, z, yaw: 0, pitch: 0 };
+}
+
+function poseFixture(samples) {
+    const context = vm.createContext({
+        samples, Math,
+        clampNumber: (value, min, max) => Math.max(min, Math.min(max, value)),
+    });
+    vm.runInContext(script.slice(script.indexOf('    const EGO_INTERP_HISTORY_MS'),
+        script.indexOf('    // rAF 渲染循环')), context);
+    vm.runInContext("egoPoseHistory.set('test', { samples, lastRender: null, blend: null });", context);
+    return time => context.egoInterpPose({ key: 'test' }, time);
+}
+
+test('a large pose correction progresses and converges instead of freezing', () => {
+    const samples = [poseSample(1000, 0)];
+    const render = poseFixture(samples);
+    assert.equal(render(1000).x, 0);
+    samples.push(poseSample(1001, 200));
+    assert.equal(render(1001).x, 0);
+    assert.equal(render(1017).x, 20);
+    assert.equal(render(1081).x, 100);
+    assert.equal(render(1161).x, 200);
+    assert.equal(render(1321).x, 200);
+    // A later correction must also be able to start and complete.
+    samples.push(poseSample(1400, 400));
+    assert.equal(render(1400).x, 200);
+    samples.push(poseSample(1560, 400));
+    assert.equal(render(1560).x, 400);
+});
+
+test('new samples during a correction update its target without restarting it', () => {
+    const samples = [poseSample(1000, 0)];
+    const render = poseFixture(samples);
+    render(1000);
+    samples.push(poseSample(1001, 200));
+    render(1001);
+    samples.push(poseSample(1081, 300));
+    assert.equal(render(1081).x, 150);
+    samples.push(poseSample(1161, 400));
+    assert.equal(render(1161).x, 400);
+});
+
+test('extrapolation caps vector speed at 1500 cm/s and stops after 350ms', () => {
+    for (const [x, y, z] of [[1000, 0, 0], [0, 0, -1000], [600, 800, 0]]) {
+        for (const time of [200, 500, 1000]) {
+            const render = poseFixture([poseSample(100, 0), poseSample(150, x, y, z)]);
+            const pose = render(time);
+            const distance = 1500 * Math.min(time - 150, 350) / 1000;
+            assert.ok(Math.abs(pose.x - x - distance * x / 1000) < 1e-9);
+            assert.ok(Math.abs(pose.y - y - distance * y / 1000) < 1e-9);
+            assert.ok(Math.abs(pose.z - z - distance * z / 1000) < 1e-9);
+        }
+    }
+});
+
+test('extrapolation preserves motion below the speed limit and stationary poses', () => {
+    const render = poseFixture([poseSample(100, 0), poseSample(150, 30, 40)]);
+    const pose = render(500);
+    assert.equal(pose.x, 240);
+    assert.equal(pose.y, 320);
+    const stationary = poseFixture([poseSample(100, 10), poseSample(150, 10)]);
+    assert.equal(stationary(500).x, 10);
+});
+
 function fixture() {
     let timer, now = 1000;
     const selected = [], entered = [];
