@@ -14,7 +14,7 @@
         #map-container { position: fixed; top: 60px; left: 0; right: 0; bottom: 0; overflow: hidden; background-color: #222; }
         #map { position: absolute; background-repeat: no-repeat; background-size: 100% 100%; transform-origin: 0 0; }
         .entity-container { position: absolute; transform: translate(-50%, -50%); z-index: 10; }
-        .entity-body { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 1px solid white; display: flex; justify-content: center; align-items: center; font-size: 8px; font-weight: bold; color: white; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+        .entity-body { position: absolute; width: 8px; height: 8px; border-radius: 50%; border: 1px solid white; display: flex; justify-content: center; align-items: center; font-size: 8px; font-weight: bold; color: white; top: 50%; left: 50%; transform: translate(-50%, -50%); }
         .entity-direction { position: absolute; width: 1.5px; height: 12px; background-color: white; left: 50%; bottom: 50%; transform-origin: center bottom; }
         .entity-gear { position: absolute; width: 5px; height: 11px; top: 50%; left: calc(50% + 13px); transform: translateY(-50%); display: flex; flex-direction: column; gap: 1px; pointer-events: none; }
         .entity-gear.gear-left { left: auto; right: calc(50% + 13px); }
@@ -23,7 +23,7 @@
         .entity-gear-cell { flex: 1; border: 0.5px solid rgba(0,0,0,.7); border-radius: 1px; background: linear-gradient(to right, var(--tier-color, rgba(255,255,255,.14)) calc(var(--wear-ratio, 0) * 100%), rgba(255,255,255,.14) 0); }
 
         .entity-body.dead { width: 10px; height: 10px; background-color: transparent !important; border-width: 1.5px; }
-        .entity-health-ring { position: absolute; width: 22px; height: 22px; border-radius: 50%; top: 50%; left: 50%; transform: translate(-50%, -50%); background: conic-gradient(var(--health-color) calc(var(--health-ratio) * 1turn), rgba(255,255,255,0.18) 0); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); pointer-events: none; }
+        .entity-health-ring { position: absolute; width: 14px; height: 14px; border-radius: 50%; top: 50%; left: 50%; transform: translate(-50%, -50%); background: conic-gradient(var(--health-color) calc(var(--health-ratio) * 1turn), rgba(255,255,255,0.18) 0); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1px), #000 0); mask: radial-gradient(farthest-side, transparent calc(100% - 1px), #000 0); pointer-events: none; }
         .entity-info { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); white-space: nowrap; color: #fff; text-shadow: 0 1px 2px #000; font-size: 9px; line-height: 11px; pointer-events: none; }
         .item-body { width: 10px; height: 10px; border-radius: 2px; border: 1px solid #222; background-color: #ffeb3b; color: #111; font-size: 7px; }
         .item-info { top: 12px; font-size: 8px; color: #ffeb3b; }
@@ -157,10 +157,10 @@
     </div>
     <script>
     const mapDimensions = {
-        "db.png":  { width: 1244, height: 956 },
-        "cg.png":  { width: 1333, height: 936 },
-        "bks.png": { width: 833, height: 950 },
-        "ht.png":  { width: 921, height: 989 },
+        "db.png":  { width: 2949, height: 2266 },
+        "cg.png":  { width: 2875, height: 2019 },
+        "bks.png": { width: 1983, height: 2262 },
+        "ht.png":  { width: 2193, height: 2355 },
         "jy.png":  { width: 1013, height: 1009 },
         "az3.png": { width: 2048, height: 2048 }
     };
@@ -168,27 +168,27 @@
     const mapConverters = {
         "db.png": {
             point3D_1: { x: -16207, y: -27879 },
-            point2D_1: { x: 470, y: 245 },
+            point2D_1: { x: 1114.12, y: 580.37 },
             point3D_2: { x: 35455, y: 37782  },
-            point2D_2: { x: 1025, y: 946 }
+            point2D_2: { x: 2429.74, y: 2241.80 }
         },
         "cg.png": {
             point3D_1: { x: -34195, y: 86765 },
-            point2D_1: { x: 54.99, y: 862.04 },
+            point2D_1: { x: 119.06, y: 1859.36 },
             point3D_2: { x: -107283, y: -15291 },
-            point2D_2: { x: 909.98, y: 235.48 }
+            point2D_2: { x: 1962.62, y: 508.19 }
         },
         "bks.png": {
             point3D_1: { x: -14036, y: 9953 },
-            point2D_1: { x: 182, y: 696 },
+            point2D_1: { x: 433.23, y: 1657.41 },
             point3D_2: { x: 14128, y: -34523  },
-            point2D_2: { x: 588, y: 57 }
+            point2D_2: { x: 1399.73, y: 135.89 }
         },
         "ht.png": {
             point3D_1: { x: -27015, y: -18887 },
-            point2D_1: { x: 104, y: 180 },
+            point2D_1: { x: 247.47, y: 428.77 },
             point3D_2: { x: 17252, y: 27568  },
-            point2D_2: { x: 686, y: 789 }
+            point2D_2: { x: 1633.39, y: 1878.82 }
         },
         "az3.png": {
             point3D_1: { x: 29596, y: 30011 },
