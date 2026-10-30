@@ -39,6 +39,15 @@
         #marker-size-control { position: fixed; left: 12px; top: 50%; transform: translateY(-50%); z-index: 200; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 6px; background: rgba(35, 35, 35, 0.94); border: 1px solid #555; border-radius: 4px; font-size: 11px; }
         #marker-size { writing-mode: vertical-lr; direction: rtl; width: 28px; height: min(160px, 30vh); accent-color: #4CAF50; touch-action: none; cursor: pointer; }
         #marker-size-value { font-variant-numeric: tabular-nums; }
+        body.map-fullscreen #map-container { top: 0; }
+        body.map-fullscreen #top-controls,
+        body.map-fullscreen #bottom-controls,
+        body.map-fullscreen #quality-filter,
+        body.map-fullscreen #marker-size-control,
+        body.map-fullscreen #calibrate-panel { display: none; }
+        #map-fullscreen-exit { display: none; position: fixed; right: 12px; top: 12px; z-index: 250; padding: 6px 9px; color: #eee; background: rgba(35,35,35,.65); border: 1px solid #777; border-radius: 4px; cursor: pointer; }
+        body.map-fullscreen #map-fullscreen-exit { display: block; }
+        #map-fullscreen-toggle { min-height: 36px; padding: 8px 10px; background: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; }
         #bottom-controls { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; gap: 8px; }
         #resource-toggle, #clean-toggle { min-width: 52px; min-height: 36px; padding: 8px 10px; background-color: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
         #resource-toggle.active { background-color: #4CAF50; border-color: #6fcf73; }
@@ -116,7 +125,9 @@
         <input id="marker-size" type="range" min="4" max="24" step="1" value="8" aria-orientation="vertical">
         <output id="marker-size-value" for="marker-size">8 px</output>
     </div>
+    <button id="map-fullscreen-exit" type="button" title="退出全屏（Esc）">退出全屏</button>
     <div id="bottom-controls">
+        <button id="map-fullscreen-toggle" type="button" aria-pressed="false">地图全屏</button>
         <button id="resource-toggle" class="active" type="button" aria-pressed="true">资源</button>
         <button id="clean-toggle" type="button" aria-pressed="false" title="只显示玩家，隐藏物资与AI">纯净模式</button>
         <button id="calibrate-toggle" type="button" aria-pressed="false" title="点地图取点，微调当前地图的校准">校准</button>
@@ -1788,6 +1799,28 @@
         document.getElementById('marker-size-value').textContent = `${size} px`;
         document.getElementById('map').style.setProperty('--entity-marker-scale', String(size / 8));
     }
+    function setMapFullscreen(enabled) {
+        cancelMapGesture();
+        document.body.classList.toggle('map-fullscreen', enabled);
+        document.getElementById('map-fullscreen-toggle').setAttribute('aria-pressed', String(enabled));
+        if (isFollowing) recenterView();
+    }
+    async function enterMapFullscreen() {
+        if (calibrateMode) setCalibrateMode(false);
+        setMapFullscreen(true);
+        // 全屏根节点保留现有 Ego 视角层；地图模式的控件由 CSS 隐藏。
+        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+            try { await document.documentElement.requestFullscreen(); }
+            catch { /* 浏览器拒绝全屏时保留页面内地图铺满模式。 */ }
+        }
+    }
+    async function exitMapFullscreen() {
+        if (document.fullscreenElement) {
+            try { await document.exitFullscreen(); }
+            catch { return; } // 保留退出入口，允许再次尝试或用浏览器退出。
+        }
+        setMapFullscreen(false);
+    }
     function loadAuth() { const savedPassword = localStorage.getItem('authToken'); if (savedPassword) { document.getElementById('auth-input').value = savedPassword; } }
 
     loadSelection();
@@ -1798,6 +1831,14 @@
     const markerSizeInput = document.getElementById('marker-size');
     markerSizeInput.addEventListener('input', () => setMarkerSize(markerSizeInput.value));
     markerSizeInput.addEventListener('change', () => localStorage.setItem('entityMarkerSize', markerSizeInput.value));
+    document.getElementById('map-fullscreen-toggle').addEventListener('click', enterMapFullscreen);
+    document.getElementById('map-fullscreen-exit').addEventListener('click', exitMapFullscreen);
+    document.addEventListener('fullscreenchange', () => {
+        if (!document.fullscreenElement && document.body.classList.contains('map-fullscreen')) setMapFullscreen(false);
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !egoMode && document.body.classList.contains('map-fullscreen')) exitMapFullscreen();
+    });
     bindCalibrateUi();
     selectMap(currentMap);
     updateGameData(true);

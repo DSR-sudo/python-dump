@@ -289,6 +289,27 @@
 - 删除独立角色菜单及绑定；队友未变化时继续保留选项节点。
 - 验证：`node --test tests/webradar-view.test.cjs` 13/13 通过，`git diff --check` 通过。尚未进行真实浏览器交互验证。
 
+## 2026-10-30 地图全屏显示调查
+
+### 现状
+
+- 当前 `#top-controls` 是固定顶部灰色菜单（约第 10 行），`#map-container` 固定为 `top: 60px`、`bottom: 0`（约第 13 行），因此页面总会保留顶部菜单空间。
+- 地图拖拽、缩放和校准 pointer handlers 全部绑定在 `#map-container`；改为 fullscreen 不需要改这些事件。现有 `window.resize` 会在全屏尺寸变化后调用 `recenterView()`，Ego 视角另有自己的 canvas/minimap resize 处理。
+- 当前没有 Fullscreen API、全屏按钮或退出按钮。Ego 的“退出”仅退出 `#ego-view`，不能替代全屏退出；浏览器 Esc 可退出 Fullscreen API。
+
+### 最小实现建议
+
+- 在顶部菜单增加“全屏地图”按钮，点击优先执行 `document.getElementById('map-container').requestFullscreen()`（检查方法存在并捕获 Promise rejection）；全屏元素应是 `#map-container`，这样顶部灰色菜单及其余页面控件自然不进入全屏，仅显示地图内容。
+- 增加 `#map-container:fullscreen { top: 0; left: 0; right: 0; bottom: 0; }`，必要时补 `:-webkit-full-screen` 兼容规则。不要把 `body` 设全屏，否则顶部菜单仍需额外隐藏且会扩大改动面。
+- 在 `#map-container` 内放置一个默认隐藏的“退出全屏”按钮，`:fullscreen` 时显示；点击调用 `document.exitFullscreen()`。浏览器原生 Esc 退出后监听 `fullscreenchange` 同步按钮显示状态。全屏按钮应停止冒泡/避免触发地图拖拽，且设置 `touch-action: auto`。
+- API 不支持或被权限策略拒绝时，页面内回退可暂时给 `body` 加 `.map-only`：隐藏 `#top-controls`、质量筛选、marker-size 控件和 bottom controls，并将 `#map-container` 的 `top` 改为 0；退出时移除 class 恢复布局。若目标浏览器均支持 Fullscreen API，可只报告不支持而不增加回退状态。
+
+### 交互约束与验证
+
+- Fullscreen 进入/退出会触发 resize；验证地图仍可拖拽、滚轮缩放、双指缩放和校准取点，且跟随模式中心不异常跳动。全屏时 `getBoundingClientRect()` 的 top/left 变化会被现有 `screenToMapPoint()` 和 pointer 代码自动使用。
+- Ego 视角是 `#ego-view` 的 sibling（z-index 300），而 Fullscreen 只渲染 `#map-container` 子树；进入全屏后若直接双击角色进入 Ego，Ego overlay 可能不可见。建议进入 Ego 前先退出地图全屏，或在 `enterEgoMode()` 检测 `document.fullscreenElement` 后先 `exitFullscreen()` 再打开 Ego。
+- 验证 `node --test tests/webradar-view.test.cjs`、`git diff --check`；补充静态断言 `requestFullscreen`、`:fullscreen`、`exitFullscreen` 和 `fullscreenchange`。真实浏览器需检查桌面/移动端全屏权限、Esc/退出按钮、API 拒绝回退及 Ego 视角切换；当前环境未安装浏览器自动化依赖。
+
 ### 滑动条实施与验证
 
 - 左侧中部新增竖向“角色大小”滑动条，范围 4–24 px，步长 1 px，默认 8 px；数值表示地图缩放前的普通角色圆点直径。
@@ -313,3 +334,12 @@
 - `.entity-direction` 宽度、高度改为基准 1.5px、12px 乘以现有 `--entity-marker-scale`，共用左侧滑动条和持久化设置；朝向旋转与底部中心锚点保持不变。
 - 例如圆点从 8px 调到 16px 时，方向杆从 1.5×12px 变为 3×24px，血量环外径同时从 14px 变为 28px。
 - 验证：前端测试 13/13 通过，`git diff --check` 通过。尚未进行浏览器视觉验证。用户随后要求提交一次；本次将方向杆样式与工作记录一起提交。
+
+### 地图全屏实施与验证
+
+- 右下角增加“地图全屏”按钮；进入后地图容器 top 改为 0，隐藏顶部灰色菜单区域、底部控件、大小滑动条、资源筛选和校准面板，只保留地图与右上角小型退出按钮。
+- 最终采用 documentElement.requestFullscreen() 而非调查建议的 map-container.requestFullscreen()：全屏根节点包含现有 Ego sibling，保证双击角色仍可进入和退出视角模式。
+- 不支持或拒绝 Fullscreen API 时保留页面内铺满；退出按钮和 Esc 均可恢复布局，监听 fullscreenchange 处理浏览器主动退出。进入时关闭校准模式，退出按钮位于地图容器外，不触发地图拖动。
+- 沿用 resize 跟随居中逻辑，模式切换时也同步居中；不改变已选地图/角色和大小设置。
+- 验证：现有前端测试 13/13 通过；Node VM 实际运行全屏函数，以模拟 API 覆盖成功、不支持、拒绝三种进入/退出流程，全部通过；git diff --check 通过。
+- 未进行真实浏览器全屏、布局和移动端触摸验证。本轮修改尚未提交。
