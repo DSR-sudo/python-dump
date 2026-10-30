@@ -170,7 +170,7 @@ function pointerFixture() {
         applyMapTransform: () => {},
     });
     vm.runInContext(script.slice(script.indexOf('    const mapPointers'),
-        script.indexOf('    function updateMapButtons')), f.context);
+        script.indexOf('    function initMapSelect')), f.context);
     f.event = (type, overrides = {}) => handlers[type]({
         pointerId: 1, button: 0, clientX: 20, clientY: 20,
         target: f.a, preventDefault() {}, ...overrides,

@@ -180,3 +180,129 @@
 
 - 当前配置行 187-191 为世界点 `(-27015,-18887)` -> 图像 `(247.47,428.77)`，`(17252,27568)` -> `(1633.39,1878.82)`。
 - 工作文档记录的旧图到官网整图变换约为 `new = old * 2.381161 + (932.802,833.174)`，裁剪左上偏移为 `(933,833)`；因此两个点先得到整图 `(1180.47,1261.77)`、`(2566.39,2711.82)`，再各减 `(933,833)`，正好得到当前配置。裁剪只改变图像原点，没有改变倍率/旋转，故是原图相同地标映射的平移表达，不是重新选取或错配地标。
+
+## 2026-10-30 地图选择下拉菜单
+
+### 目标
+
+- 将页面顶部地图按钮组改为单个下拉菜单，保留地图切换、当前选择持久化和初始化行为。
+
+### 发现
+
+- 页面、样式和脚本都内嵌在 `web/webpage.html`；没有独立地图选择 JS/CSS 文件。
+- HTML 第 81-84 行的 `#map-buttons` 是地图控件容器，`#top-controls` 下的第一个 `.button-group` 专用于地图按钮；第 12-13 行的 `.map-btn` 样式只服务于按钮。
+- 第 663-680 行的 `loadSelection()`/`saveSelection()`/`selectMap()` 负责 `localStorage.selectedMap`、背景 URL、尺寸、校准和刷新。切换逻辑无需改变；`selectMap()` 中第 674 行的 `.map-btn` active 更新在改成 `<select>` 后应删除或改为同步 select 的 value。
+- 第 1737 行的 `updateMapButtons()` 按 `Object.keys(mapDimensions)` 建立按钮并绑定 `onclick`。最小改法是让它建立一个 `select`（建议保留 `id="map-buttons"` 或改为明确的 `map-select`），为每个地图建立 `<option value="...">`，并在 `change` 时调用 `selectMap(event.target.value)`；初始化顺序第 1741-1746 行可保持不变。
+- `mapDimensions` 第 159-166 行仍是唯一地图选项来源，当前顺序为 `db/cg/bks/ht/jy/az3`；不应改动地图配置或校准点。
+- 现有 `tests/webradar-view.test.cjs` 只用 `vm.Script` 检查内嵌脚本可解析，并覆盖插值、实体点击和指针手势；没有 DOM 渲染测试，也没有地图控件断言。当前环境未发现 Chromium、Playwright 或 Puppeteer。
+
+### 建议修改与验证
+
+- HTML 用 `<select id="map-select" aria-label="选择地图"></select>` 替换 `#map-buttons`；CSS 增加固定高度、最小宽度、深色背景和文字颜色，避免沿用按钮的 flex 规则导致下拉菜单宽度异常。若保持 `#map-buttons` ID，可减少脚本改动但语义较弱。
+- `updateMapButtons()` 应清空并填充 options，设置 `select.value = currentMap`，监听 `change` 调用 `selectMap(this.value)`；`selectMap()` 不再查询 `.map-btn`。仍由 `saveSelection()` 写回 `selectedMap`，因此刷新后应恢复选择。
+- 静态验证：`node --test tests/webradar-view.test.cjs`、`git diff --check`；可补充测试断言 HTML 含唯一 `select`、无地图按钮生成逻辑及六个 option 来源不变。
+- 运行验证：启动 `WebRadarService` 后 GET 页面，确认 HTTP 200 和页面包含下拉菜单；若有浏览器环境，检查初始选项与 localStorage 恢复、切换后背景/尺寸/校准刷新及移动端顶部布局。当前环境只能做脚本解析/静态和 HTTP 验证，不能做真实浏览器交互验证。
+
+## 2026-10-30 自己/队友选择下拉菜单补充调查
+
+### 发现
+
+- `#player-buttons` 位于顶部控件第 85-87 行；`updatePlayerButtons()`（约第 1749 行）按“自己”加动态队友重建按钮。队友来源是 `/api/data` 的 `data.teammates`，在 `updateGameData()` 约第 515-522 行更新。
+- `selectPlayer()`（约第 683-700 行）是统一选择入口：地图实体单击延迟确认和双击进入 Ego（约第 1633-1656 行）都会调用它；Ego 画布点击其他角色走 `switchEgoViewpoint()`（约第 846-864 行），目前单独写 `selectedPlayerId` 并刷新 `.player-btn` active。
+- `loadSelection()` 恢复 `selectedPlayerId` 到 `pendingPlayerSelection`，首次数据到达后调用 `selectPlayer(pendingPlayerSelection)`；因此下拉菜单应在队友 option 建立后再恢复 value，不能只在页面初始化时设置一次。
+- 队友列表是动态的，option 文本（`队友1`、`队友2`）和 value 应随每次列表变化重建；若保存的队友已离队，应回退到“自己”或至少避免 select 显示不存在的 value。注意当前代码先赋值 `teammates = data.teammates`，再用长度比较会失去旧长度；若按变化触发刷新，应在覆盖前记录旧列表/使用 ID 签名，或直接每次数据刷新同步控件。
+
+### 最小修改建议
+
+- 将 `#player-buttons` 改为 `<select id="player-select" aria-label="选择玩家"></select>`，`updatePlayerButtons()` 改为清空并生成 value 为空的“自己” option 和每个队友 option，最后设置 `select.value` 为当前有效 `selectedPlayerId`（无匹配时设为空）。change 事件调用 `selectPlayer(select.value || null)`。
+- `selectPlayer()` 不再查询 `.player-btn`，改为直接设置 `player-select.value = playerId || ''`；这样地图角色点击、首次 pending 恢复和菜单选择共用同一同步路径。
+- `switchEgoViewpoint()` 的按钮 active 更新也改为 `player-select.value = id || ''`，否则从 Ego 画布切换角色时下拉菜单会显示旧选项。
+- 动态队友刷新应在 option 重建后保留仍存在的选择；若当前选择对应队友已消失，调用 `selectPlayer(null)` 清理持久化选择并回到“自己”，避免 `recenterView()` 持续寻找不存在目标。
+
+### 建议验证
+
+- 静态/脚本：`node --test tests/webradar-view.test.cjs`、`git diff --check`，并补充 HTML/脚本断言唯一存在 `player-select`、无 `.player-btn` 更新路径。
+- 浏览器：首次数据到达后确认“自己”和队友 option；队友增删/顺序变化后选项更新；选择队友后地图实体颜色/跟随和 `localStorage.selectedPlayerId` 同步；点击地图角色及 Ego 视角角色后下拉值同步；已保存但已离队的 ID 回退“自己”。
+
+### 实施与验证
+
+- 将顶部地图按钮组替换为原生 `select`，保留六张地图原有简称和顺序，添加“选择地图”无障碍名称及深色样式。
+- `initMapSelect()` 生成选项并绑定 change；继续调用原 `selectMap()`，同步下拉选中值，沿用地图尺寸、校准和本地选择记忆。
+- 删除地图按钮专用状态样式；同步更新现有测试中用于截取脚本的函数名边界。
+- 首次测试因旧函数名截取边界失效出现 4 项失败；修正边界后 `node --test tests/webradar-view.test.cjs` 13/13 通过，`git diff --check` 通过。
+- 未进行真实浏览器视觉及点击验证（当前环境未安装浏览器自动化依赖）。
+
+## 2026-10-30 地图与自己/队友合并为单一下拉菜单
+
+### 目标与状态约束
+
+- 用户要求顶部地图和自己/队友选择合并为一个原生 `<select>`；地图状态 `currentMap` 与角色状态 `selectedPlayerId` 仍须同时保留，不能让一次选择覆盖另一个状态。
+- 建议使用一个 `#selection-select`，内部包含两个 `<optgroup>`：地图组选项 value 为 `map:<filename>`，角色组选项 value 为 `player:`（自己）或 `player:<id>`（队友）。不要直接使用原始文件名/ID，避免值空间冲突。
+- 原生 select 展开时可选择具体动作；收起后没有同时显示两个独立 value 的能力。建议首项为 disabled 的摘要 option（例如 `当前：大坝 · 自己`），每次动作完成或动态列表刷新后将 `select.value` 恢复为摘要 value，避免控件只显示最近一次动作而隐藏另一状态。摘要文本应由当前地图简称和当前角色标签动态生成。
+
+### 最小同步位置
+
+- 合并现有 `initMapSelect()` 与 `updatePlayerButtons()` 为一个初始化/重建函数：一次清空并生成摘要、地图 optgroup、角色 optgroup；初始化顺序仍在 `loadSelection()`/`loadToggles()` 之后、首次 `selectMap()`/`updateGameData()` 之前。
+- change handler 按 value 前缀分派：`map:` 调 `selectMap(mapId)`，`player:` 调 `selectPlayer(id || null)`；处理完成后由统一 `syncSelectionSelect()` 更新摘要并重新选中摘要 option。
+- `selectMap()` 现有同步地图 select value 的代码应改为调用统一同步函数；`selectPlayer()` 中 `.player-btn` active 更新改为同一函数。`switchEgoViewpoint()`（Ego 画布切换角色）也必须调用该同步函数，否则摘要会滞后。
+- 动态队友刷新发生在 `updateGameData()` 收到 `data.teammates` 后；重建角色 optgroup 时保留当前有效 ID，已离队 ID 调 `selectPlayer(null)` 回退“自己”，然后同步摘要。地图选项不要因队友刷新而重置。
+- `pendingPlayerSelection` 恢复必须在角色 option 生成后执行；若保存 ID 已不在当前列表，直接回退自己并清除无效持久化值。`saveSelection()` 协议无需改变。
+
+### 测试影响
+
+- 现有 `tests/webradar-view.test.cjs` 主要以 VM 解析脚本和局部函数，不提供真实 DOM；应更新任何旧的 `map-select`/`player-select` 边界断言，并增加静态断言：单一 `selection-select`、两个 optgroup、`map:`/`player:` 前缀和摘要同步函数存在，且不再依赖 `.map-btn`/`.player-btn`。
+- 动态行为至少覆盖：地图动作保留角色摘要、角色动作保留地图摘要、地图角色点击及 Ego 角色点击同步摘要、队友增删重建不丢地图、无效持久化队友回退自己。当前无 Chromium/Playwright，真实展开/触摸布局仍需浏览器环境验证。
+
+### 补充实施与验证
+
+- “自己 / 队友”按钮组已改为独立角色下拉菜单，与地图菜单使用相同深色样式，默认显示“自己”。
+- 队友列表更新为选项列表；只有队友 ID 或数量变化才重建选项，避免数据轮询持续替换展开菜单的节点。
+- 下拉 change 沿用 `selectPlayer()`；地图点击选角及 `switchEgoViewpoint()` 同步下拉选中值，保留选择记忆和跟随逻辑。
+- 未采纳调查中的自动回退并清理已选 ID 建议：地图/Ego 也允许选择非队友，自动回退会改变既有选角行为；此类选择继续不选中任何队友选项。
+- `node --test tests/webradar-view.test.cjs` 13/13 通过，`git diff --check` 通过。未进行真实浏览器视觉与点击验证。
+
+## 2026-10-30 左侧角色点大小滑动条调查
+
+### 现状与约束
+
+- 主地图角色点由 `.entity-body`（当前 8x8px）渲染，血量环由 `.entity-health-ring`（当前 14x14px）渲染；死亡角色通过 `.entity-body.dead` 覆盖为 10x10px。方向杆 `.entity-direction` 是独立的 1.5x12px 元素，物资 `.item-body` 是独立的 10x10px 样式。
+- 地图整体已有 `#map` 的 `translate/scale`，新滑动条应只改变角色点和血环的 CSS 尺寸，不能改变地图缩放、物资尺寸、方向杆长度或拖拽/双指缩放逻辑。
+- 全局 `*` 设置了 `touch-action: none`；原生 range 必须显式设置 `touch-action: auto`，否则移动端拖动可能被地图手势规则拦截。
+
+### 最小实现建议
+
+- 在 `#map` 上定义 CSS 变量，例如 `--entity-marker-scale: 1`；将 `.entity-body` 的 width/height/font-size 改为 `calc(8px * var(--entity-marker-scale, 1))`，`.entity-body.dead` 改为对应的 `calc(10px * ...)`，`.entity-health-ring` 的 width/height 改为 `calc(14px * ...)`。这样 `.item-body`、`.entity-direction`、装备条和地图变换保持不变；若要求环宽也严格同比，可将 mask 的 1px 厚度另设为 `calc(1px * var(--entity-marker-scale, 1))`。
+- 页面左侧增加独立的固定覆盖控件（例如 `#marker-size-control` + `input type="range"`），建议放在 `#map-container` 外，避免事件冒泡进入地图 pointer handlers；设置较高 z-index、`pointer-events: auto`、`touch-action: auto`，垂直显示可用 `writing-mode: vertical-lr; direction: rtl`。不要把滑动条放进 `#map`，否则会继承地图 transform 并随地图移动/缩放。
+- range 的 `input` 事件只执行 `map.style.setProperty('--entity-marker-scale', value)`；推荐范围约 `0.5..3`、步长 `0.1`、默认 `1`，可选用 `localStorage` 保存。无需重建实体 DOM，现有标记会立即按新尺寸重排。
+- 角色标记的文本、死亡圆点和血环均随变量变大；方向杆不变。若不希望 AI/敌人文字随点放大，保持 `.entity-info` 独立不改；角色点内的 `A`/队伍号字体则随 `.entity-body` font-size 同步。
+
+### 验证影响
+
+- 静态测试应断言变量只出现在 `.entity-body`、`.entity-body.dead`、`.entity-health-ring`（以及可选 mask 厚度），不出现在 `.item-body`、`.entity-direction` 或 `#map` 的 transform 逻辑；继续执行 `node --test tests/webradar-view.test.cjs` 和 `git diff --check`。
+- 浏览器验证需检查滑块触摸拖动不会平移地图，鼠标/触屏地图拖拽和双指缩放仍工作，角色点与血环按相同比例变化，物资与方向杆尺寸保持不变，以及移动端左侧控件不被顶部栏或地图遮挡。当前环境无浏览器自动化依赖，未进行视觉验证。
+
+### 合并实施与验证
+
+- 根据用户最终确认，顶部仅保留一个 `selection-select`，用“地图”和“角色”两个 optgroup 收纳六张地图及自己/队友。
+- 使用 `map:` / `player:` 值前缀分派至原有切换函数；收起时显示当前地图与角色摘要（例如 `DB · 自己`），地图与角色各自的状态和持久化保持独立。
+- 地图切换、角色选择、Ego 视角切换和队友更新均同步摘要；非队友选角显示“已选角色”，不改变原跟随目标。
+- 删除独立角色菜单及绑定；队友未变化时继续保留选项节点。
+- 验证：`node --test tests/webradar-view.test.cjs` 13/13 通过，`git diff --check` 通过。尚未进行真实浏览器交互验证。
+
+### 滑动条实施与验证
+
+- 左侧中部新增竖向“角色大小”滑动条，范围 4–24 px，步长 1 px，默认 8 px；数值表示地图缩放前的普通角色圆点直径。
+- 通过 `#map` 的 `--entity-marker-scale` 控制圆点和血量环的同倍 transform 缩放；血量环基准外径 14px、厚度 1px，圆点基准 8px。圆点边框、内部文字及死亡角色圆环一起缩放；物资点与方向杆保持原尺寸。
+- 角色说明文字和装备色条的间距随血量环半径变化，避免放大后重叠；物资文字原样式保留。
+- input 即时更新 CSS 变量，不重建角色 DOM；change 保存 `entityMarkerSize`，初始化恢复并限制数值范围。
+- 控件放在地图容器外，拖动不会进入地图指针事件；竖向 range 使用 writing-mode 和 direction，使上端为大值。保留 touch-action:none，避免触屏拖动被页面手势取消（与调查建议的 auto 不同）。
+- 验证：现有前端测试 13/13 通过；Node VM 实际运行大小更新函数，4/8/16/24 px、上下限和无效值回退均通过；`git diff --check` 通过。
+- 未进行真实浏览器视觉、竖向滑动和移动端触摸验证。
+
+## 2026-10-30 提交与推送
+
+- 用户要求启动 hk-tunnel 并提交、推送本轮页面修改。
+- 已执行 `hk-tunnel start`，状态为运行中，SOCKS 代理 `127.0.0.1:1080`。
+- 提交范围为合并地图/角色菜单、左侧角色大小滑动条、现有测试截取边界调整及本文档；提交前 `git diff --check` 通过，前述测试结果有效。
+- 推送目标为 `origin/master`，使用命令级 `http.proxy=socks5h://127.0.0.1:1080`，不修改全局 Git 配置。
+- 推送结果：HTTPS 失败，`could not read Username for 'https://github.com'`。当前无 Git credential.helper / gh；经隧道尝试现有默认 SSH 认证也返回 `Permission denied (publickey)`，且未运行 SSH agent。需要可用的 GitHub 认证后重试推送。
