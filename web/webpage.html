@@ -36,7 +36,11 @@
         #auth-submit { padding: 6px 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
         #auth-error { color: red; font-size: 12px; margin-top: 5px; display: none; }
         #auth-container.hidden { display: none; }
-        #marker-size-control { position: fixed; left: 12px; top: 50%; transform: translateY(-50%); z-index: 200; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 6px; background: rgba(35, 35, 35, 0.94); border: 1px solid #555; border-radius: 4px; font-size: 11px; }
+        #marker-size-control { position: fixed; left: 12px; top: 50%; transform: translateY(-50%); z-index: 200; }
+        #marker-size-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 6px; background: rgba(35, 35, 35, 0.45); border: 1px solid rgba(170,170,170,.5); border-radius: 4px; font-size: 11px; opacity: .8; transform-origin: left center; transition: opacity .25s, filter .25s, transform .25s; }
+        #marker-size-control.idle #marker-size-panel { opacity: .3; filter: blur(.6px); transform: scale(.78); }
+        #marker-size-control:active #marker-size-panel { transition: none; }
+        @media (prefers-reduced-motion: reduce) { #marker-size-panel { transition: none; } }
         #marker-size { writing-mode: vertical-lr; direction: rtl; width: 28px; height: min(160px, 30vh); accent-color: #4CAF50; touch-action: none; cursor: pointer; }
         #marker-size-value { font-variant-numeric: tabular-nums; }
         body.map-fullscreen #map-container { top: 0; }
@@ -120,9 +124,11 @@
         <label class="quality-option"><input type="checkbox" data-quality="6" checked><span class="quality-swatch" style="background:#ff3030"></span>红级</label>
     </div>
     <div id="marker-size-control">
-        <label for="marker-size">角色大小</label>
-        <input id="marker-size" type="range" min="4" max="24" step="1" value="8" aria-orientation="vertical">
-        <output id="marker-size-value" for="marker-size">8 px</output>
+        <div id="marker-size-panel">
+            <label for="marker-size">角色大小</label>
+            <input id="marker-size" type="range" min="4" max="24" step="1" value="8" aria-orientation="vertical">
+            <output id="marker-size-value" for="marker-size">8 px</output>
+        </div>
     </div>
     <button id="map-fullscreen-exit" type="button" title="退出全屏（Esc）">退出全屏</button>
     <div id="bottom-controls">
@@ -1798,6 +1804,27 @@
         document.getElementById('marker-size-value').textContent = `${size} px`;
         document.getElementById('map').style.setProperty('--entity-marker-scale', String(size / 8));
     }
+    function initMarkerSizeIdle() {
+        const control = document.getElementById('marker-size-control');
+        let idleTimer;
+        let dragging = false;
+        function wake() {
+            clearTimeout(idleTimer);
+            control.classList.remove('idle');
+            if (!dragging) idleTimer = setTimeout(() => control.classList.add('idle'), 3000);
+        }
+        ['pointerenter', 'pointermove', 'focusin', 'keydown', 'input', 'change'].forEach(type => control.addEventListener(type, wake));
+        control.addEventListener('pointerdown', () => { dragging = true; wake(); });
+        function endDrag() {
+            if (!dragging) return;
+            dragging = false;
+            wake();
+        }
+        window.addEventListener('pointerup', endDrag);
+        window.addEventListener('pointercancel', endDrag);
+        window.addEventListener('blur', endDrag);
+        wake();
+    }
     function setMapFullscreen(enabled) {
         cancelMapGesture();
         document.body.classList.toggle('map-fullscreen', enabled);
@@ -1827,6 +1854,7 @@
     loadToggles();
     initMapSelect();
     setMarkerSize(localStorage.getItem('entityMarkerSize') || 8);
+    initMarkerSizeIdle();
     const markerSizeInput = document.getElementById('marker-size');
     markerSizeInput.addEventListener('input', () => setMarkerSize(markerSizeInput.value));
     markerSizeInput.addEventListener('change', () => localStorage.setItem('entityMarkerSize', markerSizeInput.value));

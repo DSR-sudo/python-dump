@@ -335,6 +335,25 @@
 - 例如圆点从 8px 调到 16px 时，方向杆从 1.5×12px 变为 3×24px，血量环外径同时从 14px 变为 28px。
 - 验证：前端测试 13/13 通过，`git diff --check` 通过。尚未进行浏览器视觉验证。用户随后要求提交一次；本次将方向杆样式与工作记录一起提交。
 
+## 2026-10-30 角色大小控件闲置状态调查
+
+### 现状
+
+- `#marker-size-control` 当前为左侧固定控件，已有 `transform: translateY(-50%)`、半透明背景和 `z-index: 200`；内部 `#marker-size` 是竖向 range，当前显式 `touch-action: none`。
+- 控件在地图容器外，不会进入地图的 pointer capture/拖拽处理；idle 只需改变控件自身视觉状态，不应修改地图或 `--entity-marker-scale`。
+
+### 最小实现建议
+
+- 基础样式增加 `transition: opacity .2s ease, transform .2s ease`；新增 `#marker-size-control.idle { opacity: .28; transform: translateY(-50%) scale(.78); }`。保留 `pointer-events: auto`，即使虚化缩小后仍可点击恢复；不要用 `display:none` 或 `pointer-events:none`，否则用户无法从 idle 状态唤醒。
+- 用独立计时器（例如 `markerSizeIdleTimer`）实现 3 秒 idle：`scheduleMarkerSizeIdle()` 先清理旧 timer，再 `setTimeout(() => control.classList.add('idle'), 3000)`；初始化时启动一次。`input`、`change`、`pointerdown`、`focusin`、`mouseenter`/`touchstart` 都调用 `wakeMarkerSizeControl()`（移除 idle 并重新计时），确保拖动期间不缩小、键盘操作也能唤醒。
+- 若控件 idle 后仍收到 `pointerdown`，先移除 idle 再让 range 处理本次操作；range 的 `input` 事件继续即时更新尺寸。键盘 Tab 聚焦时用 `:focus-within` 或 `focusin` 强制恢复，避免焦点控件变得难以辨认。
+- 现有 `transform: translateY(-50%)` 必须保留在 idle transform 中，不能只写 `scale(.78)`，否则控件会从垂直居中位置偏移。移动端触摸可继续保持 `touch-action: none`（控件在地图外且使用 pointer input）；若浏览器 range 拖动异常，再改为 `touch-action: pan-y` 并验证不会触发页面滚动。
+
+### 验证建议
+
+- 静态/脚本：`node --test tests/webradar-view.test.cjs`、`git diff --check`，增加 idle timer 的边界测试（重复唤醒只保留一个 timer、3 秒后加 class、操作立即移除 class）。
+- 浏览器：控件闲置 3 秒后透明缩小，鼠标悬停、点击、触摸按下、拖动 range 和键盘聚焦立即恢复；拖动地图/双指缩放不受影响；控件在全屏地图模式下按预期隐藏或仍由产品决定是否保留。
+
 ### 地图全屏实施与验证
 
 - 右下角增加“地图全屏”按钮；进入后地图容器 top 改为 0，隐藏顶部灰色菜单区域、底部控件、大小滑动条、资源筛选和校准面板，只保留地图与右上角小型退出按钮。
@@ -356,3 +375,17 @@
 - 根据用户追加要求，移除全屏模式对 `#marker-size-control` 的隐藏规则，左侧角色大小条在普通和全屏模式下共用同一控件。
 - 继续实时同比调整角色点、血量环和方向杆，并保留现有大小设置。
 - 验证：检查差异仅删除一条 CSS 隐藏选择器，git diff --check 通过；未进行浏览器视觉验证。本轮修改尚未提交。
+
+### 角色大小默认值核对
+
+- 用户要求确保滑动条默认 8px。现有 HTML value、数值显示、CSS 基准倍率和无保存设置时的初始化均已为 8px，无需改动页面代码。
+- Node VM 实际执行无 localStorage 设置时的初始化，确认滑动条值为 8、显示为 8 px、缩放倍率为 1，验证通过。
+- 保留已有偏好恢复：用户曾调整并保存大小时，刷新后仍恢复该值。
+
+### 半透明与闲置缩小实施
+
+- 角色大小控件改为半透明背景（alpha .45）、常态 opacity .8；3 秒无操作后 opacity .3、轻微 blur(.6px)，缩为原大小的 78%。
+- 新增内部 panel 承载视觉变化，外层交互区域不缩小，方便重新移入或触摸唤醒；鼠标移入/移动、触摸、焦点、键盘及滑动输入恢复常态并重置计时。
+- 拖动期间暂停闲置计时，抬起/取消/窗口失焦后重新计时；遵循 prefers-reduced-motion 禁用过渡动画。普通与全屏模式共用此行为。
+- 验证：前端测试 13/13 通过；Node VM 用模拟定时器执行 3 秒淡化、交互恢复、拖动暂停、抬起和取消重新计时，全部通过；git diff --check 通过。
+- 尚未进行真实浏览器视觉和触摸验证。本轮修改未提交。
