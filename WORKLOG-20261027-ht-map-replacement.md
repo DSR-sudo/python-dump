@@ -306,3 +306,10 @@
 - 提交范围为合并地图/角色菜单、左侧角色大小滑动条、现有测试截取边界调整及本文档；提交前 `git diff --check` 通过，前述测试结果有效。
 - 推送目标为 `origin/master`，使用命令级 `http.proxy=socks5h://127.0.0.1:1080`，不修改全局 Git 配置。
 - 推送结果：HTTPS 失败，`could not read Username for 'https://github.com'`。当前无 Git credential.helper / gh；经隧道尝试现有默认 SSH 认证也返回 `Permission denied (publickey)`，且未运行 SSH agent。需要可用的 GitHub 认证后重试推送。
+
+## 2026-10-30 方向杆同步缩放
+
+- 用户追加要求视角柱（角色方向杆）也随角色点同比变大，此要求取代上文方向杆保持尺寸的决定。
+- `.entity-direction` 宽度、高度改为基准 1.5px、12px 乘以现有 `--entity-marker-scale`，共用左侧滑动条和持久化设置；朝向旋转与底部中心锚点保持不变。
+- 例如圆点从 8px 调到 16px 时，方向杆从 1.5×12px 变为 3×24px，血量环外径同时从 14px 变为 28px。
+- 验证：前端测试 13/13 通过，`git diff --check` 通过。尚未进行浏览器视觉验证。用户随后要求提交一次；本次将方向杆样式与工作记录一起提交。

@@ -14,7 +14,7 @@
         #map { --entity-marker-scale: 1; position: absolute; background-repeat: no-repeat; background-size: 100% 100%; transform-origin: 0 0; }
         .entity-container { position: absolute; transform: translate(-50%, -50%); z-index: 10; }
         .entity-body { position: absolute; width: 8px; height: 8px; border-radius: 50%; border: 1px solid white; display: flex; justify-content: center; align-items: center; font-size: 8px; font-weight: bold; color: white; top: 50%; left: 50%; transform: translate(-50%, -50%); }
-        .entity-direction { position: absolute; width: 1.5px; height: 12px; background-color: white; left: 50%; bottom: 50%; transform-origin: center bottom; }
+        .entity-direction { position: absolute; width: calc(1.5px * var(--entity-marker-scale)); height: calc(12px * var(--entity-marker-scale)); background-color: white; left: 50%; bottom: 50%; transform-origin: center bottom; }
         .entity-gear { position: absolute; width: 5px; height: 11px; top: 50%; left: calc(50% + 7px * var(--entity-marker-scale) + 6px); transform: translateY(-50%); display: flex; flex-direction: column; gap: 1px; pointer-events: none; }
         .entity-gear.gear-left { left: auto; right: calc(50% + 7px * var(--entity-marker-scale) + 6px); }
         /* 上半头盔、下半护甲：颜色=等级（6红 5金 4紫 3绿，沿用物资品质色），
