@@ -37,8 +37,8 @@
         #auth-error { color: red; font-size: 12px; margin-top: 5px; display: none; }
         #auth-container.hidden { display: none; }
         #marker-size-control { position: fixed; left: 12px; top: 50%; transform: translateY(-50%); z-index: 200; }
-        #marker-size-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 6px; background: rgba(35, 35, 35, 0.45); border: 1px solid rgba(170,170,170,.5); border-radius: 4px; font-size: 11px; opacity: .8; transform-origin: left center; transition: opacity .25s, filter .25s, transform .25s; }
-        #marker-size-control.idle #marker-size-panel { opacity: .3; filter: blur(.6px); transform: scale(.78); }
+        #marker-size-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 6px; background: rgba(35, 35, 35, 0.28); border: 1px solid rgba(170,170,170,.5); border-radius: 4px; font-size: 11px; opacity: .7; transform-origin: left center; transition: opacity .25s, filter .25s, transform .25s; }
+        #marker-size-control.idle #marker-size-panel { opacity: .25; filter: blur(1.2px); transform: scale(.78); }
         #marker-size-control:active #marker-size-panel { transition: none; }
         @media (prefers-reduced-motion: reduce) { #marker-size-panel { transition: none; } }
         #marker-size { writing-mode: vertical-lr; direction: rtl; width: 28px; height: min(160px, 30vh); accent-color: #4CAF50; touch-action: none; cursor: pointer; }
@@ -280,6 +280,78 @@
         return transformerCache[mapName](entityData.position, entityData.orientation);
     }
 
+    // 普通地图使用世界坐标(cm)做过滤和插值，角色与跟随镜头共用同一时间线。
+    const radarMotion = new Map();
+    let radarMarkers = [], radarRafId = 0;
+    const RADAR_MAX_SPEED_CMPS = 1500;
+    const RADAR_JUMP_MARGIN_CM = 200;
+
+    function radarPoseAt(entry, now) {
+        const u = Math.max(0, Math.min(1, (now - entry.startedAt) / entry.duration));
+        const a = entry.from, b = entry.target;
+        return {
+            x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u,
+            z: a.z + (b.z - a.z) * u, yaw: egoAngleLerp(a.yaw, b.yaw, u),
+        };
+    }
+    function pushRadarSamples(now) {
+        for (const entity of entitiesToRender) {
+            const p = entity.position;
+            if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+            const pose = { x: p.x, y: p.y, z: Number.isFinite(p.z) ? p.z : 0,
+                yaw: Number(entity.orientation ?? entity.yaw) || 0 };
+            const key = egoPoseKeyOf(entity);
+            let entry = radarMotion.get(key);
+            if (!entry || now - entry.lastSeen > 2000) {
+                radarMotion.set(key, { from: pose, target: pose, startedAt: now,
+                    duration: 1, acceptedAt: now, lastSeen: now, pending: null });
+                continue;
+            }
+            entry.lastSeen = now;
+            const allowance = RADAR_JUMP_MARGIN_CM + RADAR_MAX_SPEED_CMPS * Math.min(now - entry.acceptedAt, 750) / 1000;
+            if (Math.hypot(pose.x - entry.target.x, pose.y - entry.target.y) > allowance) {
+                const pending = entry.pending;
+                const consistent = pending && Math.hypot(pose.x - pending.pose.x, pose.y - pending.pose.y)
+                    <= RADAR_JUMP_MARGIN_CM + RADAR_MAX_SPEED_CMPS * Math.min(now - pending.at, 750) / 1000;
+                entry.pending = { pose, at: now, since: consistent ? pending.since : now,
+                    count: consistent ? pending.count + 1 : 1 };
+                // 单帧跳点丢弃；连续三份相符快照才确认真实迁移，避免永久锁在旧位置。
+                if (entry.pending.count < 3 || now - entry.pending.since < 80) continue;
+            }
+            const interval = now - entry.acceptedAt;
+            entry.acceptedAt = now;
+            entry.pending = null;
+            if (pose.x === entry.target.x && pose.y === entry.target.y
+                && pose.z === entry.target.z && pose.yaw === entry.target.yaw) continue;
+            entry.from = radarPoseAt(entry, now);
+            entry.target = pose;
+            entry.startedAt = now;
+            entry.duration = Math.max(80, Math.min(250, interval));
+        }
+        for (const [key, entry] of radarMotion) {
+            if (now - entry.lastSeen > 3000) radarMotion.delete(key);
+        }
+    }
+    function getRadarTransformedData(entity, now) {
+        const entry = radarMotion.get(egoPoseKeyOf(entity));
+        if (!entry) return null;
+        const pose = radarPoseAt(entry, now);
+        return getTransformedData({ position: pose, orientation: pose.yaw }, currentMap);
+    }
+    function renderRadarMotion(now) {
+        if (!egoMode) {
+            for (const marker of radarMarkers) {
+                const data = getRadarTransformedData(marker.entity, now);
+                if (!data) continue;
+                marker.container.style.left = `${data.position.x}px`;
+                marker.container.style.top = `${data.position.y}px`;
+                if (marker.direction) marker.direction.style.transform = `translateX(-50%) rotate(${data.rotation}deg)`;
+            }
+            if (isFollowing) recenterView(now);
+        }
+        radarRafId = requestAnimationFrame(renderRadarMotion);
+    }
+
     function getTeamColor(team_id) { const colors = [ 'rgba(80, 80, 255, 1)', 'rgba(255, 160, 80, 1)', 'rgba(180, 80, 255, 1)', 'rgba(160, 100, 60, 1)', 'rgba(255, 220, 80, 1)', 'rgba(80, 220, 220, 1)', 'rgba(180, 80, 80, 1)', 'rgba(120, 80, 180, 1)', 'rgba(220, 120, 80, 1)', 'rgba(255, 160, 160, 1)', 'rgba(160, 160, 255, 1)', 'rgba(255, 200, 160, 1)', 'rgba(200, 160, 255, 1)', 'rgba(200, 150, 100, 1)', 'rgba(255, 240, 160, 1)', 'rgba(160, 240, 240, 1)', 'rgba(240, 160, 160, 1)', 'rgba(200, 160, 200, 1)', 'rgba(240, 200, 160, 1)', ]; return colors[team_id] || 'rgba(128, 128, 128, 1)'; }
     function readableCatalogName(value, fallback) {
         const text = String(value || '');
@@ -508,8 +580,10 @@
     // 省掉每次数百 KB 的传输与解析；长期无变化时兜底请求一次强制重建。
     var dataToken = null;
     var dataChangedAt = Date.now();
+    let dataRequestSerial = 0, dataAppliedSerial = 0;
 
     async function updateGameData(forceUpdate = false) {
+        const requestSerial = ++dataRequestSerial;
         try {
             const authInput = document.getElementById('auth-input'), password = authInput.value.trim();
             const authContainer = document.getElementById('auth-container'), authError = document.getElementById('auth-error');
@@ -530,6 +604,8 @@
             forceUpdate = true;
             const token = response.headers.get('X-Data-Token');
             const data = await response.json();
+            if (requestSerial < dataAppliedSerial) return;
+            dataAppliedSerial = requestSerial;
             // 收到完整负载即视为已与服务端同步（无论内容是否变化），否则兜底强制重建会每轮重触发。
             dataChangedAt = Date.now();
             if (token !== dataToken) dataToken = token;
@@ -542,11 +618,14 @@
                     entitiesToRender.push({ ...localPlayer, name: 'Local Player', health: 100, max_health: 100, orientation: localPlayer.yaw });
                 }
             }
+            const snapshotAt = performance.now();
+            pushRadarSamples(snapshotAt);
             if (forceUpdate || data.teammates.length !== teammates.length) updatePlayerSelect();
             if (pendingPlayerSelection !== null) { selectPlayer(pendingPlayerSelection); pendingPlayerSelection = null; }
             if (egoMode) { egoPushPoseSamples(); return; } // 渲染交给 rAF 循环，数据只喂插值采样
             if (isFollowing) recenterView();
             map.innerHTML = '';
+            radarMarkers = [];
             entitiesToRender.forEach(entityData => {
                 const entityType = entityData.type || 'player';
                 if (cleanMode && entityType === 'ai') return;
@@ -554,7 +633,9 @@
                 const isDead = entityData.has_health === true && Number(entityData.health) <= 0;
                 // 纯净模式只看活人：血量为零的角色整体隐藏（血环、名字武器、尸体都不画）
                 if (cleanMode && !isAi && isDead) return;
-                const { position: map2DPos, rotation: correctedOrientation } = getTransformedData(entityData, currentMap);
+                const visual = getRadarTransformedData(entityData, snapshotAt);
+                if (!visual) return;
+                const { position: map2DPos, rotation: correctedOrientation } = visual;
                 const container = document.createElement('div');
                 container.className = 'entity-container';
                 container.dataset.entityId = entityData.id;
@@ -587,8 +668,9 @@
                     if (isDead) { body.classList.add('dead'); body.style.borderColor = teamColor; }
                     else { body.style.backgroundColor = teamColor; body.style.borderColor = 'black'; body.textContent = entityData.team_id; }
                 }
+                let direction = null;
                 if (!isDead && entityData.has_orientation !== false) {
-                    const direction = document.createElement('div');
+                    direction = document.createElement('div');
                     direction.className = 'entity-direction';
                     direction.style.transform = `translateX(-50%) rotate(${correctedOrientation}deg)`;
                     container.appendChild(direction);
@@ -630,7 +712,9 @@
                 container.style.left = `${map2DPos.x}px`;
                 container.style.top = `${map2DPos.y}px`;
                 map.appendChild(container);
+                radarMarkers.push({ entity: entityData, container, direction });
             });
+            if (!radarRafId) radarRafId = requestAnimationFrame(renderRadarMotion);
             refreshResourceMarkers();
             refreshCalibrationEntity();
             renderCalibrationMarkers();
@@ -673,12 +757,14 @@
             .forEach(renderRadarItemMarker);
     }
 
-    function recenterView() {
+    function recenterView(now = performance.now()) {
         let targetPlayer = null;
-        if (selectedPlayerId) { targetPlayer = teammates.find(t => t.id == selectedPlayerId) || entitiesToRender.find(e => e.id == selectedPlayerId); }
-        if (!targetPlayer) targetPlayer = localPlayer;
+        if (selectedPlayerId) { targetPlayer = entitiesToRender.find(e => selectedEntityKey ? e.key === selectedEntityKey : e.id == selectedPlayerId) || teammates.find(t => t.id == selectedPlayerId); }
+        if (!targetPlayer) targetPlayer = localPlayer && (entitiesToRender.find(e => e.id === localPlayer.id) || localPlayer);
         if (targetPlayer) {
-            const { position: viewCenter2D } = getTransformedData(targetPlayer, currentMap);
+            const visual = getRadarTransformedData(targetPlayer, now);
+            if (!visual) return;
+            const viewCenter2D = visual.position;
             const rect = mapContainer.getBoundingClientRect();
             offsetX = rect.width / 2 - viewCenter2D.x * scale;
             offsetY = rect.height / 2 - viewCenter2D.y * scale;
@@ -691,6 +777,7 @@
 
     function selectMap(mapId) {
         cancelMapGesture();
+        if (currentMap !== mapId) { radarMotion.clear(); radarMarkers = []; map.innerHTML = ''; }
         currentMap = mapId;
         map.style.backgroundImage = `url('/image/${currentMap}')`;
         const dims = mapDimensions[mapId] || { width: 1000, height: 1000 };
@@ -1811,17 +1898,22 @@
         function wake() {
             clearTimeout(idleTimer);
             control.classList.remove('idle');
-            if (!dragging) idleTimer = setTimeout(() => control.classList.add('idle'), 3000);
+            if (!dragging) idleTimer = setTimeout(() => control.classList.add('idle'), 8000);
         }
-        ['pointerenter', 'pointermove', 'focusin', 'keydown', 'input', 'change'].forEach(type => control.addEventListener(type, wake));
+        ['pointerenter', 'focusin', 'keydown', 'input', 'change'].forEach(type => control.addEventListener(type, wake));
         control.addEventListener('pointerdown', () => { dragging = true; wake(); });
         function endDrag() {
             if (!dragging) return;
             dragging = false;
             wake();
         }
-        window.addEventListener('pointerup', endDrag);
-        window.addEventListener('pointercancel', endDrag);
+        control.addEventListener('pointermove', (event) => {
+            if (!event.buttons) dragging = false;
+            wake();
+        });
+        control.addEventListener('lostpointercapture', endDrag);
+        window.addEventListener('pointerup', endDrag, true);
+        window.addEventListener('pointercancel', endDrag, true);
         window.addEventListener('blur', endDrag);
         wake();
     }
