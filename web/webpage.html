@@ -326,7 +326,8 @@
             entry.from = radarPoseAt(entry, now);
             entry.target = pose;
             entry.startedAt = now;
-            entry.duration = Math.max(80, Math.min(250, interval));
+            // 60Hz 下连同最多一帧绘制等待约 48.7ms，不为稀疏快照增加长缓冲。
+            entry.duration = Math.max(16, Math.min(32, interval));
         }
         for (const [key, entry] of radarMotion) {
             if (now - entry.lastSeen > 3000) radarMotion.delete(key);

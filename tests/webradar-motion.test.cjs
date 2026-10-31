@@ -32,11 +32,11 @@ test('radar moves between snapshots, retargets continuously, and stops at the la
     f.feed(0, 0);
     f.feed(200, 200);
     assert.equal(f.pose(200).position.x, 0);
-    assert.equal(f.pose(300).position.x, 100);
-    f.feed(300, 300);
-    assert.equal(f.pose(300).position.x, 100);
-    assert.equal(f.pose(350).position.x, 200);
-    assert.equal(f.pose(400).position.x, 300);
+    assert.equal(f.pose(216).position.x, 100);
+    f.feed(216, 300);
+    assert.equal(f.pose(216).position.x, 100);
+    assert.equal(f.pose(224).position.x, 200);
+    assert.equal(f.pose(232).position.x, 300);
     assert.equal(f.pose(5000).position.x, 300);
 });
 
@@ -61,8 +61,8 @@ test('three consistent relocation samples recover smoothly instead of freezing f
     assert.equal(f.pose(200).position.x, 0);
     f.feed(300, 100100);
     assert.equal(f.pose(300).position.x, 0);
-    assert.ok(f.pose(425).position.x > 0 && f.pose(425).position.x < 100100);
-    assert.equal(f.pose(550).position.x, 100100);
+    assert.ok(f.pose(316).position.x > 0 && f.pose(316).position.x < 100100);
+    assert.equal(f.pose(332).position.x, 100100);
 });
 
 test('alternating outliers cannot confirm each other; fast duplicate responses cannot confirm a jump', () => {
@@ -81,7 +81,7 @@ test('stable mesh identity survives record ID replacement, old and missing ident
     f.feed(0, 0);
     f.entity.id = 'record:2';
     f.feed(200, 200);
-    assert.equal(f.pose(300).position.x, 100);
+    assert.equal(f.pose(216).position.x, 100);
     f.feed(3000, 50000);
     assert.equal(f.pose(3000).position.x, 50000);
     f.context.entitiesToRender = [];
@@ -97,10 +97,10 @@ test('direction follows the short arc and repeated snapshots do not restart a tr
     f.feed(0, 0);
     f.entity.orientation = 1;
     f.feed(200, 200);
-    assert.equal(f.pose(300).rotation, 360);
-    f.feed(300, 200);
-    assert.equal(f.pose(400).position.x, 200);
-    assert.equal(f.pose(400).rotation, 361);
+    assert.equal(f.pose(216).rotation, 360);
+    f.feed(216, 200);
+    assert.equal(f.pose(232).position.x, 200);
+    assert.equal(f.pose(232).rotation, 361);
 });
 
 test('following camera consumes the same smooth position as the actor marker', () => {
@@ -114,8 +114,8 @@ test('following camera consumes the same smooth position as the actor marker', (
     });
     vm.runInContext(script.slice(script.indexOf('    function recenterView('),
         script.indexOf('    function loadSelection(')), f.context);
-    f.context.recenterView(300);
-    assert.equal(f.context.offsetX + f.pose(300).position.x * 2, 400);
+    f.context.recenterView(216);
+    assert.equal(f.context.offsetX + f.pose(216).position.x * 2, 400);
 });
 
 test('slider idles after 8 seconds, wakes, and recovers from lost pointer capture', () => {
@@ -144,4 +144,20 @@ test('slider idles after 8 seconds, wakes, and recovers from lost pointer captur
     assert.equal(typeof timer, 'function');
     events.pointerdown(); windowEvents.pointerup();
     assert.equal(typeof timer, 'function');
+});
+
+
+test('normal radar updates settle within 32ms and under 50ms including a 60Hz frame wait', () => {
+    const frameMs = 1000 / 60;
+    for (const interval of [8, 16, 32, 100, 250, 1000]) {
+        for (const phase of [0, 4, 8, 12, 16]) {
+            const f = fixture();
+            f.feed(0, 0);
+            f.feed(interval, 100);
+            assert.equal(f.pose(interval + 32).position.x, 100);
+            let elapsed = phase;
+            while (f.pose(interval + elapsed).position.x !== 100) elapsed += frameMs;
+            assert.ok(elapsed < 50, `interval=${interval}, phase=${phase}, latency=${elapsed}`);
+        }
+    }
 });
