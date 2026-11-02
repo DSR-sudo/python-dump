@@ -886,6 +886,22 @@
         return null;
     }
 
+    // 标记本体只有 8px，手指很难点中：DOM 未命中时按标记当前屏幕位置做最近邻兜底，
+    // 半径内点谁跟谁，超出的仍算点空地（拖拽/双指缩放不受影响，超 8px 位移照常取消）。
+    function nearestEntityAt(clientX, clientY, maxDistance) {
+        const rect = mapContainer.getBoundingClientRect();
+        let best = null, bestDistance = maxDistance;
+        for (const marker of radarMarkers) {
+            const x = parseFloat(marker.container.style.left), y = parseFloat(marker.container.style.top);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+            const screenX = rect.left + offsetX + x * scale;
+            const screenY = rect.top + offsetY + y * scale;
+            const distance = Math.hypot(clientX - screenX, clientY - screenY);
+            if (distance <= bestDistance) { best = marker.entity; bestDistance = distance; }
+        }
+        return best;
+    }
+
     function resolveEgoTarget() {
         if (egoTargetKey) {
             const byKey = entitiesToRender.find(e => e.key === egoTargetKey);
@@ -1781,7 +1797,9 @@
         e.preventDefault();
         isFollowing = false;
         if (!mapPointers.size) mapGestureCancelled = false;
-        const entity = entityFromTarget(e.target);
+        // 触摸按 32px、鼠标按 16px 兜底：点中/点到角色附近即选中，地图随之跟随且不旋转（正北朝上）。
+        const entity = entityFromTarget(e.target)
+            || nearestEntityAt(e.clientX, e.clientY, e.pointerType === 'touch' ? 32 : 16);
         mapPointers.set(e.pointerId, {
             x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
             key: entity ? egoPoseKeyOf(entity) : null,

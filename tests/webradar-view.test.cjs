@@ -233,3 +233,51 @@ test('pinch keeps its midpoint stable and cancels selection', () => {
     f.event('pointerup'); f.flush();
     assert.deepEqual(f.selected, []);
 });
+
+test('geometric fallback picks the nearest marker inside the tap radius', () => {
+    const marker = (entity, x, y) => ({ entity, container: { style: { left: `${x}px`, top: `${y}px` } } });
+    const context = vm.createContext({
+        Math, offsetX: 0, offsetY: 0, scale: 1,
+        mapContainer: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }) },
+        radarMarkers: [marker({ id: 'a' }, 100, 100), marker({ id: 'b' }, 300, 100)],
+    });
+    vm.runInContext(script.slice(script.indexOf('    function nearestEntityAt'),
+        script.indexOf('    function resolveEgoTarget')), context);
+    const nearest = vm.runInContext('nearestEntityAt', context);
+    assert.equal(nearest(120, 100, 32), context.radarMarkers[0].entity); // 20px 偏差仍在触摸半径内
+    assert.equal(nearest(280, 100, 32), context.radarMarkers[1].entity); // 取更近的标记
+    assert.equal(nearest(150, 100, 32), null);                           // 半径外算点空地
+    assert.equal(nearest(160, 100, 64), context.radarMarkers[0].entity); // 半径放宽后可命中
+});
+
+test('a touch that misses the marker DOM still selects via the geometric fallback', () => {
+    const f = pointerFixture();
+    f.context.entityFromTarget = () => null; // 手指点在地图背景上，没碰到 8px 标记
+    f.context.nearestEntityAt = () => f.a;   // 但落在标记的触摸半径内
+    f.event('pointerdown', { pointerType: 'touch' });
+    f.event('pointerup', { pointerType: 'touch' });
+    f.tick(); f.flush();
+    assert.deepEqual(f.selected, ['record:1']); // 双击窗口后照常选中，进入跟随
+});
+
+test('following keeps the selected actor centered and the map north-up', () => {
+    const poses = { p1: { x: 100, y: 200 } };
+    const context = vm.createContext({
+        Math,
+        selectedPlayerId: 'p1', selectedEntityKey: 'mesh:p1',
+        entitiesToRender: [{ id: 'p1', key: 'mesh:p1' }],
+        teammates: [], localPlayer: null,
+        getRadarTransformedData: entity => ({ position: poses[entity.id] }),
+        mapContainer: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }) },
+        map: { style: {} }, offsetX: 0, offsetY: 0, scale: 2,
+    });
+    vm.runInContext(script.match(/    function applyMapTransform[^\n]+/)[0], context);
+    vm.runInContext(script.slice(script.indexOf('    function recenterView'),
+        script.indexOf('    function loadSelection')), context);
+    vm.runInContext('recenterView(1000);', context);
+    assert.equal(context.map.style.transform, 'translate(300px, 0px) scale(2)');
+    poses.p1 = { x: 160, y: 260 }; // 角色移动后镜头跟随，transform 只平移缩放、无 rotate
+    vm.runInContext('recenterView(1050);', context);
+    assert.equal(context.map.style.transform, 'translate(180px, -120px) scale(2)');
+    assert.ok(!context.map.style.transform.includes('rotate'));
+});
