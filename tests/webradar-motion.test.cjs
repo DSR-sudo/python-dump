@@ -110,7 +110,8 @@ test('following camera consumes the same smooth position as the actor marker', (
     Object.assign(f.context, { selectedPlayerId: f.entity.id, selectedEntityKey: f.entity.key,
         localPlayer: f.entity, teammates: [], scale: 2, offsetX: 0, offsetY: 0,
         mapContainer: { getBoundingClientRect: () => ({ width: 800, height: 600 }) },
-        applyMapTransform() {},
+        applyMapTransform() {}, setMapRotationTarget: () => {},
+        viewFollowRotation: false, calibrateMode: false,
     });
     vm.runInContext(script.slice(script.indexOf('    function recenterView('),
         script.indexOf('    function loadSelection(')), f.context);

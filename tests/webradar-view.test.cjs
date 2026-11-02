@@ -166,8 +166,8 @@ function pointerFixture() {
         calibrationEntityFromTarget: target => target,
         selectCalibrationEntity: () => false,
         pickCalibrationPoint: () => {},
-        offsetX: 0, offsetY: 0, scale: 1, isFollowing: true,
-        applyMapTransform: () => {},
+        offsetX: 0, offsetY: 0, scale: 1, isFollowing: true, viewFollowRotation: false,
+        applyMapTransform: () => {}, setMapRotationTarget: () => {},
     });
     vm.runInContext(script.slice(script.indexOf('    const mapPointers'),
         script.indexOf('    function initMapSelect')), f.context);
@@ -237,7 +237,7 @@ test('pinch keeps its midpoint stable and cancels selection', () => {
 test('geometric fallback picks the nearest marker inside the tap radius', () => {
     const marker = (entity, x, y) => ({ entity, container: { style: { left: `${x}px`, top: `${y}px` } } });
     const context = vm.createContext({
-        Math, offsetX: 0, offsetY: 0, scale: 1,
+        Math, offsetX: 0, offsetY: 0, scale: 1, mapRotationDeg: 0,
         mapContainer: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }) },
         radarMarkers: [marker({ id: 'a' }, 100, 100), marker({ id: 'b' }, 300, 100)],
     });
@@ -248,6 +248,22 @@ test('geometric fallback picks the nearest marker inside the tap radius', () => 
     assert.equal(nearest(280, 100, 32), context.radarMarkers[1].entity); // 取更近的标记
     assert.equal(nearest(150, 100, 32), null);                           // 半径外算点空地
     assert.equal(nearest(160, 100, 64), context.radarMarkers[0].entity); // 半径放宽后可命中
+});
+
+test('geometric fallback stays accurate while the map is rotated', () => {
+    const marker = (entity, x, y) => ({ entity, container: { style: { left: `${x}px`, top: `${y}px` } } });
+    const context = vm.createContext({
+        Math, offsetX: 400, offsetY: 300, scale: 1, mapRotationDeg: -90,
+        mapContainer: { getBoundingClientRect: () => ({ left: 10, top: 20, width: 1000, height: 800 }) },
+        radarMarkers: [marker({ id: 'a' }, 100, 100), marker({ id: 'b' }, 600, 100)],
+    });
+    vm.runInContext(script.slice(script.indexOf('    function nearestEntityAt'),
+        script.indexOf('    function resolveEgoTarget')), context);
+    const nearest = vm.runInContext('nearestEntityAt', context);
+    // 视图中心 (500,400)：a 转后在中心不动，b 转到 (500,-100)，屏幕坐标再叠加 rect 偏移。
+    assert.equal(nearest(510, 415, 32), context.radarMarkers[0].entity);
+    assert.equal(nearest(510, -80, 32), context.radarMarkers[1].entity);
+    assert.equal(nearest(610, 320, 32), null);
 });
 
 test('a touch that misses the marker DOM still selects via the geometric fallback', () => {
@@ -270,42 +286,103 @@ test('following keeps the selected actor centered and the map north-up', () => {
         getRadarTransformedData: entity => ({ position: poses[entity.id] }),
         mapContainer: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }) },
         map: { style: {} }, offsetX: 0, offsetY: 0, scale: 2,
+        mapRotationDeg: 0, mapRotationTarget: 0, mapRotationAt: 0,
+        viewFollowRotation: false, calibrateMode: false,
     });
-    vm.runInContext(script.match(/    function applyMapTransform[^\n]+/)[0], context);
+    vm.runInContext(script.slice(script.indexOf('    function applyMapTransform'),
+        script.indexOf("    window.addEventListener('resize'")), context);
     vm.runInContext(script.slice(script.indexOf('    function recenterView'),
         script.indexOf('    function loadSelection')), context);
     vm.runInContext('recenterView(1000);', context);
     assert.equal(context.map.style.transform, 'translate(300px, 0px) scale(2)');
-    poses.p1 = { x: 160, y: 260 }; // 角色移动后镜头跟随，transform 只平移缩放、无 rotate
+    poses.p1 = { x: 160, y: 260 }; // 角色移动后镜头跟随；未开视角跟随时 transform 只平移缩放、无 rotate
     vm.runInContext('recenterView(1050);', context);
     assert.equal(context.map.style.transform, 'translate(180px, -120px) scale(2)');
     assert.ok(!context.map.style.transform.includes('rotate'));
 });
 
-test('rotating the selected actor spins its direction stick, never the map', () => {
+test('view-follow rotates the map with the actor so their stick stays screen-up', () => {
     const pose = { x: 100, y: 200, yaw: 0 };
-    const direction = { style: {} };
+    const direction = { style: {} }, info = { style: {} };
     const actor = { id: 'p1', key: 'mesh:p1' };
     const context = vm.createContext({
-        Math, egoMode: false, isFollowing: true,
-        radarMarkers: [{ entity: actor, container: { style: {} }, direction }],
+        Math, egoMode: false, isFollowing: true, viewFollowRotation: true, calibrateMode: false,
+        radarMarkers: [{ entity: actor, container: { style: {} }, direction, info }],
         getRadarTransformedData: () => ({ position: { x: pose.x, y: pose.y }, rotation: pose.yaw }),
         requestAnimationFrame: () => 0,
         selectedPlayerId: 'p1', selectedEntityKey: 'mesh:p1',
         entitiesToRender: [actor], teammates: [], localPlayer: null,
         mapContainer: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }) },
         map: { style: {} }, offsetX: 0, offsetY: 0, scale: 2,
+        mapRotationDeg: 0, mapRotationTarget: 0, mapRotationAt: 0,
     });
-    vm.runInContext(script.match(/    function applyMapTransform[^\n]+/)[0], context);
+    vm.runInContext(script.slice(script.indexOf('    function applyMapTransform'),
+        script.indexOf("    window.addEventListener('resize'")), context);
     vm.runInContext(script.slice(script.indexOf('    function recenterView'),
         script.indexOf('    function loadSelection')), context);
     vm.runInContext(script.slice(script.indexOf('    function renderRadarMotion'),
         script.indexOf('    function getTeamColor')), context);
     vm.runInContext('renderRadarMotion(1000);', context);
-    assert.equal(context.map.style.transform, 'translate(300px, 0px) scale(2)');
-    assert.equal(direction.style.transform, 'translateX(-50%) rotate(0deg)');
-    pose.yaw = 90; // 角色原地转向：只有方向杆转，地图 transform 必须逐字节不变
-    vm.runInContext('renderRadarMotion(1050);', context);
+    assert.equal(context.mapRotationTarget, 0);
+    pose.yaw = 90; // 角色向右转 90°：地图目标角变为 −90°，让选中角色的方向杆恒指屏幕正上方
+    for (let t = 1016; t < 2000; t += 16) {
+        vm.runInContext(`renderRadarMotion(${t});`, context);
+        if (context.mapRotationDeg === context.mapRotationTarget) break;
+    }
+    assert.equal(context.mapRotationTarget, -90);
+    assert.equal(context.mapRotationDeg, -90);
+    assert.ok(context.map.style.transform.includes('rotate(-90deg)'));
+    // 方向杆保持绝对朝向 90°，叠加地图 −90° 后屏幕角度为 0（正上方）；名字标签反向补偿保持水平。
     assert.equal(direction.style.transform, 'translateX(-50%) rotate(90deg)');
-    assert.equal(context.map.style.transform, 'translate(300px, 0px) scale(2)');
+    assert.equal(info.style.transform, 'translateX(-50%) rotate(90deg)');
+    // 绕视图中心旋转：角色地图坐标 (100,200)、offset (300,0)、scale 2 → 旋转后仍落在中心 (500,400)。
+    const m = context.map.style.transform.match(/translate\(([-\d.e+]+)px, ([-\d.e+]+)px\)/);
+    const px = Number(m[1]) + (100 * 2) * Math.cos(-Math.PI / 2) - (200 * 2) * Math.sin(-Math.PI / 2);
+    const py = Number(m[2]) + (100 * 2) * Math.sin(-Math.PI / 2) + (200 * 2) * Math.cos(-Math.PI / 2);
+    assert.ok(Math.abs(px - 500) < 1e-6 && Math.abs(py - 400) < 1e-6);
+});
+
+test('wheel zoom and pinch exit view-follow rotation but keep the centered follow', () => {
+    const handlers = {};
+    const context = vm.createContext({
+        Math, cancelMapGesture: () => {},
+        mapContainer: {
+            addEventListener: (name, fn) => { handlers[name] = fn; },
+            getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }),
+        },
+        map: { style: {} }, offsetX: 50, offsetY: 60, scale: 1,
+        mapRotationDeg: -30, mapRotationTarget: -30, mapRotationAt: 0,
+        isFollowing: true, viewFollowRotation: true,
+    });
+    vm.runInContext(script.slice(script.indexOf('    function applyMapTransform'),
+        script.indexOf("    window.addEventListener('resize'")), context);
+    vm.runInContext(script.slice(script.indexOf("    mapContainer.addEventListener('wheel'"),
+        script.indexOf('    var firstData')), context);
+    handlers.wheel({ deltaY: -100, preventDefault() {} });
+    assert.ok(Math.abs(context.scale - 1.1) < 1e-9);
+    assert.equal(context.viewFollowRotation, false); // 缩放退出旋转，地图回正北
+    assert.equal(context.mapRotationTarget, 0);      // 目标角显式归零（不依赖 recenterView）
+    assert.equal(context.isFollowing, true);         // 但仍居中跟随选中角色
+});
+
+test('pan drag stops following; taps and pinches do not stop the centered follow', () => {
+    const tap = pointerFixture();
+    tap.context.viewFollowRotation = true;
+    tap.event('pointerdown'); tap.event('pointerup');
+    assert.equal(tap.context.isFollowing, true);   // 单击不再顺带关闭跟随
+    assert.equal(tap.context.viewFollowRotation, true);
+
+    const pan = pointerFixture();
+    pan.context.viewFollowRotation = true;
+    pan.event('pointerdown');
+    pan.event('pointermove', { clientX: 60 });
+    assert.equal(pan.context.isFollowing, false);  // 单指拖动 = 手动平移
+    assert.equal(pan.context.viewFollowRotation, false);
+
+    const pinch = pointerFixture();
+    pinch.context.viewFollowRotation = true;
+    pinch.event('pointerdown');
+    pinch.event('pointerdown', { pointerId: 2, clientX: 60 });
+    assert.equal(pinch.context.viewFollowRotation, false); // 双指缩放退出旋转
+    assert.equal(pinch.context.isFollowing, true);         // 但保持居中跟随
 });

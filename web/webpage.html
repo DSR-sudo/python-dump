@@ -341,14 +341,19 @@
     }
     function renderRadarMotion(now) {
         if (!egoMode) {
+            if (isFollowing) recenterView(now);
+            // 先推进旋转角再画标记：名字标签的反向补偿与本帧地图角度一致，不滞后一帧。
+            const rotated = advanceMapRotation(now);
             for (const marker of radarMarkers) {
                 const data = getRadarTransformedData(marker.entity, now);
                 if (!data) continue;
                 marker.container.style.left = `${data.position.x}px`;
                 marker.container.style.top = `${data.position.y}px`;
                 if (marker.direction) marker.direction.style.transform = `translateX(-50%) rotate(${data.rotation}deg)`;
+                // 地图旋转时名字/武器反向补偿保持水平可读；方向杆不补偿——它要随地图一起转，体现绝对朝向。
+                if (marker.info) marker.info.style.transform = `translateX(-50%) rotate(${-mapRotationDeg}deg)`;
             }
-            if (isFollowing) recenterView(now);
+            if (rotated) applyMapTransform();
         }
         radarRafId = requestAnimationFrame(renderRadarMotion);
     }
@@ -361,6 +366,10 @@
     }
 
     let currentMap = 'db.png', scale = 1, offsetX = 0, offsetY = 0, selectedPlayerId = null, teammates = [], localPlayer = null, pendingPlayerSelection = null, isFollowing = true, resourcesVisible = true, resourcesVisibleBeforeClean = true, cleanMode = false;
+    // 视角跟随（航向朝上）：点选角色后地图绕视图中心随其视角旋转，选中角色恒在中心、
+    // 面朝方向恒为屏幕正上方；拖拽平移 / 滚轮 / 双指缩放 / 校准模式退出旋转，回到正北朝上。
+    // mapRotationDeg 当前角、mapRotationTarget 目标角（指数补间），viewFollowRotation 是否处于视角跟随。
+    let mapRotationDeg = 0, mapRotationTarget = 0, mapRotationAt = 0, viewFollowRotation = false;
     // 视角模式状态：egoTargetKey 用 mesh 稳定锁定目标，避免快照 record_id 漂移
     let egoMode = false, egoTargetKey = null, egoTargetId = null, egoFovDeg = Math.max(45, Math.min(120, Number(localStorage.getItem('egoFov') || 90) || 90));
     let egoYawOffset = 0, egoPitchOffset = 0, egoDragging = false, egoDragX = 0, egoDragY = 0;
@@ -543,7 +552,38 @@
     const DATA_REFRESH_FALLBACK_MS = 2000; // 超过该时长没有新数据就强制重建一次，避免一直吃缓存
     const mapContainer = document.getElementById('map-container'), map = document.getElementById('map');
 
-    function applyMapTransform() { map.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`; }
+    function applyMapTransform() {
+        if (mapRotationDeg) {
+            const rect = mapContainer.getBoundingClientRect();
+            const cx = rect.width / 2, cy = rect.height / 2;
+            const rad = mapRotationDeg * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+            // #map 的 transform-origin 是 (0,0)，把“绕视图中心旋转”折算进 translate：
+            // translate(a,b) rotate(R) scale(s) 展开后 a,b = Rot·offset + (I−Rot)·C，中心点旋转前后不动。
+            const a = cos * offsetX - sin * offsetY + (1 - cos) * cx + sin * cy;
+            const b = sin * offsetX + cos * offsetY - sin * cx + (1 - cos) * cy;
+            map.style.transform = `translate(${a}px, ${b}px) rotate(${mapRotationDeg}deg) scale(${scale})`;
+        } else {
+            map.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+        }
+    }
+
+    // 每帧向目标角指数趋近（时间常数约 60ms，数百毫秒内收敛）：进出视角跟随时平滑过渡。
+    function advanceMapRotation(now) {
+        if (mapRotationDeg === mapRotationTarget) return false;
+        const dt = mapRotationAt && now - mapRotationAt < 400 ? Math.max(0, now - mapRotationAt) : 16;
+        mapRotationAt = now;
+        mapRotationDeg += (mapRotationTarget - mapRotationDeg) * Math.min(1, dt / 60);
+        if (Math.abs(mapRotationTarget - mapRotationDeg) < 0.05) mapRotationDeg = mapRotationTarget;
+        return true;
+    }
+
+    // 目标角取最短路径，避免从 179° 切到 -179° 时地图倒转一整圈。
+    function setMapRotationTarget(deg) {
+        let delta = (deg - mapRotationDeg) % 360;
+        if (delta > 180) delta -= 360;
+        else if (delta < -180) delta += 360;
+        mapRotationTarget = mapRotationDeg + delta;
+    }
 
     window.addEventListener('resize', () => { if (isFollowing) recenterView(); });
 
@@ -553,7 +593,9 @@
     mapContainer.addEventListener('wheel', (e) => {
         e.preventDefault();
         cancelMapGesture();
-        isFollowing = false;
+        // 缩放退出视角跟随的旋转，但保持居中跟随：地图回到正北朝上，选中角色仍在中心。
+        viewFollowRotation = false;
+        setMapRotationTarget(0);
 
         const rect = mapContainer.getBoundingClientRect();
         // 我们不再以鼠标位置为中心，而是以视图容器的中心为中心
@@ -677,8 +719,9 @@
                     container.appendChild(direction);
                 }
                 container.appendChild(body);
+                let info = null;
                 if (!isAi) {
-                    const info = document.createElement('div');
+                    info = document.createElement('div');
                     info.className = 'entity-info';
                     const heroText = entityData.has_hero === false ? '?' : readableCatalogName(entityData.hero_name, '未知探员');
                     const weaponText = entityData.has_weapon === false ? '?' : readableCatalogName(entityData.weapon_name, '未知武器');
@@ -713,7 +756,7 @@
                 container.style.left = `${map2DPos.x}px`;
                 container.style.top = `${map2DPos.y}px`;
                 map.appendChild(container);
-                radarMarkers.push({ entity: entityData, container, direction });
+                radarMarkers.push({ entity: entityData, container, direction, info });
             });
             if (!radarRafId) radarRafId = requestAnimationFrame(renderRadarMotion);
             refreshResourceMarkers();
@@ -759,8 +802,8 @@
     }
 
     function recenterView(now = performance.now()) {
-        let targetPlayer = null;
-        if (selectedPlayerId) { targetPlayer = entitiesToRender.find(e => selectedEntityKey ? e.key === selectedEntityKey : e.id == selectedPlayerId) || teammates.find(t => t.id == selectedPlayerId); }
+        let targetPlayer = null, fromSelection = false;
+        if (selectedPlayerId) { targetPlayer = entitiesToRender.find(e => selectedEntityKey ? e.key === selectedEntityKey : e.id == selectedPlayerId) || teammates.find(t => t.id == selectedPlayerId); fromSelection = !!targetPlayer; }
         if (!targetPlayer) targetPlayer = localPlayer && (entitiesToRender.find(e => e.id === localPlayer.id) || localPlayer);
         if (targetPlayer) {
             const visual = getRadarTransformedData(targetPlayer, now);
@@ -769,6 +812,9 @@
             const rect = mapContainer.getBoundingClientRect();
             offsetX = rect.width / 2 - viewCenter2D.x * scale;
             offsetY = rect.height / 2 - viewCenter2D.y * scale;
+            // 视角跟随：地图转 −朝向角，选中角色的方向杆在屏幕上恒指正上方（航向朝上）；
+            // 其余情况（本机默认跟随 / 手动退出旋转 / 校准取点）保持正北朝上。
+            setMapRotationTarget(viewFollowRotation && fromSelection && !calibrateMode ? -visual.rotation : 0);
             applyMapTransform();
         }
     }
@@ -798,6 +844,8 @@
         const selected = playerId ? entitiesToRender.find(e => e.id == playerId) : null;
         selectedEntityKey = selected ? (selected.key || null) : null;
         isFollowing = true;
+        // 点选角色即进入视角跟随（航向朝上）；选回“自己”/清空选择则保持正北朝上。
+        viewFollowRotation = !!playerId;
         syncSelectionSummary();
         if (egoMode) {
             egoTargetKey = selectedEntityKey;
@@ -888,14 +936,18 @@
 
     // 标记本体只有 8px，手指很难点中：DOM 未命中时按标记当前屏幕位置做最近邻兜底，
     // 半径内点谁跟谁，超出的仍算点空地（拖拽/双指缩放不受影响，超 8px 位移照常取消）。
+    // 视角跟随时地图带旋转，屏幕位置需绕视图中心转同一角度。
     function nearestEntityAt(clientX, clientY, maxDistance) {
         const rect = mapContainer.getBoundingClientRect();
+        const cx = rect.width / 2, cy = rect.height / 2;
+        const rad = mapRotationDeg * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
         let best = null, bestDistance = maxDistance;
         for (const marker of radarMarkers) {
             const x = parseFloat(marker.container.style.left), y = parseFloat(marker.container.style.top);
             if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-            const screenX = rect.left + offsetX + x * scale;
-            const screenY = rect.top + offsetY + y * scale;
+            const dx = offsetX + x * scale - cx, dy = offsetY + y * scale - cy;
+            const screenX = rect.left + cx + cos * dx - sin * dy;
+            const screenY = rect.top + cy + sin * dx + cos * dy;
             const distance = Math.hypot(clientX - screenX, clientY - screenY);
             if (distance <= bestDistance) { best = marker.entity; bestDistance = distance; }
         }
@@ -1569,6 +1621,10 @@
     function setCalibrateMode(enabled) {
         cancelMapGesture();
         calibrateMode = !!enabled;
+        // 校准取点假设地图无旋转（screenToMapPoint 只做平移/缩放逆变换），进入时立即回正。
+        viewFollowRotation = false;
+        mapRotationDeg = 0; mapRotationTarget = 0;
+        applyMapTransform();
         if (calibrateMode && !calibrationBackups[currentMap]) {
             calibrationBackups[currentMap] = JSON.parse(JSON.stringify(calibrationTarget(true)));
         }
@@ -1795,9 +1851,8 @@
     mapContainer.addEventListener('pointerdown', (e) => {
         if (e.button !== 0 || egoMode) return;
         e.preventDefault();
-        isFollowing = false;
         if (!mapPointers.size) mapGestureCancelled = false;
-        // 触摸按 32px、鼠标按 16px 兜底：点中/点到角色附近即选中，地图随之跟随且不旋转（正北朝上）。
+        // 触摸按 32px、鼠标按 16px 兜底：点中/点到角色附近即选中，进入视角跟随（航向朝上）。
         const entity = entityFromTarget(e.target)
             || nearestEntityAt(e.clientX, e.clientY, e.pointerType === 'touch' ? 32 : 16);
         mapPointers.set(e.pointerId, {
@@ -1806,7 +1861,8 @@
             calibrationEntity: calibrateMode ? calibrationEntityFromTarget(e.target) : null,
             calibrationMode: calibrateMode,
         });
-        if (mapPointers.size > 1) cancelMapGesture();
+        // 第二根手指按下即双指缩放：退出视角旋转回到正北，但保持居中跟随。
+        if (mapPointers.size > 1) { cancelMapGesture(); viewFollowRotation = false; setMapRotationTarget(0); }
         else if (!entity) cancelEntityClick();
         // 第二次按下时暂停单击计时，避免尚未抬起就发生居中。
         else if (pendingEntityClick) { clearTimeout(entityClickTimer); entityClickTimer = null; }
@@ -1818,7 +1874,13 @@
         if (!pointer) return;
         const oldX = pointer.x, oldY = pointer.y;
         pointer.x = e.clientX; pointer.y = e.clientY;
-        if (Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) > 8) cancelMapGesture();
+        if (Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) > 8) {
+            cancelMapGesture();
+            // 单指拖动 = 手动平移：退出居中跟随与视角旋转；双指（缩放）保持居中，仅退出旋转。
+            // 退出跟随后 recenterView 不再跑，这里必须显式把目标角归零，地图才会转回正北。
+            if (mapPointers.size === 1) { isFollowing = false; viewFollowRotation = false; setMapRotationTarget(0); }
+            else if (mapPointers.size === 2) { viewFollowRotation = false; setMapRotationTarget(0); }
+        }
         if (mapPointers.size === 1) {
             offsetX += pointer.x - oldX; offsetY += pointer.y - oldY;
         } else if (mapPointers.size === 2) {
