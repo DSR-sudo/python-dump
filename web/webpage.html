@@ -31,11 +31,15 @@
         .white-player { background-color: white; border-color: black; color: black; }
         #reset-view { background-color: #f44336; }
         #reset-view:active { background-color: #d32f2f; }
-        #auth-container { display: flex; align-items: center; gap: 5px; margin-top: 5px; }
-        #auth-input { padding: 6px; border: none; border-radius: 4px; width: 120px; }
-        #auth-submit { padding: 6px 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        #auth-error { color: red; font-size: 12px; margin-top: 5px; display: none; }
-        #auth-container.hidden { display: none; }
+        /* 密码门：验证通过前全屏遮罩挡住所有控件，功能函数也是空操作 */
+        #auth-gate { position: fixed; inset: 0; z-index: 999; display: flex; align-items: center; justify-content: center; background: rgba(10, 10, 12, .97); }
+        #auth-gate.hidden { display: none; }
+        #auth-container { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 28px 36px; background: #1c1f24; border: 1px solid #3a3f46; border-radius: 10px; }
+        #auth-title { color: #cfd6df; font-size: 14px; letter-spacing: 3px; }
+        #auth-row { display: flex; align-items: center; gap: 6px; }
+        #auth-input { padding: 8px 10px; border: none; border-radius: 4px; width: 150px; text-align: center; letter-spacing: 2px; }
+        #auth-submit { padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        #auth-error { color: #ff7b72; font-size: 12px; display: none; }
         #marker-size-control { position: fixed; left: 12px; top: 50%; transform: translateY(-50%); z-index: 200; }
         #marker-size-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 6px; background: rgba(35, 35, 35, 0.28); border: 1px solid rgba(170,170,170,.5); border-radius: 4px; font-size: 11px; opacity: .7; transform-origin: left center; transition: opacity .25s, filter .25s, transform .25s; }
         #marker-size-control.idle #marker-size-panel { opacity: .25; filter: blur(1.2px); transform: scale(.78); }
@@ -101,16 +105,21 @@
                 <optgroup id="player-options" label="角色"><option value="player:">自己</option></optgroup>
             </select>
         </div>
-        <div id="auth-container">
-            <input type="text" id="auth-input" placeholder="输入密码" autocomplete="off">
-            <button id="auth-submit">确认</button>
-            <div id="auth-error">密码错误，请重试</div>
-        </div>
         <div id="calibration-status" style="width: 100%; text-align: center; padding: 2px; font-weight: bold; min-height: 1em;display:none"></div>
     </div>
 
     <div id="map-container">
         <div id="map"></div>
+    </div>
+    <div id="auth-gate">
+        <div id="auth-container">
+            <div id="auth-title">WEB RADAR</div>
+            <div id="auth-row">
+                <input type="password" id="auth-input" placeholder="输入密码" autocomplete="off">
+                <button id="auth-submit">确认</button>
+            </div>
+            <div id="auth-error">密码错误，请重试</div>
+        </div>
     </div>
     <div id="quality-filter" aria-label="资源等级筛选">
         <div id="quality-filter-title">资源等级筛选</div>
@@ -370,6 +379,9 @@
     // 面朝方向恒为屏幕正上方；拖拽平移 / 滚轮 / 双指缩放 / 校准模式退出旋转，回到正北朝上。
     // mapRotationDeg 当前角、mapRotationTarget 目标角（指数补间），viewFollowRotation 是否处于视角跟随。
     let mapRotationDeg = 0, mapRotationTarget = 0, mapRotationAt = 0, viewFollowRotation = false;
+    // 密码门：radarAuthed 为 false 时所有功能函数（轮询/订阅/地图加载/手势/校准）直接返回，
+    // 不发任何请求、不加载地图文件；tryAuth() 验证通过后 unlockRadar() 才恢复功能。
+    let radarAuthed = false, pollLoopRunning = false;
     // 视角模式状态：egoTargetKey 用 mesh 稳定锁定目标，避免快照 record_id 漂移
     let egoMode = false, egoTargetKey = null, egoTargetId = null, egoFovDeg = Math.max(45, Math.min(120, Number(localStorage.getItem('egoFov') || 90) || 90));
     let egoYawOffset = 0, egoPitchOffset = 0, egoDragging = false, egoDragX = 0, egoDragY = 0;
@@ -591,6 +603,7 @@
     // == 修改点 1: 重写鼠标滚轮缩放逻辑 ==
     // ===============================================================
     mapContainer.addEventListener('wheel', (e) => {
+        if (!radarAuthed) return;
         e.preventDefault();
         cancelMapGesture();
         // 缩放退出视角跟随的旋转，但保持居中跟随：地图回到正北朝上，选中角色仍在中心。
@@ -626,22 +639,21 @@
     let dataRequestSerial = 0, dataAppliedSerial = 0;
 
     async function updateGameData(forceUpdate = false) {
+        if (!radarAuthed) return; // 未解锁：功能函数为空，不发任何请求
         const requestSerial = ++dataRequestSerial;
         try {
-            const authInput = document.getElementById('auth-input'), password = authInput.value.trim();
-            const authContainer = document.getElementById('auth-container'), authError = document.getElementById('auth-error');
-            if (!password) { authContainer.classList.remove('hidden'); return; }
+            const password = authPassword();
+            if (!password) { lockRadar(); return; }
             const headers = { 'X-Auth-Token': password, 'X-Client-Id': clientId };
             if (!forceUpdate) {
                 if (Date.now() - dataChangedAt > DATA_REFRESH_FALLBACK_MS) headers['X-Data-No-Cache'] = '1';
                 else if (dataToken) headers['X-Data-Token'] = dataToken;
             }
             const response = await fetch('/api/data', { headers });
-            if (response.status === 401) { authContainer.classList.remove('hidden'); authError.style.display = 'block'; localStorage.removeItem('authToken'); return; }
+            // 密码错误或服务端重启换了密码：回到锁定态，功能函数重新变空。
+            if (response.status === 401) { lockRadar(true); return; }
             if (response.status === 204) return;
             localStorage.setItem('authToken', password);
-            authError.style.display = 'none';
-            authContainer.classList.add('hidden');
             pushSubscription();
             if (firstData && !forceUpdate) { forceUpdate = true; firstData = false; }
             forceUpdate = true;
@@ -764,7 +776,6 @@
             renderCalibrationMarkers();
         } catch (error) {
             console.error('获取游戏数据失败:', error);
-            document.getElementById('auth-container').classList.remove('hidden');
         }
     }
 
@@ -823,10 +834,11 @@
     function saveSelection() { localStorage.setItem('selectedMap', currentMap); localStorage.setItem('selectedPlayerId', selectedPlayerId || ''); }
 
     function selectMap(mapId) {
+        if (!radarAuthed) return; // 未解锁：不加载地图文件
         cancelMapGesture();
         if (currentMap !== mapId) { radarMotion.clear(); radarMarkers = []; map.innerHTML = ''; }
         currentMap = mapId;
-        map.style.backgroundImage = `url('/image/${currentMap}')`;
+        map.style.backgroundImage = `url('${mapImageUrl(currentMap)}')`;
         const dims = mapDimensions[mapId] || { width: 1000, height: 1000 };
         map.style.width = `${dims.width}px`;
         map.style.height = `${dims.height}px`;
@@ -895,7 +907,8 @@
             if (subscriptionInFlight) { subscriptionTimer = setTimeout(send, 150); return; }
             const payload = JSON.stringify(currentSubscription());
             if (payload === lastSubscriptionSig) return;
-            const authToken = document.getElementById('auth-input').value.trim();
+            if (!radarAuthed) return; // 未解锁：不发订阅
+            const authToken = authPassword();
             if (!authToken) return;
             subscriptionInFlight = true;
             let ok = false;
@@ -1061,7 +1074,8 @@
     function egoMapImage(name) {
         if (!egoMapImages[name]) {
             const image = new Image();
-            image.src = `/image/${name}`;
+            // 地图文件要求鉴权：Ego 小地图的取图也带 token。
+            image.src = mapImageUrl(name);
             egoMapImages[name] = image;
         }
         return egoMapImages[name];
@@ -1619,6 +1633,7 @@
     }
 
     function setCalibrateMode(enabled) {
+        if (enabled && !radarAuthed) return; // 未解锁：校准不可用
         cancelMapGesture();
         calibrateMode = !!enabled;
         // 校准取点假设地图无旋转（screenToMapPoint 只做平移/缩放逆变换），进入时立即回正。
@@ -1849,7 +1864,7 @@
     }
 
     mapContainer.addEventListener('pointerdown', (e) => {
-        if (e.button !== 0 || egoMode) return;
+        if (!radarAuthed || e.button !== 0 || egoMode) return;
         e.preventDefault();
         if (!mapPointers.size) mapGestureCancelled = false;
         // 触摸按 32px、鼠标按 16px 兜底：点中/点到角色附近即选中，进入视角跟随（航向朝上）。
@@ -2020,6 +2035,51 @@
         }
         setMapFullscreen(false);
     }
+    // ===============================================================
+    // == 密码门：验证通过前所有功能函数为空，不发请求、不加载地图 ==
+    // ===============================================================
+    function authPassword() { return document.getElementById('auth-input').value.trim(); }
+
+    // 地图文件同样要求鉴权：/image/ 请求必须带上 token。
+    function mapImageUrl(name) { return `/image/${name}?token=${encodeURIComponent(authPassword())}`; }
+
+    function lockRadar(showError) {
+        radarAuthed = false;
+        pollLoopRunning = false;
+        localStorage.removeItem('authToken');
+        map.style.backgroundImage = ''; // 锁定时不再持有地图文件
+        document.getElementById('auth-gate').classList.remove('hidden');
+        document.getElementById('auth-error').style.display = showError ? 'block' : 'none';
+    }
+
+    function unlockRadar() {
+        radarAuthed = true;
+        localStorage.setItem('authToken', authPassword());
+        document.getElementById('auth-gate').classList.add('hidden');
+        document.getElementById('auth-error').style.display = 'none';
+        selectMap(currentMap); // 此时才加载地图文件；selectMap 内部会发起首次数据拉取
+        if (!pollLoopRunning) { pollLoopRunning = true; scheduleGameDataPoll(); }
+        pushSubscription(true);
+    }
+
+    async function tryAuth() {
+        const gate = document.getElementById('auth-gate'), authError = document.getElementById('auth-error');
+        const password = authPassword();
+        gate.classList.remove('hidden');
+        authError.style.display = 'none';
+        if (!password) return; // 空密码保持锁定
+        try {
+            const response = await fetch('/api/data', {
+                headers: { 'X-Auth-Token': password, 'X-Client-Id': clientId, 'X-Data-No-Cache': '1' }
+            });
+            if (response.ok) { unlockRadar(); return; }
+            if (response.status === 401) {
+                localStorage.removeItem('authToken');
+                authError.style.display = 'block';
+            }
+        } catch (_) { /* 服务器暂不可达：保持锁定，重试即可 */ }
+    }
+
     function loadAuth() { const savedPassword = localStorage.getItem('authToken'); if (savedPassword) { document.getElementById('auth-input').value = savedPassword; } }
 
     loadSelection();
@@ -2040,23 +2100,23 @@
         if (event.key === 'Escape' && !egoMode && document.body.classList.contains('map-fullscreen')) exitMapFullscreen();
     });
     bindCalibrateUi();
-    selectMap(currentMap);
-    updateGameData(true);
     // 目标 60Hz：一轮结束（含等待响应）后再等 16ms 发起下一轮，
-    // 网络慢时自动降速而不是堆积请求。
+    // 网络慢时自动降速而不是堆积请求。解锁后才启动；锁定时自动停转。
     function scheduleGameDataPoll() {
+        if (!radarAuthed) { pollLoopRunning = false; return; }
         setTimeout(async () => {
             await updateGameData();
             scheduleGameDataPoll();
         }, DATA_POLL_INTERVAL_MS);
     }
-    scheduleGameDataPoll();
+    // 用上次保存的密码自动验证：失败/无密码则停留在密码门。
+    tryAuth();
     document.getElementById('auth-submit').addEventListener('click', () => {
-        updateGameData(true);
+        tryAuth();
     });
     document.getElementById('auth-input').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
-            updateGameData(true);
+            tryAuth();
         }
     });
     document.getElementById('resource-toggle').addEventListener('click', toggleResourceVisibility);

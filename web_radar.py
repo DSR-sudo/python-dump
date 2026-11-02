@@ -621,6 +621,11 @@ refresh();
                     return
 
                 if path.startswith("/image/"):
+                    # 地图文件同样要求密码：/image/ 与 /api/ 一致走鉴权，
+                    # 前端通过 url 查询参数 ?token= 携带（img 标签无法设请求头）。
+                    if not self._is_authorized(query_token=query_token):
+                        self._send_json({"error": "Unauthorized"}, status=401)
+                        return
                     image_path = service._resolve_image_path(path)
                     if image_path is None:
                         self._send_json({"error": "Not Found"}, status=404)

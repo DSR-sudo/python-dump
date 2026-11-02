@@ -166,7 +166,7 @@ function pointerFixture() {
         calibrationEntityFromTarget: target => target,
         selectCalibrationEntity: () => false,
         pickCalibrationPoint: () => {},
-        offsetX: 0, offsetY: 0, scale: 1, isFollowing: true, viewFollowRotation: false,
+        offsetX: 0, offsetY: 0, scale: 1, isFollowing: true, viewFollowRotation: false, radarAuthed: true,
         applyMapTransform: () => {}, setMapRotationTarget: () => {},
     });
     vm.runInContext(script.slice(script.indexOf('    const mapPointers'),
@@ -352,7 +352,7 @@ test('wheel zoom and pinch exit view-follow rotation but keep the centered follo
         },
         map: { style: {} }, offsetX: 50, offsetY: 60, scale: 1,
         mapRotationDeg: -30, mapRotationTarget: -30, mapRotationAt: 0,
-        isFollowing: true, viewFollowRotation: true,
+        isFollowing: true, viewFollowRotation: true, radarAuthed: true,
     });
     vm.runInContext(script.slice(script.indexOf('    function applyMapTransform'),
         script.indexOf("    window.addEventListener('resize'")), context);
