@@ -281,3 +281,31 @@ test('following keeps the selected actor centered and the map north-up', () => {
     assert.equal(context.map.style.transform, 'translate(180px, -120px) scale(2)');
     assert.ok(!context.map.style.transform.includes('rotate'));
 });
+
+test('rotating the selected actor spins its direction stick, never the map', () => {
+    const pose = { x: 100, y: 200, yaw: 0 };
+    const direction = { style: {} };
+    const actor = { id: 'p1', key: 'mesh:p1' };
+    const context = vm.createContext({
+        Math, egoMode: false, isFollowing: true,
+        radarMarkers: [{ entity: actor, container: { style: {} }, direction }],
+        getRadarTransformedData: () => ({ position: { x: pose.x, y: pose.y }, rotation: pose.yaw }),
+        requestAnimationFrame: () => 0,
+        selectedPlayerId: 'p1', selectedEntityKey: 'mesh:p1',
+        entitiesToRender: [actor], teammates: [], localPlayer: null,
+        mapContainer: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }) },
+        map: { style: {} }, offsetX: 0, offsetY: 0, scale: 2,
+    });
+    vm.runInContext(script.match(/    function applyMapTransform[^\n]+/)[0], context);
+    vm.runInContext(script.slice(script.indexOf('    function recenterView'),
+        script.indexOf('    function loadSelection')), context);
+    vm.runInContext(script.slice(script.indexOf('    function renderRadarMotion'),
+        script.indexOf('    function getTeamColor')), context);
+    vm.runInContext('renderRadarMotion(1000);', context);
+    assert.equal(context.map.style.transform, 'translate(300px, 0px) scale(2)');
+    assert.equal(direction.style.transform, 'translateX(-50%) rotate(0deg)');
+    pose.yaw = 90; // 角色原地转向：只有方向杆转，地图 transform 必须逐字节不变
+    vm.runInContext('renderRadarMotion(1050);', context);
+    assert.equal(direction.style.transform, 'translateX(-50%) rotate(90deg)');
+    assert.equal(context.map.style.transform, 'translate(300px, 0px) scale(2)');
+});

@@ -18,11 +18,12 @@
 
 ## 测试
 
-- `tests/webradar-view.test.cjs` 新增 3 例：
+- `tests/webradar-view.test.cjs` 新增 4 例：
   - 几何兜底半径内取最近标记、半径外算空地；
   - 触摸点在地图背景（DOM 未命中）仍可经兜底选中进入跟随；
-  - `recenterView()` 随角色移动更新 offset 且 transform 无 `rotate`（跟随 + 正北朝上的回归锁）。
-- `node --test tests/webradar-view.test.cjs` 16/16 通过（原 13 例不破坏）；`tests/webradar-motion.test.cjs` 9/9 通过。
+  - `recenterView()` 随角色移动更新 offset 且 transform 无 `rotate`（跟随 + 正北朝上的回归锁）；
+  - 选中角色原地转向（yaw 0→90）只转动其方向杆 `rotate(90deg)`，地图 transform 逐字节不变——证实"角色旋转视角时地图不旋转"。
+- `node --test tests/webradar-view.test.cjs` 17/17 通过（原 13 例不破坏）；`tests/webradar-motion.test.cjs` 9/9 通过。
 
 ## 手动验证建议
 
