@@ -634,6 +634,9 @@ refresh();
                     if self._is_dev_session(query_token=query_token):
                         try:
                             sent = service.core.send_aim_command(f"aim map {model}")
+                            # 换图即开可见性:map 进入 loading 后 set visible 1 合法,
+                            # 免去一个人人都会忘的手动步骤。
+                            service.core.send_aim_command("aim set visible 1")
                         except OSError:
                             sent = False
                     else:
