@@ -32,6 +32,18 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     allow_reuse_address = True
 
 
+# 雷达底图 -> LModes 可见性模型(nika 上 /root/maps/<model>.bin)。
+# WebRadar 选中哪张底图,就把对应模型推给 client 热载(AIM MAP)。
+RADAR_MAP_MODELS = {
+    "db.png": "linghaodaba",
+    "cg.png": "changgongxigu",
+    "bks.png": "bakeshen",
+    "ht.png": "hangtianjidi",
+    "jy.png": "chaoxijianyu",
+    "az3.png": "az3",
+}
+
+
 class WebRadarService:
     def __init__(self, core, default_port=34900, root_dir=None):
         self.core = core
@@ -544,7 +556,7 @@ refresh();
 
             def do_POST(self):
                 parsed = urlparse(self.path)
-                if parsed.path != "/api/subscription":
+                if parsed.path not in ("/api/subscription", "/api/map"):
                     self._send_json({"error": "Not Found"}, status=404)
                     return
                 query = parse_qs(parsed.query)
@@ -563,6 +575,19 @@ refresh();
                     payload = json.loads(self.rfile.read(length) or b"{}")
                 except Exception:
                     self._send_json({"error": "Bad Request"}, status=400)
+                    return
+                if parsed.path == "/api/map":
+                    # 底图选择联动 aim 可见性模型:map=底图文件名 -> AIM MAP <model>。
+                    map_id = str(payload.get("map") or "")
+                    model = RADAR_MAP_MODELS.get(map_id)
+                    if model is None:
+                        self._send_json({"error": "Unknown map"}, status=400)
+                        return
+                    try:
+                        sent = service.core.send_aim_command(f"aim map {model}")
+                    except OSError:
+                        sent = False
+                    self._send_json({"sent": bool(sent), "model": model}, status=200)
                     return
                 if not service.set_client_subscription(self._client_id(), payload):
                     self._send_json({"error": "Bad Request"}, status=400)

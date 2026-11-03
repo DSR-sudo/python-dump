@@ -838,6 +838,12 @@
         cancelMapGesture();
         if (currentMap !== mapId) { radarMotion.clear(); radarMarkers = []; map.innerHTML = ''; }
         currentMap = mapId;
+        // 选择底图时通知服务端:联动 nika client 热载对应 LModes 可见性模型。
+        fetch(`/api/map?token=${encodeURIComponent(authPassword())}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ map: mapId })
+        }).catch(() => {});
         map.style.backgroundImage = `url('${mapImageUrl(currentMap)}')`;
         const dims = mapDimensions[mapId] || { width: 1000, height: 1000 };
         map.style.width = `${dims.width}px`;

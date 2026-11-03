@@ -963,6 +963,20 @@ class DMACore:
         with self.driver_endpoint_lock:
             return self.driver_endpoint
 
+    def send_aim_command(self, command: str) -> bool:
+        # 中文：向当前对端(本部署即 nika 上的 PMU client)发送文本 AIM 命令;
+        #       应答以 LOG 包异步回来,走既有后台消息显示。
+        # English: Send a text AIM command to the live peer (the nika PMU
+        #          client in this deployment); replies come back as LOG
+        #          packets through the existing background-line display.
+        data = command.encode("utf-8")
+        with self.send_lock, self.driver_endpoint_lock:
+            endpoint = self.driver_endpoint
+            if endpoint is None:
+                return False
+            self.sock.sendto(data, endpoint)
+        return True
+
     def send_to_driver(self, payload):
         payload = validate_driver_request(payload)
         with self.send_lock, self.driver_endpoint_lock:
