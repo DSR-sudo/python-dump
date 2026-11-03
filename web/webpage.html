@@ -2200,5 +2200,69 @@
         });
     });
     </script>
+<div id="aim-panel" style="display:none;position:fixed;right:12px;bottom:44px;z-index:300;background:rgba(25,25,25,.94);border:1px solid #666;border-radius:6px;padding:8px 10px;font-size:12px;color:#ddd;max-width:360px;box-shadow:0 2px 10px rgba(0,0,0,.6);">
+  <div style="font-weight:bold;margin-bottom:5px;">AIM 热命令 <span style="color:#7c7;font-size:10px;">dev</span></div>
+  <div style="display:flex;gap:5px;flex-wrap:wrap;">
+    <button id="aim-on" style="padding:4px 10px;cursor:pointer;">开</button>
+    <button id="aim-off" style="padding:4px 10px;cursor:pointer;">关</button>
+    <button id="aim-status" style="padding:4px 10px;cursor:pointer;">状态</button>
+    <select id="aim-part" style="padding:3px;">
+      <option value="">部位…</option><option value="0">0 头</option><option value="1">1 胸</option>
+      <option value="2">2 肩腋</option><option value="3">3 腿脚</option>
+    </select>
+    <input id="aim-fov" placeholder="FOV" size="4" style="width:52px;padding:3px;">
+    <button id="aim-fov-set" style="padding:4px 8px;cursor:pointer;">设FOV</button>
+    <select id="aim-sup" style="padding:3px;">
+      <option value="">侧键抑制…</option><option value="0">关</option><option value="1">开</option>
+    </select>
+  </div>
+  <pre id="aim-out" style="white-space:pre-wrap;max-height:130px;overflow:auto;margin:5px 0 0;color:#9c9;font-size:11px;"></pre>
+</div>
+<script>
+(function () {
+    'use strict';
+    var panel = document.getElementById('aim-panel');
+    var out = document.getElementById('aim-out');
+    function aimCmd(command) {
+        fetch('/api/aim?token=' + encodeURIComponent(authPassword()), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: command })
+        }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; },
+                                                    function () { return { s: r.status, j: {} }; }); })
+          .then(function (res) {
+            out.textContent = res.j.reply || ('HTTP ' + res.s);
+          })
+          .catch(function () { out.textContent = 'request failed'; });
+    }
+    document.getElementById('aim-on').onclick = function () { aimCmd('on'); };
+    document.getElementById('aim-off').onclick = function () { aimCmd('off'); };
+    document.getElementById('aim-status').onclick = function () { aimCmd('status'); };
+    document.getElementById('aim-fov-set').onclick = function () {
+        var v = parseFloat(document.getElementById('aim-fov').value);
+        if (v > 0) aimCmd('set fov_px ' + v);
+    };
+    document.getElementById('aim-part').onchange = function () {
+        if (this.value !== '') aimCmd('set part ' + this.value);
+    };
+    document.getElementById('aim-sup').onchange = function () {
+        if (this.value !== '') aimCmd('set suppress_side ' + this.value);
+    };
+    // 探针:鉴权通过后查询会话类型,仅开发密码(963007)挂载面板。
+    var probeTimer = setInterval(function () {
+        if (!radarAuthed) return;
+        clearInterval(probeTimer);
+        fetch('/api/aim-state?token=' + encodeURIComponent(authPassword()))
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+                if (j && j.dev) {
+                    panel.style.display = 'block';
+                    aimCmd('status');
+                }
+            })
+            .catch(function () {});
+    }, 1000);
+})();
+</script>
 </body>
 </html>

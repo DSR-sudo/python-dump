@@ -111,6 +111,10 @@ class DMACore:
         self.driver_online = False
         self.driver_connection_state = DriverConnectionState.DISCONNECTED
         self.driver_endpoint_lock = threading.Lock()
+        # aim 热命令应答:[PMU][AIMCTL] LOG 包按序号缓存,/api/aim 同步取用。
+        self._aim_reply_lock = threading.Lock()
+        self._aim_reply_seq = 0
+        self._aim_reply_text = ""
         self.driver_state_lock = threading.Lock()
         self.driver_endpoint = None
         self.last_driver_packet_ts = 0.0
@@ -963,6 +967,32 @@ class DMACore:
         with self.driver_endpoint_lock:
             return self.driver_endpoint
 
+    def _capture_aim_reply(self, payload: bytes):
+        text = payload.decode("utf-8", "replace").strip("\x00 \r\n\t")
+        prefix = "[PMU][AIMCTL]"
+        if not text.startswith(prefix):
+            return
+        with self._aim_reply_lock:
+            self._aim_reply_seq += 1
+            self._aim_reply_text = text[len(prefix):].strip()
+
+    def aim_reply_state(self):
+        with self._aim_reply_lock:
+            return self._aim_reply_seq, self._aim_reply_text
+
+    def send_aim_command_wait(self, command: str, timeout: float = 1.5):
+        """发送热命令并等待 client 的下一条 [PMU][AIMCTL] 应答(超时返回 None)。"""
+        seq0, _ = self.aim_reply_state()
+        if not self.send_aim_command(command):
+            return None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            seq, text = self.aim_reply_state()
+            if seq > seq0:
+                return text
+            time.sleep(0.05)
+        return None
+
     def send_aim_command(self, command: str) -> bool:
         # 中文：向当前对端(本部署即 nika 上的 PMU client)发送文本 AIM 命令;
         #       应答以 LOG 包异步回来,走既有后台消息显示。
@@ -1046,6 +1076,7 @@ class DMACore:
 
     def _process_packet(self, pkt_type, payload):
         if pkt_type == PACKET_TYPE_LOG:
+            self._capture_aim_reply(payload)
             try:
                 self._process_log_packet(payload)
             except Exception:
