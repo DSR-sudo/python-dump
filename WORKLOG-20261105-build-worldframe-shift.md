@@ -20,7 +20,7 @@
    - 之前"扫不到 POV"是探针按近距离过滤 + 玩家持续移动造成的假阴性。
 5. `kSceneComponentOwnerActor`(0x100) 客户端从未使用，无需修改。
 
-## 改造：客户端输出改为绝对世界帧
+## 改造：客户端输出改为绝对世界帧（已撤回，见文末"最终处理"）
 - `GameCoordinateMath.cpp` 新增 `pmu_add_world_shift()`（CTW + shift，位精确、溢出/NaN 安全）。
 - **只在序列化出口平移**（`GameSnapshotExport.cpp` 的 JSON 与二进制 v10 记录）：
   - 扫描器内部 `pmu_actor.position` 仍保持 CTW 相对帧，因为相机 POV 也在该帧，
@@ -35,6 +35,21 @@
 - 客户端二进制：`qemu-proxy-client/build/x64/main` → nika `/root/vm/bin/main`
   （旧版备份 `/root/vm/bin/main.bak-20261105`，md5 0a64537a...）。
 - 其余地图（cg/bks/ht/az3/jy）校准仍是旧帧，进图后各重校一次即可（绝对帧下以后不再变）。
+
+## 最终处理（2026-11-05）：撤回绝对帧，只改 db 校准
+- 实机确认：**只有 db（Dam_Iris_Level1）的世界原点变了**；bks 等其它图的发布帧与旧版一致，
+  旧校准继续可用。绝对帧长期更稳，但要求每张图把校准点整体平移一次；现在只需改 db 一张，
+  成本远低于给所有图重做校准，因此撤回。
+- 客户端：`git revert 6be836e`（提交 `8d5d4f8`），恢复发布 CTW 相对帧。
+  重新构建的 `build/x64/main` md5 `c4a6f5f07c4481f1582cb0904ff52ecf`
+  与撤改前的 `/root/vm/bin/main.bak-20261105` 完全一致（构建可复现）。
+- nika：`/root/vm/bin/main` 换回该二进制（绝对帧版备份 `/root/vm/bin/main.abs-20261105`），
+  扫描进程重启，pidfile `/run/pmu-main.pid`。
+- 10.1 `web/webpage.html` 恢复 CTW 校准：
+  - db 用用户新测值 `(-31740,-21766) ↔ (836.77,495.92)`、`(30713,46610) ↔ (2429.74,2241.80)`；
+  - az3（AZ-5_Level1）恢复旧值 `(29596,30011)/(-37994,-42155)`；cg/bks/ht/jy 未动。
+  - 远端备份 `webpage.html.bak-20261105-pre-revert`。
+- 结论：网页端继续按图校准；以后哪张图再出现整体偏移，才单独改那张图的点。
 
 ## 遗留
 - `kDeadBodyIsAI = 0x2A12` 仍为外推值，未实测验证。
