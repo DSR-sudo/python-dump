@@ -65,7 +65,12 @@ RADAR_MAP_MODELS = {
     "bks.png": "bakeshen",
     "ht.png": "hangtianjidi",
     "jy.png": "chaoxijianyu",
+    "jy_1f.png": "chaoxijianyu",
+    "jy_2f.png": "chaoxijianyu",
+    "jy_3f.png": "chaoxijianyu",
+    "jy_4f.png": "chaoxijianyu",
     "az3.png": "az3",
+    "az3_in.png": "az3",
 }
 
 
@@ -724,6 +729,22 @@ refresh();
                     if not ctype:
                         ctype = "application/octet-stream"
 
+                    # 地图文件较大且很少变化：带 ETag 支持条件请求。
+                    # 前端 IndexedDB 缓存用 If-None-Match 复验，未换图时只回 304（零字节）。
+                    try:
+                        st = os.stat(image_path)
+                        etag = f'"{st.st_size:x}-{st.st_mtime_ns:x}"'
+                    except OSError:
+                        etag = None
+                    if etag and self.headers.get("If-None-Match", "") == etag:
+                        self.send_response(304)
+                        if etag:
+                            self.send_header("ETag", etag)
+                        self.send_header("Cache-Control", "no-cache")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+
                     try:
                         with open(image_path, "rb") as f:
                             data = f.read()
@@ -733,6 +754,9 @@ refresh();
 
                     self.send_response(200)
                     self.send_header("Content-Type", ctype)
+                    if etag:
+                        self.send_header("ETag", etag)
+                    self.send_header("Cache-Control", "no-cache")
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)

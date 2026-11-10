@@ -447,3 +447,100 @@
 - 保留原有异常帧过滤与连续迁移确认，不修改 Ego 视角插值；正常有效帧不等待额外快照。
 - 调整平滑相关测试时间点，新增 6 种快照间隔 × 5 种绘制相位检查：32ms 内达到目标，模拟正常 60Hz 下一绘制帧仍小于 50ms。
 - 验证：node --test tests/webradar-*.test.cjs 共 22/22 通过；git diff --check 通过。未重新测量真实浏览器此次改动后的端到端延迟，本轮尚未提交。
+
+## 2026-11-09 潮汐监狱高清图更新与校准迁移
+
+### 目标
+
+- 用户提供 jy.png 潮汐监狱手动校准值（当前 build 世界点 `(1620,-8676)`、`(-15286,16457)` 对应旧图像素 `(511.09,269.89)`、`(177.76,763.66)`），要求按前四图流程下载官网高清图并做等比例重校准。
+
+### 官网资源调查
+
+- 直接 GET `js/lib/main.js` 返回 404 HTML；带 `Referer: https://df.qq.com/cp/a20240729directory/` 与浏览器 UA 后正常返回（195KB）。目录页现另加载 `js/lib/main_bp.js`（爆破模式控制器）、`map_cxjy.js`、`cxjy_floor.js`（潮汐监狱 1F-4F 分层）等新脚本；根路径 `main.js` 只是 webpack CSS 加载桩。
+- `main.js` 配置 `'42'` 潮汐监狱（绝密）普通层 `layer: 'map_cxjy'`；分层变体 `'42_1F'..'42_4F'` 使用 `cxjy_1f`..`cxjy_4f`（512 瓦片、maxNativeZoom 6）。本次沿用前四图规格只取普通俯视整图层。
+- 实测 `map_cxjy` z=4 瓦片网格 x/y=0..15（`4_16_0`、`4_0_16` 404），拼接画布 4096x4096；z=5 不存在（`5_0_0` 404，与 db/cg/bks 不同，CDN 无更高层）。`cxjyInfo.width/height=36596.42` 为世界边界值，非像素尺寸。
+
+### 匹配、裁剪与校准
+
+- SIFT+RANSAC 相似变换（旧图 → 官网整图）：`a=2.8285430308`、`b=-0.0000369483`、`tx=850.4342710`、`ty=758.3567780`；1413 内点，平均重投影误差 0.488px，旋转 0.0007°。
+- 裁剪框 `(851,759,3716,3613)`（旧图边界映射向上取整），最终 `image/jy.png` 2865x2854，RGB PNG，9,505,880 字节，SHA-256 `7d52a09788458f0a09a84211dbed7ef532c0685a12a887c34f85d5ede3b4e12f`。
+- 世界点保持用户手动值不变；图像点等比迁移：`(511.09,269.89)→(1445.06,762.77)`、`(177.76,763.66)→(502.21,2159.41)`。两点距离倍率 2.828543 与匹配倍率差 <0.000001。
+- 网页此前没有 jy 校准条目（校准面板手动值不落盘），本次在 mapConverters 新增；同步更新 mapDimensions 为 2865x2854，并把 `calibrationTarget()` 注释中已过时的“（如 jy.png）”示例改为泛指新增地图。
+
+### 验证
+
+- 256 个瓦片逐块 HTTP 200、JPEG、256x256；拼接整图与裁剪结果、最终 PNG 三者逐像素一致。
+- 视觉模型对比新旧同缩放并排图：内容结构一致、无缺失/错位，两个校准点落在合理地表位置，裁剪边缘无空白背景。
+- 自动核对：页面尺寸与实际图像一致；mapConverters 数值与变换+裁剪偏移计算差 <0.005px；世界点未被改动。
+- `node --test tests/webradar-*.test.cjs` 35/35 通过；`git diff --check` 通过。
+- 显式 `DMA_WEBRADAR_IMAGE_DIR` 临时端口启动 `WebRadarService`，带 `?token=` GET `/image/jy.png`：HTTP 200、`image/png`、9,505,880 字节，与磁盘文件逐字节一致（本服务 2026-11-02 起有密码门，需 token）。
+
+### 剩余问题
+
+- 校准为图像匹配等比迁移，尚未在游戏内实时验证。
+- 官网另有潮汐监狱 1F-4F 分层高清图层（`cxjy_1f`..`cxjy_4f`，512 瓦片、z=6 原生），当前雷达为单层俯视图未采用；若需要楼层图可后续单独评估。
+
+## 2026-11-09 潮汐监狱楼层简版分层（手动切层）
+
+### 目标与决定
+
+- 用户问"怎么分层"后选择简版先行：四张楼层图作为独立地图条目加入下拉，手动切换，暂不做按 z 自动分层/实体过滤。
+
+### 官网分层资源
+
+- 分层图层 `cxjy_1f`..`cxjy_4f`（`main.js` 配置 `'42_1F'..`，页面端 tileSize 512、`cxjyFloor.info.maxZomm:5`）；CDN 实测仅 z=4、网格 x/y=0..7（8x8=64 块、512px 瓦片），拼接画布 4096x4096，与总览 `map_cxjy` 同尺寸。
+- 四个楼层共用 `cxjyInfo`（width/height 36596.42 同一坐标系）。`maxZomm:5` 只是页面配置，CDN 无 z=5。
+
+### 实施
+
+- 每层 64 块瓦片下载（逐块 JPEG/512x512 校验）、拼接、套用与总览相同的裁剪框 (851,759,3716,3613)，得到 `image/jy_1f.png`..`jy_4f.png`（2865x2854，与 jy.png 像素对齐）。
+- SIFT 校验各楼层裁剪图 vs 总览裁剪图：1F-4F 内点 378/394/613/649，平均误差约 0.13px，scale=1.0000、旋转≤0.0005°、偏移≤0.01px，即恒等对齐；因此四层直接复用 jy.png 同一套校准（mapConverters 各复制一份，世界点与图像点完全相同）。
+- `web/webpage.html`：mapDimensions 增加 jy_1f..jy_4f；mapConverters 增加同名条目（附恒等对齐验证注释）。下拉标签由 `id.split('.')[0].toUpperCase()` 自动生成为 JY_1F..JY_4F，无需改代码。
+- `web_radar.py` 的 `RADAR_MAP_MODELS`：jy_1f..jy_4f 均映射到 `chaoxijianyu`，与 jy.png 共用同一 aim 可见性模型。
+
+### 验证
+
+- 五张 jy 图实际尺寸/模式与页面条目逐一核对一致；下拉顺序 jy → jy_1f → .. → jy_4f；每图恰一条 converters 条目。
+- `node --test tests/webradar-*.test.cjs` 35/35 通过；`git diff --check` 通过。
+- 临时端口 + 显式图片目录起服务，带 token GET 四张楼层图：全部 HTTP 200、image/png、字节与磁盘一致（4,115,182 / 3,795,334 / 3,057,790 / 2,709,931 字节）。
+
+### 剩余问题（升级完整方案的路径）
+
+- 实体仍按 x/y 全量叠加显示，未按 z 分层；后续可加楼层切换钮 + 跟随者 z 自动选层 + 非本层实体虚化。协议已带 `position.z`，缺的只是各楼层 z 阈值（需进游戏实测各层 z，或从采集数据聚类反推）。
+- az3 在官网同样有分层资源（`az3_1_1f` 等），机制可复用。
+
+## 2026-11-09 az3 高清替换、分层选项卡、dev 门控与地图本地缓存
+
+### 目标
+
+- 用户要求：az3 也做分层；下拉只显示主地图名；左下角常驻分层选项卡（自上而下符合 4F→1F 直觉，仅有分层的地图显示）；非 dev 会话（开发密码 963007 之外）不显示校准按钮；aim 面板可拖动/可隐藏；前端本地缓存地图，避免重复向服务器拉图。
+
+### az3 官网资源调查与决定
+
+- 旧 az3.png（2048x2048）经 SIFT 匹配确认为官方 `map_az3` z=4 整图（4096x4096）的精确 1/2 缩小版：2014 内点、误差 0.148px、scale=1.999995、偏移 (0.26,0.22)，且旧图四角铺满整画布 → 无需裁剪，直接整图替换；校准仅按 ×2 迁移。
+- 分层栅格 `az3_1_1f..az3_3_2f`（对应 1/2/3 栋 1F/2F/3F，共 7 层）：z=4 为 8x8x512（4096 画布，与总览同坐标系，SIFT 恒等 0.054px）；z=5 为 16x16x512（8192），实测是 z=4 的纯放大（显著新增细节 0.0%），不采用；各层 z=5 覆盖还不一致（部分 404）。
+- 关键发现：7 张楼层栅格彼此差异仅约 0.2% 像素（集中在反应堆建筑内部），即官网的分楼/分楼层信息实际由 JS 覆盖层（navList/mapArticle）渲染，栅格层几乎是同一张"全园区内部视图"（与总览的屋顶视图不同）。因此只保留一张 `az3_in.png`（取 az3_1_1f，10,499,680B）作内部图，不引入 7 张近重复大图；机制保持通用，官方未来出真分层只需加 mapFloors 条目。
+
+### 修改
+
+- `image/az3.png`：替换为官网 4096x4096（25,650,746B）；`image/az3_in.png` 新增。mapDimensions/mapConverters 同步：az3 图像点迁移为 (2946.31,905.66)/(1127.24,2615.64)，世界点不变；az3_in 与总览同画布恒等，复用同一套校准（附注释说明）。
+- 分层选项卡：新增 `mapFloors` 配置（jy: 总览+4F/3F/2F/1F；az3: 总览+内部图）与 `floorMaps/floorLabels/floorOwnerOf/mapLabelOf/updateFloorTabs`；左下角 `#floor-tabs` 常驻竖排（总览最上、楼层由高到低），仅当前地图有分层且已解锁时显示，点击调 `selectMap`；下拉 `initMapSelect` 过滤楼层图只列主地图名，摘要显示 `JY·2F` 形式。
+- dev 门控：`#calibrate-toggle` 默认 CSS 隐藏；新增 `probeDevSession()`（查询 `/api/aim-state`），dev 会话显示校准按钮，普通随机密码会话隐藏；`unlockRadar` 每次解锁后探测，`lockRadar` 隐藏按钮并退出可能开着的校准模式（typeof 守卫兼容测试切片）。
+- aim 面板：标题栏改为拖拽柄（pointer capture，首次拖动从 right/bottom 切换 left/top 定位），右上角 – 隐藏面板并在右下角留 AIM 小按钮展开；面板位置会话内记忆。
+- 地图本地缓存（前端）：IndexedDB `webradar-maps/images` 存 {name, blob, etag}；`initMapCache()` 启动时装载全部 objectURL；`applyMapBackground()` 命中零网络直接 objectURL，未命中同步落服务器 URL 后台入缓存；`primeMapCache()` 每图每会话最多一次带 If-None-Match 复验，304 零字节、换图自动刷新并即时替换背景与 Ego 小地图 src。Ego 小地图 `egoMapImage` 优先走缓存。
+- 服务端 `/image/`：响应增加 `ETag`（size-mtime_ns）与 `Cache-Control: no-cache`，`If-None-Match` 命中回 304 零字节。`RADAR_MAP_MODELS` 增加 az3_in.png → az3（jy 楼层此前已加）。
+
+### 验证
+
+- 7 层 az3 瓦片逐块校验拼接、与总览 SIFT 恒等（全部 <0.06px、scale=1.0000）；az3 校准迁移值与匹配计算一致。
+- 新增 `tests/webradar-floors-cache.test.cjs`（6 项）：楼层图均有 dimensions/converters/aim 模型条目；mapLabelOf/floorOwnerOf；选项卡隐藏/顺序/激活/锁定隐藏；applyMapBackground 未命中回退服务器 URL、命中 objectURL 零网络、每会话每图一次取图；probeDevSession dev/非 dev 按钮显隐；下拉只列主地图。
+- 全套 `node --test tests/webradar-*.test.cjs` 41/41 通过（此前 35 + 新 6）；`git diff --check` 通过。
+- HTTP 实测：az3.png/az3_in.png/jy_2f.png 200、字节与磁盘一致；响应含 ETag 与 no-cache；If-None-Match 命中 304（Content-Length 0、body 0B），错 ETag 回 200 全量。
+- 首次将楼层配置块放在 authPassword 之前导致测试切片缺失 updateFloorTabs（VM ReferenceError，2 项失败），移入切片区域后通过；probeDevSession 改为返回 Promise 供测试等待。
+- 环境无 selenium/geckodriver，未做真实浏览器视觉验证（选项卡布局、aim 面板拖动手感、IndexedDB 实际行为待真机确认）。
+
+### 剩余问题
+
+- 分层仍未按 z 自动选层/过滤实体（协议带 z，缺各层 z 阈值实测）。
+- 首次查看某图（本会话未缓存且 IndexedDB 无记录）仍需一次服务器全量下载，且因背景 URL 与取图 fetch 是两条请求会有一次重复传输；重复查看、跨会话均为零字节（仅一次性 304 复验）。
+- az3 若未来需要真分楼图，官网当前栅格无法提供，需另找数据源。

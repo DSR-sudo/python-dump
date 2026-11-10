@@ -56,6 +56,12 @@
         body.map-fullscreen #map-fullscreen-exit { display: block; }
         #map-fullscreen-toggle { min-height: 36px; padding: 8px 10px; background: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; }
         #bottom-controls { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; gap: 8px; }
+        /* 分层选项卡：左下角常驻，自上而下 总览->高楼->低楼；仅有分层的地图显示 */
+        #floor-tabs { position: fixed; left: 12px; bottom: 16px; z-index: 200; display: none; flex-direction: column; gap: 4px; }
+        .floor-tab { min-width: 58px; min-height: 30px; padding: 5px 9px; background: rgba(45,45,45,.88); color: #ddd; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+        .floor-tab.active { background: #2e7d32; border-color: #6fcf73; color: #fff; }
+        /* 校准按钮默认隐藏：dev 会话探针（开发密码 963007）通过后才显示 */
+        #calibrate-toggle { display: none; }
         #resource-toggle, #clean-toggle { min-width: 52px; min-height: 36px; padding: 8px 10px; background-color: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
         #resource-toggle.active { background-color: #4CAF50; border-color: #6fcf73; }
         #clean-toggle.active { background-color: #2196F3; border-color: #64b5f6; }
@@ -140,6 +146,7 @@
         </div>
     </div>
     <button id="map-fullscreen-exit" type="button" title="退出全屏（Esc）">退出全屏</button>
+    <div id="floor-tabs" aria-label="分层切换"></div>
     <div id="bottom-controls">
         <button id="map-fullscreen-toggle" type="button" aria-pressed="false">地图全屏</button>
         <button id="resource-toggle" class="active" type="button" aria-pressed="true">资源</button>
@@ -195,8 +202,13 @@
         "cg.png":  { width: 2875, height: 2019 },
         "bks.png": { width: 1983, height: 2262 },
         "ht.png":  { width: 2193, height: 2355 },
-        "jy.png":  { width: 1013, height: 1009 },
-        "az3.png": { width: 2048, height: 2048 }
+        "jy.png":  { width: 2865, height: 2854 },
+        "jy_1f.png": { width: 2865, height: 2854 },
+        "jy_2f.png": { width: 2865, height: 2854 },
+        "jy_3f.png": { width: 2865, height: 2854 },
+        "jy_4f.png": { width: 2865, height: 2854 },
+        "az3.png": { width: 4096, height: 4096 },
+        "az3_in.png": { width: 4096, height: 4096 }
     };
 
     const mapConverters = {
@@ -226,11 +238,56 @@
             point3D_2: { x: 17252, y: 27568  },
             point2D_2: { x: 1633.39, y: 1878.82 }
         },
+        // 2026-11-09 官网高清图替换（map_cxjy z=4 拼接后按旧图范围裁剪）。
+        // 世界点为当前 build 手动校准实测值；图像点由旧图 ×2.828543 + (850.43,758.36) − 裁剪(851,759) 等比迁移。
+        "jy.png": {
+            point3D_1: { x: 1620, y: -8676 },
+            point2D_1: { x: 1445.06, y: 762.77 },
+            point3D_2: { x: -15286, y: 16457 },
+            point2D_2: { x: 502.21, y: 2159.41 }
+        },
+        // 楼层图 jy_1f..jy_4f 与总览同一 4096 画布、同框裁剪，SIFT 实测恒等对齐
+        //（scale=1.0000、偏移≤0.01px），直接复用 jy.png 同一套校准。暂无按 z 自动分层。
+        "jy_1f.png": {
+            point3D_1: { x: 1620, y: -8676 },
+            point2D_1: { x: 1445.06, y: 762.77 },
+            point3D_2: { x: -15286, y: 16457 },
+            point2D_2: { x: 502.21, y: 2159.41 }
+        },
+        "jy_2f.png": {
+            point3D_1: { x: 1620, y: -8676 },
+            point2D_1: { x: 1445.06, y: 762.77 },
+            point3D_2: { x: -15286, y: 16457 },
+            point2D_2: { x: 502.21, y: 2159.41 }
+        },
+        "jy_3f.png": {
+            point3D_1: { x: 1620, y: -8676 },
+            point2D_1: { x: 1445.06, y: 762.77 },
+            point3D_2: { x: -15286, y: 16457 },
+            point2D_2: { x: 502.21, y: 2159.41 }
+        },
+        "jy_4f.png": {
+            point3D_1: { x: 1620, y: -8676 },
+            point2D_1: { x: 1445.06, y: 762.77 },
+            point3D_2: { x: -15286, y: 16457 },
+            point2D_2: { x: 502.21, y: 2159.41 }
+        },
+        // 2026-11-09 官网高清图替换（map_az3 z=4 整图，旧 2048 图是它的精确 1/2 缩小版，
+        // SIFT 2014 内点、误差 0.15px，故无裁剪）；图像点由旧图 ×1.999995 + (0.26,0.22) 迁移，世界点不变。
         "az3.png": {
             point3D_1: { x: 29596, y: 30011 },
-            point2D_1: { x: 1473.03, y: 452.71 },
+            point2D_1: { x: 2946.31, y: 905.66 },
             point3D_2: { x: -37994, y: -42155 },
-            point2D_2: { x: 563.5, y: 1307.71 }
+            point2D_2: { x: 1127.24, y: 2615.64 }
+        },
+        // az3 内部图：官网七个"楼层"栅格层（az3_1_1f..az3_3_2f）实测为近乎同一张全园区
+        // 内部视图（彼此差异约 0.2% 像素，分楼信息由官网 JS 覆盖层渲染），故只挂一张
+        // az3_1_1f 作内部图；与总览同画布同坐标系，SIFT 恒等对齐，直接复用同一套校准。
+        "az3_in.png": {
+            point3D_1: { x: 29596, y: 30011 },
+            point2D_1: { x: 2946.31, y: 905.66 },
+            point3D_2: { x: -37994, y: -42155 },
+            point2D_2: { x: 1127.24, y: 2615.64 }
         },
     };
 
@@ -846,11 +903,12 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ map: mapId })
         }).catch(() => {});
-        map.style.backgroundImage = `url('${mapImageUrl(currentMap)}')`;
+        applyMapBackground(currentMap);
         const dims = mapDimensions[mapId] || { width: 1000, height: 1000 };
         map.style.width = `${dims.width}px`;
         map.style.height = `${dims.height}px`;
         syncSelectionSummary();
+        updateFloorTabs();
         checkCalibration(mapId);
         delete transformerCache[mapId];
         if (calibrateMode) { syncCalibrationInputs(); renderCalibrationMarkers(); }
@@ -1082,9 +1140,11 @@
     function egoMapImage(name) {
         if (!egoMapImages[name]) {
             const image = new Image();
-            // 地图文件要求鉴权：Ego 小地图的取图也带 token。
-            image.src = mapImageUrl(name);
+            // 地图文件要求鉴权；优先用本地缓存 objectURL，未命中走带 token 的服务器 URL，
+            // 并在缓存就绪后由 primeMapCache 自动换 src。
+            image.src = mapCacheUrls[name] || mapImageUrl(name);
             egoMapImages[name] = image;
+            if (!mapCacheUrls[name]) primeMapCache(name);
         }
         return egoMapImages[name];
     }
@@ -1551,7 +1611,7 @@
     const calibrationBackups = {};
     const CALIBRATE_INPUT_IDS = ['cal-w1x', 'cal-w1y', 'cal-m1x', 'cal-m1y', 'cal-w2x', 'cal-w2y', 'cal-m2x', 'cal-m2y'];
 
-    // 当前地图没有校准条目时（如 jy.png）按需补一个全零点位，方便从零标起。
+    // 当前地图没有校准条目时（如后续新增地图）按需补一个全零点位，方便从零标起。
     function calibrationTarget(createIfMissing) {
         let converter = mapConverters[currentMap];
         if (!converter && createIfMissing) {
@@ -1953,6 +2013,7 @@
         const select = document.getElementById('selection-select');
         const maps = document.getElementById('map-options');
         Object.keys(mapDimensions).forEach(id => {
+            if (floorMaps[id]) return; // 下拉只列主地图名；楼层图走左下角分层选项卡
             const option = document.createElement('option');
             option.value = `map:${id}`;
             option.textContent = id.split('.')[0].toUpperCase();
@@ -1969,7 +2030,7 @@
         const playerValue = `player:${selectedPlayerId == null ? '' : selectedPlayerId}`;
         const option = Array.from(document.getElementById('player-options').children).find(option => option.value === playerValue);
         const playerLabel = option ? option.textContent : '已选角色';
-        const summary = `${currentMap.split('.')[0].toUpperCase()} · ${playerLabel}`;
+        const summary = `${mapLabelOf(currentMap)} · ${playerLabel}`;
         const summaryOption = document.getElementById('selection-summary');
         if (summaryOption.textContent !== summary) summaryOption.textContent = summary;
         document.getElementById('selection-select').value = '';
@@ -2051,11 +2112,177 @@
     // 地图文件同样要求鉴权：/image/ 请求必须带上 token。
     function mapImageUrl(name) { return `/image/${name}?token=${encodeURIComponent(authPassword())}`; }
 
+    // ===============================================================
+    // == 分层配置：主地图 -> 楼层图。左下角选项卡自上而下排列       ==
+    // == （总览在最上，楼层由高到低），下拉菜单只列主地图名。      ==
+    // ===============================================================
+    const mapFloors = {
+        'jy.png': [
+            { label: '4F', map: 'jy_4f.png' },
+            { label: '3F', map: 'jy_3f.png' },
+            { label: '2F', map: 'jy_2f.png' },
+            { label: '1F', map: 'jy_1f.png' },
+        ],
+        // az3 官网七个"楼层"栅格层实测近乎同一张内部图（差异约 0.2% 像素，分楼靠官网
+        // JS 覆盖层），故只挂一张内部图，避免七张近重复大图；后续官方出真分层再加条目。
+        'az3.png': [
+            { label: '内部图', map: 'az3_in.png' },
+        ],
+    };
+    const floorMaps = {};   // 楼层图文件名 -> 所属主图
+    const floorLabels = {}; // 楼层图文件名 -> 选项卡标签
+    Object.keys(mapFloors).forEach(main => mapFloors[main].forEach(f => {
+        floorMaps[f.map] = main;
+        floorLabels[f.map] = f.label;
+    }));
+    // 当前地图所在的主地图（无分层返回 null）
+    function floorOwnerOf(mapId) {
+        return floorMaps[mapId] || (mapFloors[mapId] ? mapId : null);
+    }
+    // 下拉摘要等处用：主图显示基础名，楼层图显示"主图·楼层"
+    function mapLabelOf(mapId) {
+        const owner = floorOwnerOf(mapId);
+        if (owner && owner !== mapId) return `${owner.split('.')[0].toUpperCase()}·${floorLabels[mapId]}`;
+        return mapId.split('.')[0].toUpperCase();
+    }
+    // 刷新左下角分层选项卡：无分层地图/未解锁时隐藏
+    function updateFloorTabs() {
+        const el = document.getElementById('floor-tabs');
+        if (!el) return;
+        const main = radarAuthed ? floorOwnerOf(currentMap) : null;
+        if (!main) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        el.style.display = 'flex';
+        const items = [{ label: '总览', map: main }].concat(mapFloors[main]);
+        const sig = items.map(i => i.map).join('|');
+        if (el.dataset.sig !== sig) {
+            el.dataset.sig = sig;
+            el.innerHTML = '';
+            items.forEach(item => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'floor-tab';
+                btn.dataset.map = item.map;
+                btn.textContent = item.label;
+                btn.addEventListener('click', () => selectMap(item.map));
+                el.appendChild(btn);
+            });
+        }
+        Array.from(el.children).forEach(c => c.classList.toggle('active', c.dataset.map === currentMap));
+    }
+
+    // 会话探针：dev 会话（开发密码 963007）才显示校准按钮；普通随机密码会话隐藏。
+    function probeDevSession() {
+        if (!radarAuthed) return Promise.resolve();
+        return fetch('/api/aim-state?token=' + encodeURIComponent(authPassword()))
+            .then(r => r.ok ? r.json() : null)
+            .then(j => {
+                const calBtn = document.getElementById('calibrate-toggle');
+                if (calBtn) calBtn.style.display = (j && j.dev) ? '' : 'none';
+            })
+            .catch(() => {});
+    }
+
+
+    // ===============================================================
+    // == 地图本地缓存（IndexedDB 存 blob）：重复查看不再从服务器拉图。 ==
+    // == 命中直接用 objectURL（零网络）；每张图每会话最多一次带       ==
+    // == If-None-Match 的复验，服务器未换图时只有几百字节 304 响应。  ==
+    // ===============================================================
+    let mapCacheDb = null, mapCacheDbFailed = false;
+    const mapCacheUrls = {};      // 文件名 -> objectURL（本会话已就绪）
+    const mapCachePrimed = {};    // 文件名 -> 本会话是否已取图/复验
+    const mapCacheEtags = {};     // 文件名 -> ETag（含从 IndexedDB 恢复的旧值）
+
+    function mapCacheSupported() { return typeof indexedDB !== 'undefined' && !mapCacheDbFailed; }
+    function mapCacheOpen() {
+        if (mapCacheDb || !mapCacheSupported()) return Promise.resolve(mapCacheDb);
+        if (mapCacheOpen._p) return mapCacheOpen._p;
+        mapCacheOpen._p = new Promise(resolve => {
+            try {
+                const req = indexedDB.open('webradar-maps', 1);
+                req.onupgradeneeded = () => { req.result.createObjectStore('images', { keyPath: 'name' }); };
+                req.onsuccess = () => { mapCacheDb = req.result; resolve(mapCacheDb); };
+                req.onerror = () => { mapCacheDbFailed = true; resolve(null); };
+            } catch (_) { mapCacheDbFailed = true; resolve(null); }
+        });
+        return mapCacheOpen._p;
+    }
+    function mapCacheTx(mode, fn) {
+        return mapCacheOpen().then(db => new Promise(resolve => {
+            if (!db) return resolve(null);
+            try {
+                const tx = db.transaction('images', mode);
+                const rq = fn(tx.objectStore('images'));
+                tx.oncomplete = () => resolve(rq && rq.result !== undefined ? rq.result : null);
+                tx.onerror = () => resolve(null);
+                tx.onabort = () => resolve(null);
+            } catch (_) { resolve(null); }
+        }));
+    }
+
+    // 页面启动即把已缓存图装载为 objectURL（纯本地读取，与解锁状态无关）
+    function initMapCache() {
+        if (!mapCacheSupported()) return;
+        mapCacheTx('readonly', s => s.getAll()).then(records => {
+            (records || []).forEach(rec => {
+                if (!rec || !rec.name || !rec.blob) return;
+                mapCacheEtags[rec.name] = rec.etag || '';
+                if (!mapCacheUrls[rec.name]) mapCacheUrls[rec.name] = URL.createObjectURL(rec.blob);
+            });
+        });
+    }
+
+    // 取图入缓存（未缓存时全量下载一次；已缓存时带 If-None-Match 复验）。
+    // 就绪后更新 objectURL；当前正显示该图或 Ego 小地图在用则即时换上。
+    function primeMapCache(name) {
+        if (!radarAuthed || mapCachePrimed[name]) return Promise.resolve();
+        mapCachePrimed[name] = true;
+        const headers = {};
+        if (mapCacheEtags[name]) headers['If-None-Match'] = mapCacheEtags[name];
+        return fetch(mapImageUrl(name), { headers })
+            .then(r => {
+                if (r.status === 304 || !r.ok) return null; // 304：服务器未换图，本地缓存继续有效
+                const etag = r.headers.get('ETag') || '';
+                return r.blob().then(blob => ({ blob, etag }));
+            })
+            .then(res => (res ? mapCachePut({ name, blob: res.blob, etag: res.etag }).then(() => res) : null))
+            .then(res => {
+                if (!res) return;
+                if (mapCacheUrls[name]) URL.revokeObjectURL(mapCacheUrls[name]);
+                mapCacheUrls[name] = URL.createObjectURL(res.blob);
+                mapCacheEtags[name] = res.etag;
+                if (currentMap === name && radarAuthed && !egoMode) {
+                    map.style.backgroundImage = `url('${mapCacheUrls[name]}')`;
+                }
+                if (egoMapImages && egoMapImages[name] && egoMapImages[name].src !== mapCacheUrls[name]) {
+                    egoMapImages[name].src = mapCacheUrls[name];
+                }
+            })
+            .catch(() => { mapCachePrimed[name] = false; }); // 失败允许下次重试
+    }
+    const mapCachePut = rec => mapCacheTx('readwrite', s => s.put(rec));
+
+    // 背景图入口：命中缓存零网络直接 objectURL；未命中先同步落服务器 URL，后台入缓存供下次。
+    function applyMapBackground(name) {
+        if (mapCacheUrls[name]) {
+            map.style.backgroundImage = `url('${mapCacheUrls[name]}')`;
+            primeMapCache(name); // 本会话首次用到时向服务器复验一次
+            return;
+        }
+        map.style.backgroundImage = `url('${mapImageUrl(name)}')`;
+        primeMapCache(name);
+    }
+
     function lockRadar(showError) {
         radarAuthed = false;
         pollLoopRunning = false;
         localStorage.removeItem('authToken');
         map.style.backgroundImage = ''; // 锁定时不再持有地图文件
+        // 锁定时退出可能开着的校准模式：重新解锁（可能是普通密码会话）不应残留校准面板。
+        if (calibrateMode && typeof setCalibrateMode === 'function') setCalibrateMode(false);
+        const calBtn = document.getElementById('calibrate-toggle');
+        if (calBtn) calBtn.style.display = 'none'; // 锁定时隐藏校准入口
+        updateFloorTabs();
         document.getElementById('auth-gate').classList.remove('hidden');
         document.getElementById('auth-error').style.display = showError ? 'block' : 'none';
     }
@@ -2065,6 +2292,7 @@
         localStorage.setItem('authToken', authPassword());
         document.getElementById('auth-gate').classList.add('hidden');
         document.getElementById('auth-error').style.display = 'none';
+        probeDevSession(); // dev 会话（963007）才显示校准按钮
         selectMap(currentMap); // 此时才加载地图文件；selectMap 内部会发起首次数据拉取
         if (!pollLoopRunning) { pollLoopRunning = true; scheduleGameDataPoll(); }
         pushSubscription(true);
@@ -2093,6 +2321,7 @@
     loadSelection();
     loadAuth();
     loadToggles();
+    initMapCache();
     initMapSelect();
     setMarkerSize(localStorage.getItem('entityMarkerSize') || 8);
     initMarkerSizeIdle();
@@ -2203,7 +2432,11 @@
     });
     </script>
 <div id="aim-panel" style="display:none;position:fixed;right:12px;bottom:44px;z-index:300;background:rgba(25,25,25,.94);border:1px solid #666;border-radius:6px;padding:8px 10px;font-size:12px;color:#ddd;max-width:360px;box-shadow:0 2px 10px rgba(0,0,0,.6);">
-  <div style="font-weight:bold;margin-bottom:5px;">AIM 热命令 <span style="color:#7c7;font-size:10px;">dev</span></div>
+  <div id="aim-panel-head" title="拖动移动面板" style="display:flex;align-items:center;gap:6px;margin-bottom:5px;cursor:move;user-select:none;touch-action:none;">
+    <div style="font-weight:bold;flex:1;">AIM 热命令 <span style="color:#7c7;font-size:10px;">dev</span></div>
+    <button id="aim-panel-hide" type="button" title="隐藏面板" style="padding:1px 7px;cursor:pointer;background:#444;color:#ddd;border:1px solid #777;border-radius:3px;">–</button>
+  </div>
+  <div id="aim-panel-body">
   <div style="display:flex;gap:5px;flex-wrap:wrap;">
     <button id="aim-on" style="padding:4px 10px;cursor:pointer;">开</button>
     <button id="aim-off" style="padding:4px 10px;cursor:pointer;">关</button>
@@ -2219,7 +2452,9 @@
     </select>
   </div>
   <pre id="aim-out" style="white-space:pre-wrap;max-height:130px;overflow:auto;margin:5px 0 0;color:#9c9;font-size:11px;"></pre>
+  </div>
 </div>
+<button id="aim-panel-toggle" type="button" title="展开 AIM 面板" style="display:none;position:fixed;right:12px;bottom:44px;z-index:300;padding:6px 12px;background:rgba(25,25,25,.94);color:#7c7;border:1px solid #666;border-radius:6px;font-size:12px;cursor:pointer;">AIM</button>
 <script>
 (function () {
     'use strict';
@@ -2250,7 +2485,54 @@
     document.getElementById('aim-sup').onchange = function () {
         if (this.value !== '') aimCmd('set suppress_side ' + this.value);
     };
+    // ---- 面板可拖动 / 可隐藏 ----
+    // 拖动:按住标题栏整体移动(首次拖动从 right/bottom 定位切换为 left/top)。
+    // 隐藏:右上角 – 收起面板,右下角留 AIM 小按钮随时展开,位置记忆在本次会话内。
+    var head = document.getElementById('aim-panel-head');
+    var toggleBtn = document.getElementById('aim-panel-toggle');
+    var panelVisible = false, panelPos = null; // panelPos: {left, top} 拖动后的位置
+    function applyPanelPos() {
+        if (!panelPos) return;
+        panel.style.left = panelPos.left + 'px';
+        panel.style.top = panelPos.top + 'px';
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+    }
+    function showPanel() {
+        panelVisible = true;
+        panel.style.display = 'block';
+        applyPanelPos();
+        toggleBtn.style.display = 'none';
+    }
+    function hidePanel() {
+        panelVisible = false;
+        panel.style.display = 'none';
+        toggleBtn.style.display = 'block';
+    }
+    toggleBtn.onclick = showPanel;
+    document.getElementById('aim-panel-hide').onclick = hidePanel;
+    head.addEventListener('pointerdown', function (e) {
+        if (e.button !== 0 && e.pointerType === 'mouse') return;
+        var rect = panel.getBoundingClientRect();
+        if (!panelPos) panelPos = { left: rect.left, top: rect.top };
+        var dx = e.clientX - rect.left, dy = e.clientY - rect.top;
+        head.setPointerCapture(e.pointerId);
+        function onMove(ev) {
+            panelPos.left = Math.max(0, Math.min(window.innerWidth - 60, ev.clientX - dx));
+            panelPos.top = Math.max(0, Math.min(window.innerHeight - 30, ev.clientY - dy));
+            applyPanelPos();
+        }
+        function onUp() {
+            head.removeEventListener('pointermove', onMove);
+            head.removeEventListener('pointerup', onUp);
+            head.removeEventListener('pointercancel', onUp);
+        }
+        head.addEventListener('pointermove', onMove);
+        head.addEventListener('pointerup', onUp);
+        head.addEventListener('pointercancel', onUp);
+    });
     // 探针:鉴权通过后查询会话类型,仅开发密码(963007)挂载面板。
+    // 主脚本每次解锁都会调 probeDevSession;这里只在首次解锁时挂面板并拉一次状态。
     var probeTimer = setInterval(function () {
         if (!radarAuthed) return;
         clearInterval(probeTimer);
@@ -2258,7 +2540,7 @@
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (j) {
                 if (j && j.dev) {
-                    panel.style.display = 'block';
+                    showPanel();
                     aimCmd('status');
                 }
             })
