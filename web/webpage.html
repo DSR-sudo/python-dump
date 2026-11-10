@@ -60,8 +60,11 @@
         #floor-tabs { position: fixed; left: 12px; bottom: 16px; z-index: 200; display: none; flex-direction: column; gap: 4px; }
         .floor-tab { min-width: 58px; min-height: 30px; padding: 5px 9px; background: rgba(45,45,45,.88); color: #ddd; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
         .floor-tab.active { background: #2e7d32; border-color: #6fcf73; color: #fff; }
-        /* 校准按钮默认隐藏：dev 会话探针（开发密码 963007）通过后才显示 */
+        /* 校准按钮默认隐藏：dev 会话探针（开发密码 963007）通过后加 .dev-visible 显示。
+           注意不能用内联 style.display='' 显示——会回退到这里的 none；全屏规则
+           body.map-fullscreen #calibrate-toggle 特异性更高，仍能在全屏时压住 .dev-visible。 */
         #calibrate-toggle { display: none; }
+        #calibrate-toggle.dev-visible { display: inline-block; }
         #resource-toggle, #clean-toggle { min-width: 52px; min-height: 36px; padding: 8px 10px; background-color: #555; color: white; border: 1px solid #777; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
         #resource-toggle.active { background-color: #4CAF50; border-color: #6fcf73; }
         #clean-toggle.active { background-color: #2196F3; border-color: #64b5f6; }
@@ -2177,7 +2180,7 @@
             .then(r => r.ok ? r.json() : null)
             .then(j => {
                 const calBtn = document.getElementById('calibrate-toggle');
-                if (calBtn) calBtn.style.display = (j && j.dev) ? '' : 'none';
+                if (calBtn) calBtn.classList.toggle('dev-visible', !!(j && j.dev));
             })
             .catch(() => {});
     }
@@ -2281,7 +2284,7 @@
         // 锁定时退出可能开着的校准模式：重新解锁（可能是普通密码会话）不应残留校准面板。
         if (calibrateMode && typeof setCalibrateMode === 'function') setCalibrateMode(false);
         const calBtn = document.getElementById('calibrate-toggle');
-        if (calBtn) calBtn.style.display = 'none'; // 锁定时隐藏校准入口
+        if (calBtn) calBtn.classList.remove('dev-visible'); // 锁定时隐藏校准入口
         updateFloorTabs();
         document.getElementById('auth-gate').classList.remove('hidden');
         document.getElementById('auth-error').style.display = showError ? 'block' : 'none';
@@ -2513,6 +2516,9 @@
     document.getElementById('aim-panel-hide').onclick = hidePanel;
     head.addEventListener('pointerdown', function (e) {
         if (e.button !== 0 && e.pointerType === 'mouse') return;
+        // 指针落在隐藏按钮上时不启动拖拽：setPointerCapture 会把后续指针事件
+        // （含合成 click）重定向到标题栏，按钮的 click 将永远收不到。
+        if (e.target && e.target.closest && e.target.closest('#aim-panel-hide')) return;
         var rect = panel.getBoundingClientRect();
         if (!panelPos) panelPos = { left: rect.left, top: rect.top };
         var dx = e.clientX - rect.left, dy = e.clientY - rect.top;

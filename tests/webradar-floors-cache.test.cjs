@@ -100,13 +100,17 @@ test('applyMapBackground: cache miss falls back to server URL, hit uses objectUR
 
 test('probeDevSession: only dev sessions reveal the calibrate button', async () => {
     const { context, elements } = floorsCacheFixture();
+    const btn = elements['calibrate-toggle'];
     let reply = { dev: true };
     context.fetch = async () => ({ ok: true, status: 200, json: async () => reply });
     await vm.runInContext('probeDevSession()', context);
-    assert.equal(elements['calibrate-toggle'].style.display, '');
+    assert.equal(btn.classList.contains('dev-visible'), true);   // dev: 加 class 显示
     reply = { dev: false };
     await vm.runInContext('probeDevSession()', context);
-    assert.equal(elements['calibrate-toggle'].style.display, 'none');
+    assert.equal(btn.classList.contains('dev-visible'), false);  // 非 dev: 摘掉 class
+    // CSS 必须同时具备默认隐藏与 .dev-visible 显示两条规则（防止回退到 none 的回归）
+    assert.match(html, /#calibrate-toggle\s*\{\s*display:\s*none;\s*\}/);
+    assert.match(html, /#calibrate-toggle\.dev-visible\s*\{\s*display:\s*inline-block;\s*\}/);
 });
 
 test('initMapSelect: dropdown lists main maps only', () => {

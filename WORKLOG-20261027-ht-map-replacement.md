@@ -537,6 +537,8 @@
 - 全套 `node --test tests/webradar-*.test.cjs` 41/41 通过（此前 35 + 新 6）；`git diff --check` 通过。
 - HTTP 实测：az3.png/az3_in.png/jy_2f.png 200、字节与磁盘一致；响应含 ETag 与 no-cache；If-None-Match 命中 304（Content-Length 0、body 0B），错 ETag 回 200 全量。
 - 首次将楼层配置块放在 authPassword 之前导致测试切片缺失 updateFloorTabs（VM ReferenceError，2 项失败），移入切片区域后通过；probeDevSession 改为返回 Promise 供测试等待。
+- 真机反馈 dev 会话校准按钮仍不显示：探针原先用 style.display='' 显示按钮，清空内联样式会回退到默认隐藏的 CSS 规则 `#calibrate-toggle{display:none}`（测试桩无样式表层，'' 即可见，故未抓住）。改为 class 切换：默认 none，`.dev-visible` 显示 inline-block；全屏隐藏规则 `body.map-fullscreen #calibrate-toggle` 特异性 (1,1,1) 高于 `.dev-visible` (1,1,0)，全屏时仍正确压住。测试改为断言 class 并加两条 CSS 规则存在性回归断言。
+- 真机反馈 – 键无法隐藏 aim 面板：隐藏按钮在标题栏（拖拽柄）内，标题栏 pointerdown 无条件 setPointerCapture，指针捕获把后续事件（含合成 click）重定向到标题栏，按钮 onclick 收不到。修复：pointerdown 目标在 #aim-panel-hide 内时直接返回、不启动拖拽。新增 tests/webradar-aimpanel.test.cjs（3 项）：按钮点击不被捕获吞掉、拖动更新位置并按视口钳制、隐藏/展开往返；全套 44/44 通过。
 - 环境无 selenium/geckodriver，未做真实浏览器视觉验证（选项卡布局、aim 面板拖动手感、IndexedDB 实际行为待真机确认）。
 
 ### 剩余问题
