@@ -12,7 +12,7 @@ import queue
 from enum import Enum
 from actor_snapshot_radar import build_radar_snapshot, ITEM_KINDS
 from dma_protocol import *
-from item_catalog import describe_item
+from item_descriptor import describe_item
 
 DEFAULT_EXPECTED_TRANSFER_BPS = 8 * 1024 * 1024  # 8 MB/s conservative baseline.
 DEFAULT_TRANSFER_GRACE_SEC = 5.0

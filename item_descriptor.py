@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from item_catalog import ITEM_QUALITY
+
 
 QUALITY_DISPLAY = {
     # 等级文案对齐 SuperVT（显示白级/绿级/蓝级/紫级/金级/红级物品）。
@@ -43,6 +45,9 @@ def effective_item_quality(item_id: int, item_quality: int = 0) -> int:
         return MAX_ITEM_QUALITY
     if quality > 0:
         return quality
+    # 目录表（GameItem_analysis.csv）优先：ID 后缀解码对配件/收集品等族系不可靠。
+    if value in ITEM_QUALITY:
+        return ITEM_QUALITY[value]
     return _quality_from_item_id(value)
 
 
