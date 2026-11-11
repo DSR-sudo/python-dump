@@ -3,3 +3,4 @@ __pycache__/
 web/pwd.txt
 logs/
 .claude/worktrees/
+cpp/build/

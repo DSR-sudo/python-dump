@@ -1,5 +1,8 @@
 # python-dump 明文 UDP
 
+> **C++ 版**：`dma_core` 与 `web_radar` 已改写为 C++17，运行时不依赖 Python。
+> 构建与运行见 [cpp/README.md](cpp/README.md)。下文描述原 Python 实现，保留作对照。
+
 DMA 通道仅使用明文 UDP。已删除 TCP 监听、流长度前缀、压缩编码和外层流重组。
 
 运行：
