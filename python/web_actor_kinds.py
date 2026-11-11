@@ -6,6 +6,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
 
+from paths import project_root
+
 DEFAULT_EXTERNAL_BASE_DIR = "/root/python-dump"
 DEFAULT_EXTERNAL_WEB_HTML = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "web", "actor_kinds.html")
 DEFAULT_EXTERNAL_WEB_CONFIG = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "web", "actor_config.txt")
@@ -29,7 +31,7 @@ class WebActorKindsService:
     def __init__(self, core, default_port=DEFAULT_ACTOR_KINDS_PORT, root_dir=None):
         self.core = core
         self.default_port = int(default_port)
-        self.root_dir = root_dir or os.path.dirname(os.path.abspath(__file__))
+        self.root_dir = root_dir or project_root()
         self.web_dir = os.path.join(self.root_dir, "web")
 
         self._lock = threading.Lock()

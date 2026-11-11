@@ -283,7 +283,8 @@ def main():
     cpp_pwd = cpp_root / "web" / "pwd.txt"
 
     os.environ["DMA_BIND_PORT"] = str(PY_UDP_PORT)
-    sys.path.insert(0, str(root))
+    python_root = root / "python" if (root / "python" / "dma_core.py").exists() else root
+    sys.path.insert(0, str(python_root))
     from dma_core import DMACore
     from web_radar import WebRadarService
 

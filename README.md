@@ -1,68 +1,70 @@
-# python-dump 明文 UDP
+# python-dump
 
-> **C++ 版**：`dma_core` 与 `web_radar` 已改写为 C++17，运行时不依赖 Python。
-> 构建与运行见 [cpp/README.md](cpp/README.md)。下文描述原 Python 实现，保留作对照。
+DMA 明文 UDP 数据通道 + WebRadar 网页雷达。
 
-DMA 通道仅使用明文 UDP。已删除 TCP 监听、流长度前缀、压缩编码和外层流重组。
+- **主力实现：C++17**（`cpp/`），运行时不依赖 Python。
+- **旧 Python 实现**保留在 `python/`，仅作对照与回溯，不再是运行路径。
+- `web/`、`image/` 是两种实现共享的网页资源与地图底图。
 
-运行：
+## 目录结构
 
-```sh
-python3 main.py
+```
+python-dump/
+├── cpp/                 # C++17 实现（active）
+│   ├── src/             # dma_core、web_radar、协议、JSON、HTTP、目录数据
+│   ├── tests/           # C++ 与 Python 的逐字段 parity 测试
+│   ├── tools/           # 物品目录一次性生成脚本（仅开发期）
+│   ├── build.sh         # 一键构建 -> cpp/build/dma_webradar
+│   └── README.md        # 构建、运行、接口、环境变量
+├── python/              # 旧 Python 实现（legacy / reference）
+│   ├── main.py          # 旧入口
+│   ├── dma_*.py         # 核心、API、控制台命令
+│   ├── web_*.py         # 网页雷达 / Actor 分类服务
+│   ├── ue_*.py          # UE 反射/SDK 扫描工具
+│   └── README.md
+├── web/                 # 共享网页资源：webpage.html、actor_kinds.html、config.txt
+├── image/               # 共享地图底图
+├── deploy/              # OpenWrt procd 启动脚本
+├── tests/               # 前端网页 JS 测试
+└── docs/                # 文档、工作日志、历史参考
+    ├── legacy-python.md # 旧 Python 实现说明（UDP/控制台）
+    ├── worklogs/        # 历史 WORKLOG
+    └── reference/       # 早期 C++ 参考资料
 ```
 
-控制台无需等待远端上线即可输入命令。`status` 显示远端地址、最近包/状态时间及
-快照计数；`watch` 每两秒刷新，Ctrl+C 返回命令行。等待输入时后台消息暂存，回车
-后显示，避免破坏正在输入的命令；EOF/Ctrl+C（非 watch 内）正常退出。
-
-新版 main 使用同一 UDP 源端口每秒发送 LOG `[PMU][STATUS] ...`，启动等待、GPUUUID
-和扫描错误也可见；重复状态只更新在线时间，不重复打印/写日志。心跳仅代表 main
-进程存活，不代表扫描成功，请同时查看最近快照时间。旧版 main 不发送状态时，
-控制台明确显示未收到状态。main 是扫描发送端，不实现控制台的远程内存读写命令。
-
-在 OpenWrt/iStoreOS 上仅接收 UDP、无需交互控制台时，使用
-`python3 -u main.py --receiver-only`。该模式收到 SIGTERM 后关闭 UDP socket；
-`deploy/udp-receiver.init` 可安装为 procd 服务，以便开机自启并在退出后重启。
-
-默认监听 `0.0.0.0:53786`，可通过 `DMA_UDP_LISTEN_HOST`、`DMA_BIND_PORT` 配置。
-未设置 `DMA_BIND_PORT` 时兼容 `DMA_TARGET_PORT`，旧的 `DMA_TCP_LISTEN_HOST` 不再使用。
-IPv6 可设置 `DMA_UDP_LISTEN_HOST=::1`。先启动 Python，再启动 C 对端：
+## 快速开始（C++）
 
 ```sh
-cd ../qemu-proxy-client
-make -j4
-./build/x64/main log 127.0.0.1 53786 'DRIVER_ONLINE' 3000
+./cpp/build.sh
+./cpp/build/dma_webradar --webradar          # 启动网页雷达（默认 34900）
+# 访问 http://<host>:34900/，口令见 web/pwd.txt
 ```
 
-C 示例创建一个线程发送 LOG，然后最多等待 3 秒接收一个命令或心跳并退出。
-它展示传输和解析，不执行读写内存等业务命令。Python 收到有效包后记录源 IP/端口，
-通过同一个绑定的 UDP socket 回发命令和心跳，因此对端必须保持发送 socket 打开。
-每秒发送一次心跳，连续 3 秒无有效入站包会离线并释放对端；正在等待命令结果时保留
-该对端到请求完成或超时，避免其他发送方的数据混入。一个实例同时服务一个对端。
-
-| 方向 | 每个 UDP 数据报的格式 |
-| --- | --- |
-| C → Python | `1 字节 type + 原始 payload`，type：LOG=1、DATA=2、ONLINE=3、SNAPSHOT=6 |
-| Python → C 命令 | 小端 `<IBQQI1024s>`，固定 1049 字节，依次为 Magic、Command、Value、Address、Size、Data |
-| Python → C 心跳 | `HELO` 后补 28 个零，固定 32 字节 |
-
-Magic 为 `0xDEADBEEF`。命令号保留：读=1、写=2、CR3=3、区域=4、模块=5、
-启动数据线程=13、停止=14、PingPong=15、特征搜索=16。
-
-“明文”表示不加密、不压缩，二进制命令和数据仍使用既有字段布局。LOG 载荷为 UTF-8。
-`pack_packet` / `parse_packet_header` 处理 C→Python 包，`pack_*_req` / `send_to_driver`
-处理反向命令。单包最多 65507 字节，含 type 的载荷最多 65506 字节，不自动拆包。
-现有 RWVG/Actor 快照业务内部的分片字段保留；旧 TCP/codec 封装没有兼容接收路径。
-
-UDP 不保证送达、顺序或去重。原始内存多包响应没有传输序号，丢包通常会超时，乱序或
-重复可能导致数据错误；本次没有引入可靠传输协议。跨主机网络及真实内存业务未验证。
-
-验证：
+仅接收 UDP（OpenWrt / procd）：
 
 ```sh
-python3 _run_tests.py
-# 包含实际 C ↔ Python 互通验证：
-make -C ../qemu-proxy-client test-dma
+./cpp/build/dma_webradar --receiver-only --root=/root/python-dump
 ```
 
-两端修改记录统一保存在 [现有工作文档](../qemu-proxy-client/WORKLOG.md)。
+详细参数、控制台命令、HTTP 接口与环境变量见 **[cpp/README.md](cpp/README.md)**。
+
+## 旧 Python 实现
+
+```sh
+python3 python/main.py                       # 交互控制台
+python3 -u python/main.py --receiver-only    # 仅接收
+```
+
+资源根目录会自动解析到仓库根（`web/`、`image/` 所在目录），也可平铺部署为
+`/root/python-dump/main.py`。协议与命令说明见 **[docs/legacy-python.md](docs/legacy-python.md)**。
+
+## 验证
+
+```sh
+python3 cpp/tests/parity_test.py "$PWD" cpp/build/dma_webradar
+```
+
+同一批合成 UDP 帧同时驱动 C++ 与 Python 实现，逐字段比对 `/api/data`、
+`/api/rwvg`、订阅过滤、鉴权、图片缓存、畸形报文及原始 DMA 请求链路。
+
+更多文档见 **[docs/README.md](docs/README.md)**。

@@ -6,7 +6,10 @@ USE_PROCD=1
 
 start_service() {
     procd_open_instance
-    procd_set_param command /usr/bin/python3 -u /root/python-dump/main.py --receiver-only
+    # 默认使用 C++ 版接收端；如仍需旧 Python 实现，可改为：
+    #   /usr/bin/python3 -u /root/python-dump/python/main.py --receiver-only
+    procd_set_param command /root/python-dump/cpp/build/dma_webradar \
+        --receiver-only --root=/root/python-dump
     procd_set_param respawn 3600 5 5
     procd_set_param stdout 1
     procd_set_param stderr 1

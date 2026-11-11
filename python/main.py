@@ -8,10 +8,11 @@ from pathlib import Path
 from dma_core import DMACore
 from dma_api import DMAApi
 from dma_command import CommandHandler, log, print_banner, print_detailed_help
+from paths import project_root
 from session_log import SessionLog
 
 def main():
-    session_log = SessionLog.start(Path(__file__).resolve().parent)
+    session_log = SessionLog.start(Path(project_root()))
     atexit.register(session_log.close)
     print(f"[+] Session log: {session_log.path}")
     print_banner()

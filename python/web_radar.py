@@ -21,6 +21,7 @@ from dma_protocol import (
     RWVG_TYPED_SIZE_BY_KIND,
 )
 from rwvg_actor_snapshot import RWVG_ACTOR_SNAPSHOT_VERSION
+from paths import project_root
 
 DEFAULT_EXTERNAL_BASE_DIR = "/root/python-dump"
 DEFAULT_EXTERNAL_IMAGE_DIR = os.path.join(DEFAULT_EXTERNAL_BASE_DIR, "image")
@@ -78,7 +79,7 @@ class WebRadarService:
     def __init__(self, core, default_port=34900, root_dir=None):
         self.core = core
         self.default_port = int(default_port)
-        self.root_dir = root_dir or os.path.dirname(os.path.abspath(__file__))
+        self.root_dir = root_dir or project_root()
         self.web_dir = os.path.join(self.root_dir, "web")
         image_dir_from_env = os.getenv("DMA_WEBRADAR_IMAGE_DIR", "").strip()
         if image_dir_from_env:

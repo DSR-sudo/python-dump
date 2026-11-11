@@ -1,13 +1,16 @@
 # dma_webradar（C++ 改写版）
 
 `dma_core.py` 与 `web_radar.py` 的 C++17 实现。运行时**不再依赖 Python**，
-原 Python 文件保留仅作对照。协议、报文布局、JSON 字段、鉴权与缓存语义均按原
-实现逐项移植；`cpp/tests/parity_test.py` 会用同一批合成 UDP 帧同时驱动两边并
-逐字段比对（当前 41/41 通过）。
+原 Python 实现位于仓库 [`python/`](../python/)，仅作对照。协议、报文布局、
+JSON 字段、鉴权与缓存语义均按原实现逐项移植；`cpp/tests/parity_test.py` 会用
+同一批合成 UDP 帧同时驱动两边并逐字段比对（当前 41/41 通过）。
+
+共享资源（`web/`、`image/`）位于仓库根目录，C++ 会自动探测资源根；也可用
+`--root` 或 `DMA_WEBRADAR_ROOT` 指定。
 
 ## 目录
 
-| 文件 | 对应 Python |
+| 文件 | 对应 Python（在 `python/` 下） |
 | --- | --- |
 | `src/dma_core.*` | `dma_core.py` |
 | `src/web_radar.*` | `web_radar.py` |

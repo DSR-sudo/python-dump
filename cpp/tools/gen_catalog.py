@@ -1,6 +1,9 @@
+import os
 import sys
 
-sys.path.insert(0, sys.argv[1])
+_ROOT = sys.argv[1]
+_PYTHON_DIR = os.path.join(_ROOT, "python")
+sys.path.insert(0, _PYTHON_DIR if os.path.isdir(_PYTHON_DIR) else _ROOT)
 import item_catalog as ic
 import id_catalog as idc
 

@@ -49,12 +49,13 @@ function floorsCacheFixture() {
 
 test('floor config: every floor image has dimensions, calibration and aim model entries', () => {
     const floorImages = [...script.matchAll(/map:\s*'([\w.]+)'/g)].map(m => m[1]);
+    const cppSource = fs.readFileSync(`${__dirname}/../cpp/src/web_radar.cpp`, 'utf8');
     assert.ok(floorImages.length >= 5, '至少应包含 jy 四层与 az3 内部图');
     for (const name of floorImages) {
         const key = name.replace('.', '\\.');
         assert.match(html, new RegExp(`"${key}"\\s*:\\s*\\{\\s*width:\\s*\\d+,\\s*height:\\s*\\d+`), `${name} 缺 mapDimensions 条目`);
         assert.match(html, new RegExp(`"${key}"\\s*:\\s*\\{\\s*point3D_1`), `${name} 缺 mapConverters 条目`);
-        assert.match(fs.readFileSync(`${__dirname}/../web_radar.py`, 'utf8'), new RegExp(`"${key}"\\s*:`), `${name} 缺 RADAR_MAP_MODELS 映射`);
+        assert.match(cppSource, new RegExp(`\\{"${key}",\\s*"[^"]+"\\}`), `${name} 缺 RADAR_MAP_MODELS 映射`);
     }
 });
 
