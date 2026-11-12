@@ -6,8 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "json.h"
-#include "protocol.h"
+#include "json/json.h"
+#include "protocol/protocol.h"
 
 namespace dma {
 

@@ -1,4 +1,4 @@
-#include "catalog.h"
+#include "catalog/catalog.h"
 
 #include <unordered_map>
 
@@ -12,7 +12,7 @@ struct CatalogTables {
   std::unordered_map<uint64_t, std::string> weapon_names;
 };
 
-#include "catalog_data.inc"
+#include "catalog/catalog_data.inc"
 
 const CatalogTables &tables() {
   static const CatalogTables instance = [] {

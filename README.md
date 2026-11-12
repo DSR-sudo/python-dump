@@ -11,10 +11,20 @@ DMA 明文 UDP 数据通道 + WebRadar 网页雷达。
 ```
 python-dump/
 ├── cpp/                 # C++17 实现（active）
-│   ├── src/             # dma_core、web_radar、协议、JSON、HTTP、目录数据
+│   ├── src/             # 源码，按功能分目录
+│   │   ├── main.cpp     # 入口 / 控制台
+│   │   ├── core/        # DMA 核心
+│   │   ├── protocol/    # 报文打包与解析
+│   │   ├── radar/       # 快照转雷达负载
+│   │   ├── catalog/     # 物品/探员/武器目录与描述
+│   │   ├── json/        # JSON 实现
+│   │   ├── http/        # HTTP 服务器
+│   │   ├── log/         # 会话日志
+│   │   └── web/         # WebRadar 服务
 │   ├── tests/           # C++ 与 Python 的逐字段 parity 测试
 │   ├── tools/           # 物品目录一次性生成脚本（仅开发期）
-│   ├── build.sh         # 一键构建 -> cpp/build/dma_webradar
+│   ├── build.sh         # 本机构建 -> cpp/build/dma_webradar
+│   ├── build-aarch64.sh # 交叉构建 aarch64 静态版
 │   └── README.md        # 构建、运行、接口、环境变量
 ├── python/              # 旧 Python 实现（legacy / reference）
 │   ├── main.py          # 旧入口

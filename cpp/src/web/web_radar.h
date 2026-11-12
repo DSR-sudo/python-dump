@@ -10,9 +10,9 @@
 #include <string>
 #include <utility>
 
-#include "dma_core.h"
-#include "http_server.h"
-#include "json.h"
+#include "core/dma_core.h"
+#include "http/http_server.h"
+#include "json/json.h"
 
 namespace dma {
 

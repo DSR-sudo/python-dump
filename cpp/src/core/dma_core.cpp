@@ -1,4 +1,4 @@
-#include "dma_core.h"
+#include "core/dma_core.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -22,9 +22,9 @@
 #include <stdexcept>
 #include <system_error>
 
-#include "catalog.h"
-#include "item_descriptor.h"
-#include "session_log.h"
+#include "catalog/catalog.h"
+#include "catalog/item_descriptor.h"
+#include "log/session_log.h"
 
 namespace dma {
 namespace {

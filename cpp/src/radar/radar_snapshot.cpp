@@ -1,9 +1,9 @@
-#include "radar_snapshot.h"
+#include "radar/radar_snapshot.h"
 
 #include <unordered_set>
 
-#include "catalog.h"
-#include "item_descriptor.h"
+#include "catalog/catalog.h"
+#include "catalog/item_descriptor.h"
 
 namespace dma {
 namespace {

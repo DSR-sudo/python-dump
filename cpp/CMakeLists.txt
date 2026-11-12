@@ -13,17 +13,18 @@ find_package(Threads REQUIRED)
 
 add_executable(dma_webradar
   src/main.cpp
-  src/dma_core.cpp
-  src/protocol.cpp
-  src/json.cpp
-  src/catalog.cpp
-  src/item_descriptor.cpp
-  src/radar_snapshot.cpp
-  src/session_log.cpp
-  src/http_server.cpp
-  src/web_radar.cpp
+  src/core/dma_core.cpp
+  src/protocol/protocol.cpp
+  src/json/json.cpp
+  src/catalog/catalog.cpp
+  src/catalog/item_descriptor.cpp
+  src/radar/radar_snapshot.cpp
+  src/log/session_log.cpp
+  src/http/http_server.cpp
+  src/web/web_radar.cpp
 )
 
+target_include_directories(dma_webradar PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(dma_webradar PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(dma_webradar PRIVATE Threads::Threads)
 

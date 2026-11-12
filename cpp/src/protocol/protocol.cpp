@@ -1,10 +1,10 @@
-#include "protocol.h"
+#include "protocol/protocol.h"
 
 #include <cmath>
 #include <cstring>
 #include <limits>
 
-#include "catalog.h"
+#include "catalog/catalog.h"
 
 namespace dma {
 namespace {

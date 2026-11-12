@@ -12,15 +12,15 @@ JSON 字段、鉴权与缓存语义均按原实现逐项移植；`cpp/tests/pari
 
 | 文件 | 对应 Python（在 `python/` 下） |
 | --- | --- |
-| `src/dma_core.*` | `dma_core.py` |
-| `src/web_radar.*` | `web_radar.py` |
-| `src/protocol.*` | `dma_protocol.py`、`rwvg_protocol.py`、`rwvg_actor_snapshot.py` |
-| `src/radar_snapshot.*` | `actor_snapshot_radar.py` |
-| `src/item_descriptor.*` | `item_descriptor.py` |
-| `src/catalog.*` + `src/catalog_data.inc` | `item_catalog.py`、`id_catalog.py`（数据表） |
-| `src/http_server.*` | `http.server.ThreadingHTTPServer` / `BaseHTTPRequestHandler` |
-| `src/json.*` | `json.dumps/json.loads`（保留插入顺序、UTF-8 原样输出） |
-| `src/session_log.*` | `session_log.py` |
+| `src/core/dma_core.*` | `dma_core.py` |
+| `src/web/web_radar.*` | `web_radar.py` |
+| `src/protocol/protocol.*` | `dma_protocol.py`、`rwvg_protocol.py`、`rwvg_actor_snapshot.py` |
+| `src/radar/radar_snapshot.*` | `actor_snapshot_radar.py` |
+| `src/catalog/item_descriptor.*` | `item_descriptor.py` |
+| `src/catalog/catalog.*` + `src/catalog/catalog_data.inc` | `item_catalog.py`、`id_catalog.py`（数据表） |
+| `src/http/http_server.*` | `http.server.ThreadingHTTPServer` / `BaseHTTPRequestHandler` |
+| `src/json/json.*` | `json.dumps/json.loads`（保留插入顺序、UTF-8 原样输出） |
+| `src/log/session_log.*` | `session_log.py` |
 | `src/main.cpp` | `main.py` 的控制台入口（核心子集） |
 
 ## 构建
@@ -116,7 +116,7 @@ help | exit
 
 ## 数据表再生成
 
-`src/catalog_data.inc` 由 Python 数据表一次性生成（仅开发期使用，运行时不调用
+`src/catalog/catalog_data.inc` 由 Python 数据表一次性生成（仅开发期使用，运行时不调用
 Python）：
 
 ```sh

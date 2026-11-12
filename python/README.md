@@ -19,15 +19,15 @@ python3 -u python/main.py --receiver-only
 | 模块 | 作用 | C++ 对应 |
 | --- | --- | --- |
 | `main.py` | 交互控制台入口 | `cpp/src/main.cpp`（核心命令子集） |
-| `dma_core.py` | UDP 接收、RWVG 流、Type=6 快照、雷达状态 | `cpp/src/dma_core.*` |
-| `web_radar.py` | 网页雷达 HTTP 服务 | `cpp/src/web_radar.*`、`http_server.*` |
+| `dma_core.py` | UDP 接收、RWVG 流、Type=6 快照、雷达状态 | `cpp/src/core/dma_core.*` |
+| `web_radar.py` | 网页雷达 HTTP 服务 | `cpp/src/web/web_radar.*`、`http/http_server.*` |
 | `web_actor_kinds.py` | 34901 Actor 分类监控服务 | 未移植 |
 | `dma_command.py` | 控制台业务命令 | 未移植 |
 | `dma_api.py` | 内存读写/CR3/线程控制 API | 未移植（C++ 入口仅含 cr3/ping 等核心请求） |
-| `dma_protocol.py`、`rwvg_protocol.py`、`rwvg_actor_snapshot.py` | 协议打包与解析 | `cpp/src/protocol.*` |
-| `actor_snapshot_radar.py` | Type=6 记录转雷达负载 | `cpp/src/radar_snapshot.*` |
-| `item_descriptor.py`、`item_catalog.py`、`id_catalog.py` | 物品品质/名称、探员与武器表 | `cpp/src/item_descriptor.*`、`catalog.*` |
-| `session_log.py` | 控制台会话日志 | `cpp/src/session_log.*` |
+| `dma_protocol.py`、`rwvg_protocol.py`、`rwvg_actor_snapshot.py` | 协议打包与解析 | `cpp/src/protocol/protocol.*` |
+| `actor_snapshot_radar.py` | Type=6 记录转雷达负载 | `cpp/src/radar/radar_snapshot.*` |
+| `item_descriptor.py`、`item_catalog.py`、`id_catalog.py` | 物品品质/名称、探员与武器表 | `cpp/src/catalog/item_descriptor.*`、`catalog.*` |
+| `session_log.py` | 控制台会话日志 | `cpp/src/log/session_log.*` |
 | `sdk_helper.py`、`ue_*.py` | UE 反射/SDK 扫描工具链 | 未移植 |
 | `paths.py` | 解释 `web/`、`image/` 资源根目录 | C++ 内建根目录探测 |
 | `unknown_id_records.json` | 历史未知 ID 记录 | — |

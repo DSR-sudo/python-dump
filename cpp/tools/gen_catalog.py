@@ -40,5 +40,5 @@ for k in sorted(idc.WEAPON_NAMES):
     out.append('    {%dULL, "%s"},' % (k, esc(idc.WEAPON_NAMES[k])))
 out.append("};")
 out.append("")
-open("cpp/src/catalog_data.inc", "w", encoding="utf-8").write("\n".join(out))
+open("cpp/src/catalog/catalog_data.inc", "w", encoding="utf-8").write("\n".join(out))
 print("wrote", len(out), "lines")

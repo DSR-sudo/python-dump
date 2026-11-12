@@ -1,8 +1,8 @@
-#include "item_descriptor.h"
+#include "catalog/item_descriptor.h"
 
 #include <algorithm>
 
-#include "catalog.h"
+#include "catalog/catalog.h"
 
 namespace dma {
 namespace {

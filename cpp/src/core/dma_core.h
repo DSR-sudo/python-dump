@@ -18,9 +18,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "json.h"
-#include "protocol.h"
-#include "radar_snapshot.h"
+#include "json/json.h"
+#include "protocol/protocol.h"
+#include "radar/radar_snapshot.h"
 
 class SessionLog;
 

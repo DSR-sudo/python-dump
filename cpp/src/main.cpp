@@ -13,9 +13,9 @@
 #include <thread>
 #include <vector>
 
-#include "dma_core.h"
-#include "session_log.h"
-#include "web_radar.h"
+#include "core/dma_core.h"
+#include "log/session_log.h"
+#include "web/web_radar.h"
 
 namespace {
 
