@@ -35,6 +35,16 @@ cmake --build build -j
 
 无第三方依赖，只需 C++17 编译器与 pthread。
 
+交叉编译 aarch64 全静态版（OpenWrt / iStoreOS / 树莓派 4B）：
+
+```sh
+./build-aarch64.sh    # 产物 build-aarch64/dma_webradar
+file build-aarch64/dma_webradar   # 应显示 statically linked
+```
+
+需要 `aarch64-linux-gnu-g++` 与 CMake；`build-aarch64.sh` 会传
+`-DCMAKE_EXE_LINKER_FLAGS=-static`，不依赖路由器上的 libc。
+
 ## 运行
 
 ```sh
@@ -47,6 +57,9 @@ cmake --build build -j
 
 # 仅 UDP 接收（OpenWrt / procd 场景）
 ./build/dma_webradar --receiver-only
+
+# 后台接收 + WebRadar，不进入交互控制台（procd 场景）
+./build/dma_webradar --headless --webradar --root=/root/python-dump
 
 # 指定资源根目录（包含 web/、image/、logs/）
 ./build/dma_webradar --webradar --root=/root/python-dump

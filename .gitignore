@@ -5,3 +5,4 @@ web/pwd.txt
 logs/
 .claude/worktrees/
 cpp/build/
+cpp/build-aarch64/

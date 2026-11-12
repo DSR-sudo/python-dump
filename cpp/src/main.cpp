@@ -80,12 +80,15 @@ void print_help() {
 
 int main(int argc, char **argv) {
   bool receiver_only = false;
+  bool headless = false;
   std::optional<int> auto_webradar_port;
   std::optional<std::string> root_override;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--receiver-only") {
       receiver_only = true;
+    } else if (arg == "--headless") {
+      headless = true;
     } else if (arg == "--webradar") {
       auto_webradar_port = 34900;
     } else if (arg.rfind("--webradar=", 0) == 0) {
@@ -98,8 +101,8 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--root=", 0) == 0) {
       root_override = arg.substr(std::string("--root=").size());
     } else if (arg == "--help" || arg == "-h") {
-      std::cout << "usage: dma_webradar [--receiver-only] [--webradar[=PORT]] "
-                   "[--root=DIR]\n";
+      std::cout << "usage: dma_webradar [--receiver-only] [--headless] "
+                   "[--webradar[=PORT]] [--root=DIR]\n";
       return 0;
     } else {
       std::cerr << "unknown argument: " << arg << "\n";
@@ -151,9 +154,31 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  bool webradar_started = false;
   if (auto_webradar_port.has_value()) {
     auto [ok, message] = web_radar->start(auto_webradar_port);
+    webradar_started = ok;
     con::print_line("WebRadar " + message);
+  }
+
+  if (headless) {
+    if (auto_webradar_port.has_value() && !webradar_started) {
+      con::print_line("[-] Headless mode: WebRadar failed to start");
+      core->shutdown();
+      con::set_session_log(nullptr);
+      return 1;
+    }
+    if (!auto_webradar_port.has_value()) {
+      con::print_line("[*] Headless mode: UDP only (pass --webradar to serve HTTP)");
+    }
+    con::print_line("Headless mode ready (SIGTERM to stop)");
+    while (!g_interrupted.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    web_radar->stop();
+    core->shutdown();
+    con::set_session_log(nullptr);
+    return 0;
   }
 
   con::print_line(
