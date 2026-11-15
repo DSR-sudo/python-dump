@@ -20,7 +20,8 @@ python-dump/
 │   │   ├── json/        # JSON 实现
 │   │   ├── http/        # HTTP 服务器
 │   │   ├── log/         # 会话日志
-│   │   └── web/         # WebRadar 服务
+│   │   ├── web/         # WebRadar 服务
+│   │   └── actorkinds/  # ActorKinds 监控服务（34901）
 │   ├── tests/           # C++ 与 Python 的逐字段 parity 测试
 │   ├── tools/           # 物品目录一次性生成脚本（仅开发期）
 │   ├── build.sh         # 本机构建 -> cpp/build/dma_webradar

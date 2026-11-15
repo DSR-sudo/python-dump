@@ -44,6 +44,14 @@ AIM_SET_KEYS = frozenset((
 ))
 AIM_DEV_PASSWORD = "963007"
 
+# NoRecoil 热命令白名单:独立于 aim,只有开关/状态三种形式。
+NORECOIL_COMMANDS = frozenset(("on", "off", "status"))
+
+
+def _norecoil_command_allowed(command: str) -> bool:
+    parts = command.split()
+    return len(parts) == 1 and parts[0].lower() in NORECOIL_COMMANDS
+
 
 def _aim_command_allowed(command: str) -> bool:
     parts = command.split()
@@ -592,7 +600,8 @@ refresh();
 
             def do_POST(self):
                 parsed = urlparse(self.path)
-                if parsed.path not in ("/api/subscription", "/api/map", "/api/aim"):
+                if parsed.path not in ("/api/subscription", "/api/map", "/api/aim",
+                                       "/api/norecoil"):
                     self._send_json({"error": "Not Found"}, status=404)
                     return
                 query = parse_qs(parsed.query)
@@ -623,6 +632,24 @@ refresh();
                         return
                     try:
                         reply = service.core.send_aim_command_wait("aim " + command)
+                    except OSError:
+                        reply = None
+                    self._send_json({"ok": reply is not None,
+                                     "reply": reply or "no reply (client offline?)"},
+                                    status=200)
+                    return
+                if parsed.path == "/api/norecoil":
+                    # 开发密码专属;与 /api/aim 共用鉴权但走独立命令和回包通道。
+                    if not self._is_dev_session(query_token=query_token):
+                        self._send_json({"error": "Forbidden"}, status=403)
+                        return
+                    command = str(payload.get("command") or "").strip()
+                    if not _norecoil_command_allowed(command):
+                        self._send_json({"error": "Bad command"}, status=400)
+                        return
+                    try:
+                        reply = service.core.send_norecoil_command_wait(
+                            "norecoil " + command)
                     except OSError:
                         reply = None
                     self._send_json({"ok": reply is not None,

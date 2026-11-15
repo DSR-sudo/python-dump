@@ -14,6 +14,7 @@ JSON 字段、鉴权与缓存语义均按原实现逐项移植；`cpp/tests/pari
 | --- | --- |
 | `src/core/dma_core.*` | `dma_core.py` |
 | `src/web/web_radar.*` | `web_radar.py` |
+| `src/actorkinds/actor_kinds.*` | `web_actor_kinds.py`（34901 分类监控页） |
 | `src/protocol/protocol.*` | `dma_protocol.py`、`rwvg_protocol.py`、`rwvg_actor_snapshot.py` |
 | `src/radar/radar_snapshot.*` | `actor_snapshot_radar.py` |
 | `src/catalog/item_descriptor.*` | `item_descriptor.py` |
@@ -55,11 +56,15 @@ file build-aarch64/dma_webradar   # 应显示 statically linked
 ./build/dma_webradar --webradar
 ./build/dma_webradar --webradar=34900
 
+# 同时启动 ActorKinds 监控页，默认端口 34901
+./build/dma_webradar --webradar --actorkinds
+./build/dma_webradar --webradar=34900 --actorkinds=34901
+
 # 仅 UDP 接收（OpenWrt / procd 场景）
 ./build/dma_webradar --receiver-only
 
-# 后台接收 + WebRadar，不进入交互控制台（procd 场景）
-./build/dma_webradar --headless --webradar --root=/root/python-dump
+# 后台接收 + WebRadar + ActorKinds，不进入交互控制台（procd 场景）
+./build/dma_webradar --headless --webradar --actorkinds --root=/root/python-dump
 
 # 指定资源根目录（包含 web/、image/、logs/）
 ./build/dma_webradar --webradar --root=/root/python-dump
@@ -75,7 +80,10 @@ status                 对端/主程序/快照状态
 watch                  每 2 秒刷新，Ctrl-C 返回
 webradar start [PORT]  启动网页雷达
 webradar stop|status   停止/查看
+actorkinds start [PORT] 启动 ActorKinds 监控页
+actorkinds stop|status  停止/查看
 aim <cmd>              向 client 发 AIM 热命令
+norecoil on|off|status 向 client 发 NoRecoil 热命令（独立于 aim）
 stream_stats           输出 RWVG 计数器
 cr3 <pid>              请求 CR3（UserDTB/KernelDTB/Base）
 cpueaxh_ping           发送 PingPong 命令并等待 ACK
@@ -96,9 +104,14 @@ help | exit
 | POST | `/api/subscription` | 每客户端过滤订阅（clean/resources/deadbox/qualities/ego） |
 | POST | `/api/map` | 底图联动 AIM `map <model>` |
 | POST | `/api/aim` | 开发口令专属热命令白名单 |
+| POST | `/api/norecoil` | 开发口令专属；`on`/`off`/`status`，与 aim 独立 |
 
 鉴权口令：`web/pwd.txt` 中的随机 6 位口令，或开发口令 `963007`。启动时生成并写入
 `web/pwd.txt`；端口读取 `web/config.txt` 第一行。
+
+ActorKinds 服务（`--actorkinds`，默认 `34901`）：`GET /` 返回
+`web/actor_kinds.html`，`GET /api/actor_kinds` 返回 Actor 分类 JSON；口令与雷达
+共用 `web/pwd.txt`，端口读取 `web/actor_config.txt` 第一行。
 
 ## 环境变量
 
@@ -144,6 +157,5 @@ players-only 世界物体回放、四类订阅过滤、`/api/rwvg` 与 `/api/log
 
 ## 未移植
 
-- `web_actor_kinds.py`（34901 分类监控页）不在本次范围。
 - `dma_command.py` 的 attach/dump/regions 等控制台业务命令未移植；C++ 入口只保留
   WebRadar 与驱动通信所需的核心命令。

@@ -130,6 +130,15 @@ def main():
                     sent = core.send_aim_command("aim " + " ".join(args))
                     log("aim command sent" if sent else "no live peer: client not connected yet",
                         None if sent else "WARN")
+            elif cmd == "norecoil":
+                # 独立于 aim 的常驻无后座开关;应答以 [PMU][NORECOIL] 后台行回显。
+                if not args or args[0].lower() not in ("on", "off", "status"):
+                    log("usage: norecoil on|off|status", "WARN")
+                else:
+                    sent = core.send_norecoil_command("norecoil " + " ".join(args))
+                    log("norecoil command sent" if sent
+                        else "no live peer: client not connected yet",
+                        None if sent else "WARN")
             elif cmd == "exit":
                 log("Exiting...")
                 break

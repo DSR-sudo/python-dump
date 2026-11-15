@@ -23,6 +23,7 @@ function el(stub = {}) {
 function aimFixture() {
     const handlers = {}; // head 上按类型收集的监听器
     const captured = [];
+    const fetches = [];
     const elements = {
         'aim-panel': el({ getBoundingClientRect: () => ({ left: 100, top: 200 }) }),
         'aim-out': el(),
@@ -36,17 +37,22 @@ function aimFixture() {
         'aim-on': el(), 'aim-off': el(), 'aim-status': el(),
         'aim-fov': el({ value: '' }), 'aim-fov-set': el(),
         'aim-part': el(), 'aim-sup': el(),
+        'norecoil-on': el(), 'norecoil-off': el(), 'norecoil-status': el(),
+        'norecoil-out': el(),
     };
     const context = vm.createContext({
         Math, JSON, Promise, Date, console, encodeURIComponent,
         document: { getElementById: id => elements[id] },
-        fetch: async () => {},
+        fetch: async (url, opts) => {
+            fetches.push({ url: String(url), opts });
+            return { status: 200, json: async () => ({ reply: 'ok' }) };
+        },
         setInterval: () => 1, clearInterval: () => {},
         window: { innerWidth: 1920, innerHeight: 1080 },
         radarAuthed: false, authPassword: () => '963007',
     });
     vm.runInContext(aimScript, context);
-    return { context, elements, handlers, captured };
+    return { context, elements, handlers, captured, fetches };
 }
 
 test('aim panel: hide button click is not swallowed by the drag pointer capture', () => {
@@ -81,4 +87,23 @@ test('aim panel: hide collapses to the AIM chip and the chip re-expands the pane
     chip.onclick();
     assert.equal(panel.style.display, 'block');
     assert.equal(chip.style.display, 'none');
+});
+
+test('aim panel: aim buttons keep the aim endpoint', () => {
+    const { elements, fetches } = aimFixture();
+    elements['aim-on'].onclick();
+    assert.equal(fetches.length, 1);
+    assert.match(fetches[0].url, /^\/api\/aim\?token=/);
+    assert.deepEqual(JSON.parse(fetches[0].opts.body), { command: 'on' });
+});
+
+test('norecoil panel: independent endpoint and output', async () => {
+    const { elements, fetches } = aimFixture();
+    elements['norecoil-on'].onclick();
+    assert.equal(fetches.length, 1);
+    assert.match(fetches[0].url, /^\/api\/norecoil\?token=/);
+    assert.deepEqual(JSON.parse(fetches[0].opts.body), { command: 'on' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(elements['norecoil-out'].textContent, 'ok');
+    assert.equal(elements['aim-out'].textContent, ''); // 两套输出互不覆盖
 });

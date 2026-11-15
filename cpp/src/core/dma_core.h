@@ -85,6 +85,11 @@ class DMACore {
   std::optional<std::string> send_aim_command_wait(const std::string &command,
                                                    double timeout = 1.5);
 
+  // NoRecoil control (independent of aim) -----------------------------------
+  bool send_norecoil_command(const std::string &command);
+  std::optional<std::string> send_norecoil_command_wait(const std::string &command,
+                                                        double timeout = 1.5);
+
   // Driver ------------------------------------------------------------------
   std::string format_status();
   void shutdown();
@@ -198,9 +203,10 @@ class DMACore {
   bool try_capture_region_log(const std::string &msg);
   void write_received_log(const std::string &message);
 
-  // aim
-  void capture_aim_reply(std::string_view payload);
+  // aim / norecoil hot-command replies
+  void capture_runtime_reply(std::string_view payload);
   std::pair<uint64_t, std::string> aim_reply_state();
+  std::pair<uint64_t, std::string> norecoil_reply_state();
 
   // misc helpers
   void write_deferred_console_line(const std::string &line);
@@ -223,6 +229,10 @@ class DMACore {
   std::mutex aim_reply_lock_;
   uint64_t aim_reply_seq_ = 0;
   std::string aim_reply_text_;
+
+  std::mutex norecoil_reply_lock_;
+  uint64_t norecoil_reply_seq_ = 0;
+  std::string norecoil_reply_text_;
 
   std::mutex main_status_lock_;
   std::optional<std::string> main_status_;

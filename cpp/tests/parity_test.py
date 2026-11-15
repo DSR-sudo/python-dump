@@ -233,6 +233,9 @@ class AimResponder(threading.Thread):
             if data.startswith(b"aim "):
                 self.replies.append(data.decode("utf-8", "replace"))
                 self.sock.sendto(b"\x01[PMU][AIMCTL] ok", peer)
+            elif data.startswith(b"norecoil "):
+                self.replies.append(data.decode("utf-8", "replace"))
+                self.sock.sendto(b"\x01[PMU][NORECOIL] ok", peer)
             elif len(data) == 1049:
                 magic, command = struct.unpack_from("<IB", data, 0)
                 if magic == 0xDEADBEEF and command == 3:  # GET_CR3
@@ -485,6 +488,27 @@ def main():
             CXX_WEB_PORT, "/api/aim", "963007", {"command": "rm -rf /"})
         checker.equal("bad aim command", status_py, status_cxx)
         checker.same("bad aim body", parsed_py, parsed_cxx)
+
+        status_py, parsed_py, _ = post_json(
+            PY_WEB_PORT, "/api/norecoil", py_token, {"command": "status"})
+        status_cxx, parsed_cxx, _ = post_json(
+            CXX_WEB_PORT, "/api/norecoil", cpp_token, {"command": "status"})
+        checker.equal("non-dev /api/norecoil status", status_py, status_cxx)
+        checker.same("non-dev /api/norecoil body", parsed_py, parsed_cxx)
+
+        status_py, parsed_py, _ = post_json(
+            PY_WEB_PORT, "/api/norecoil", "963007", {"command": "status"})
+        status_cxx, parsed_cxx, _ = post_json(
+            CXX_WEB_PORT, "/api/norecoil", "963007", {"command": "status"})
+        checker.equal("dev /api/norecoil status", status_py, status_cxx)
+        checker.same("dev /api/norecoil body", parsed_py, parsed_cxx)
+
+        status_py, parsed_py, _ = post_json(
+            PY_WEB_PORT, "/api/norecoil", "963007", {"command": "rm -rf /"})
+        status_cxx, parsed_cxx, _ = post_json(
+            CXX_WEB_PORT, "/api/norecoil", "963007", {"command": "rm -rf /"})
+        checker.equal("bad norecoil command", status_py, status_cxx)
+        checker.same("bad norecoil body", parsed_py, parsed_cxx)
 
         status_py, parsed_py, _ = post_json(
             PY_WEB_PORT, "/api/map", py_token, {"map": "db.png"})

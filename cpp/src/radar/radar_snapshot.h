@@ -42,6 +42,8 @@ struct ActorSnapshotData {
   uint64_t invalid_fragments = 0;
 };
 
+// One raw Type=6 record, matching python/rwvg_actor_snapshot.py's record dict.
+jsonx::Json actor_record_to_json(const ActorRecord &record);
 jsonx::Json actor_snapshot_to_json(const ActorSnapshotData &snapshot);
 
 // local_player may be null when no utils snapshot is available.

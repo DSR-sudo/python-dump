@@ -60,12 +60,14 @@ ssh root@<router> 'chmod +x /etc/init.d/udp-receiver && \
 
 ```sh
 /root/python-dump/cpp/build/dma_webradar \
-    --headless --webradar --root=/root/python-dump
+    --headless --webradar --actorkinds --root=/root/python-dump
 ```
 
 - `--headless`：不进入交互控制台，收到 SIGTERM 正常退出（procd 下必需）。
-- `--webradar`：同时启动 HTTP 服务，默认 `0.0.0.0:34900`，端口可由
+- `--webradar`：启动网页雷达，默认 `0.0.0.0:34900`，端口可由
   `web/config.txt` 第一行覆盖。
+- `--actorkinds`：启动 Actor 分类监控页，默认 `0.0.0.0:34901`，端口可由
+  `web/actor_config.txt` 第一行覆盖，与雷达共享 `web/pwd.txt` 口令。
 - 只需要 UDP 接收、不提供网页时，把命令改成
   `--receiver-only --root=/root/python-dump`。
 

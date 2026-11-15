@@ -44,6 +44,7 @@ constexpr size_t kUdpRecvBuffer = 65536;
 const char *kRwbaseDecryptPrefix = "[CoordDecryptDebug][B64] ";
 const char *kCoordRawPrefix = "[COORDRAW][SEND] ";
 const char *kAimReplyPrefix = "[PMU][AIMCTL]";
+const char *kNorecoilReplyPrefix = "[PMU][NORECOIL]";
 
 double now_monotonic() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
@@ -405,7 +406,7 @@ void DMACore::receiver_loop() {
 
 void DMACore::process_packet(uint8_t packet_type, std::string_view payload) {
   if (packet_type == kPacketLog) {
-    capture_aim_reply(payload);
+    capture_runtime_reply(payload);
     try {
       process_log_packet(payload);
     } catch (...) {
@@ -615,7 +616,7 @@ size_t DMACore::send_to_driver(std::string_view payload) {
 // ---------------------------------------------------------------------------
 // Aim control
 // ---------------------------------------------------------------------------
-void DMACore::capture_aim_reply(std::string_view payload) {
+void DMACore::capture_runtime_reply(std::string_view payload) {
   std::string text(payload);
   // strip("\x00 \r\n\t") from both ends.
   auto is_trim = [](char c) {
@@ -626,16 +627,31 @@ void DMACore::capture_aim_reply(std::string_view payload) {
   while (begin < end && is_trim(text[begin])) ++begin;
   while (end > begin && is_trim(text[end - 1])) --end;
   text = text.substr(begin, end - begin);
-  const std::string prefix(kAimReplyPrefix);
-  if (!starts_with(text, prefix)) return;
-  std::lock_guard<std::mutex> guard(aim_reply_lock_);
-  ++aim_reply_seq_;
-  aim_reply_text_ = strip(text.substr(prefix.size()));
+  const std::string aim_prefix(kAimReplyPrefix);
+  const std::string norecoil_prefix(kNorecoilReplyPrefix);
+  /* Separate sequence counters: an AIM reply must never satisfy a NoRecoil
+   * waiter, and vice versa. */
+  if (starts_with(text, aim_prefix)) {
+    std::lock_guard<std::mutex> guard(aim_reply_lock_);
+    ++aim_reply_seq_;
+    aim_reply_text_ = strip(text.substr(aim_prefix.size()));
+    return;
+  }
+  if (starts_with(text, norecoil_prefix)) {
+    std::lock_guard<std::mutex> guard(norecoil_reply_lock_);
+    ++norecoil_reply_seq_;
+    norecoil_reply_text_ = strip(text.substr(norecoil_prefix.size()));
+  }
 }
 
 std::pair<uint64_t, std::string> DMACore::aim_reply_state() {
   std::lock_guard<std::mutex> guard(aim_reply_lock_);
   return {aim_reply_seq_, aim_reply_text_};
+}
+
+std::pair<uint64_t, std::string> DMACore::norecoil_reply_state() {
+  std::lock_guard<std::mutex> guard(norecoil_reply_lock_);
+  return {norecoil_reply_seq_, norecoil_reply_text_};
 }
 
 bool DMACore::send_aim_command(const std::string &command) {
@@ -658,6 +674,26 @@ std::optional<std::string> DMACore::send_aim_command_wait(
   const double deadline = now_monotonic() + timeout;
   while (now_monotonic() < deadline) {
     auto [seq, text] = aim_reply_state();
+    if (seq > seq0) return text;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return std::nullopt;
+}
+
+bool DMACore::send_norecoil_command(const std::string &command) {
+  /* Same text datagram channel and peer as the AIM commands, but the reply is
+   * captured under its own prefix/sequence. */
+  return send_aim_command(command);
+}
+
+std::optional<std::string> DMACore::send_norecoil_command_wait(
+    const std::string &command, double timeout) {
+  auto [seq0, ignored] = norecoil_reply_state();
+  (void)ignored;
+  if (!send_norecoil_command(command)) return std::nullopt;
+  const double deadline = now_monotonic() + timeout;
+  while (now_monotonic() < deadline) {
+    auto [seq, text] = norecoil_reply_state();
     if (seq > seq0) return text;
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }

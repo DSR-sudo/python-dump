@@ -21,7 +21,7 @@ python3 -u python/main.py --receiver-only
 | `main.py` | 交互控制台入口 | `cpp/src/main.cpp`（核心命令子集） |
 | `dma_core.py` | UDP 接收、RWVG 流、Type=6 快照、雷达状态 | `cpp/src/core/dma_core.*` |
 | `web_radar.py` | 网页雷达 HTTP 服务 | `cpp/src/web/web_radar.*`、`http/http_server.*` |
-| `web_actor_kinds.py` | 34901 Actor 分类监控服务 | 未移植 |
+| `web_actor_kinds.py` | 34901 Actor 分类监控服务 | `cpp/src/actorkinds/actor_kinds.*` |
 | `dma_command.py` | 控制台业务命令 | 未移植 |
 | `dma_api.py` | 内存读写/CR3/线程控制 API | 未移植（C++ 入口仅含 cr3/ping 等核心请求） |
 | `dma_protocol.py`、`rwvg_protocol.py`、`rwvg_actor_snapshot.py` | 协议打包与解析 | `cpp/src/protocol/protocol.*` |

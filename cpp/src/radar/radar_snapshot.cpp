@@ -1,6 +1,7 @@
 #include "radar/radar_snapshot.h"
 
 #include <unordered_set>
+#include <utility>
 
 #include "catalog/catalog.h"
 #include "catalog/item_descriptor.h"
@@ -175,6 +176,69 @@ bool is_ai_kind(const std::string &kind) {
   return false;
 }
 
+jsonx::Json actor_record_to_json(const ActorRecord &record) {
+  jsonx::Json pos = jsonx::Json::object();
+  pos.set("x", record.pos.x);
+  pos.set("y", record.pos.y);
+  pos.set("z", record.pos.z);
+
+  jsonx::Json position_bits = jsonx::Json::object();
+  position_bits.set("x", record.position_bits[0]);
+  position_bits.set("y", record.position_bits[1]);
+  position_bits.set("z", record.position_bits[2]);
+
+  jsonx::Json diagnostics = jsonx::Json::object();
+  diagnostics.set("attempts", record.attempts);
+  diagnostics.set("failures", record.failures);
+  diagnostics.set("first_failure", record.first_failure);
+
+  jsonx::Json out = jsonx::Json::object();
+  out.set("record_id", record.record_id);
+  out.set("kind", record.kind);
+  out.set("kind_name", record.kind_name);
+  out.set("mesh", record.mesh);
+  out.set("root_component", record.root_component);
+  out.set("player_state", record.player_state);
+  out.set("mesh_hex", "0x" + jsonx::format_hex_u64(record.mesh));
+  out.set("root_component_hex",
+          "0x" + jsonx::format_hex_u64(record.root_component));
+  out.set("player_state_hex", "0x" + jsonx::format_hex_u64(record.player_state));
+  out.set("pos", pos);
+  out.set("position_bits", position_bits);
+  out.set("position_source", record.position_source);
+  out.set("last_db_position_tsc", record.last_db_position_tsc);
+  out.set("team_id", record.team_id);
+  out.set("health_bits", record.health_bits);
+  out.set("max_health_bits", record.max_health_bits);
+  out.set("health", record.health);
+  out.set("max_health", record.max_health);
+  out.set("weapon_id", record.weapon_id);
+  out.set("weapon_id_hex", "0x" + jsonx::format_hex_u64(record.weapon_id));
+  out.set("hero_id", record.hero_id);
+  out.set("hero_id_hex", "0x" + jsonx::format_hex_u64(record.hero_id));
+  out.set("weapon_name", record.weapon_name);
+  out.set("hero_name", record.hero_name);
+  out.set("item_id", record.item_id);
+  out.set("item_id_hex", "0x" + jsonx::format_hex_u64(record.item_id));
+  out.set("item_quality", record.item_quality);
+  out.set("item_name", record.item_name);
+  out.set("direction_bits", record.direction_bits);
+  out.set("direction", record.direction);
+  out.set("view_pitch_bits", record.view_pitch_bits);
+  out.set("view_pitch", record.view_pitch);
+  out.set("has_view_pitch", (record.valid_fields & kActorHasViewPitch) != 0);
+  out.set("is_local", (record.valid_fields & kActorHasLocal) != 0);
+  out.set("helmet_level", record.helmet_level);
+  out.set("helmet_durability", record.helmet_durability);
+  out.set("helmet_max_durability", record.helmet_max_durability);
+  out.set("armor_level", record.armor_level);
+  out.set("armor_durability", record.armor_durability);
+  out.set("armor_max_durability", record.armor_max_durability);
+  out.set("valid_fields", record.valid_fields);
+  out.set("diagnostics", diagnostics);
+  return out;
+}
+
 jsonx::Json actor_snapshot_to_json(const ActorSnapshotData &snapshot) {
   jsonx::Json local_view = jsonx::Json::object();
   local_view.set("local_pawn", snapshot.local_view.local_pawn);
@@ -193,8 +257,14 @@ jsonx::Json actor_snapshot_to_json(const ActorSnapshotData &snapshot) {
   diagnostics.set("first_failure", snapshot.local_view.first_failure);
   local_view.set("diagnostics", diagnostics);
 
+  jsonx::Json actors = jsonx::Json::array();
+  actors.items().reserve(snapshot.actors.size());
+  for (const auto &record : snapshot.actors) {
+    actors.push_back(actor_record_to_json(record));
+  }
+
   jsonx::Json out = jsonx::Json::object();
-  out.set("actors", jsonx::Json::array());
+  out.set("actors", std::move(actors));
   out.set("count", snapshot.count);
   out.set("frames", snapshot.frames);
   out.set("last_ts", snapshot.last_ts);

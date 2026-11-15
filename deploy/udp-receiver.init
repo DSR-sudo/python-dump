@@ -6,13 +6,13 @@ USE_PROCD=1
 
 start_service() {
     procd_open_instance
-    # 默认：后台接收 UDP 并提供 WebRadar（HTTP，默认 34900）。
+    # 默认：后台接收 UDP，并提供 WebRadar(34900) 与 ActorKinds(34901)。
     # 只需收包、不要网页时改成：
     #   ... --receiver-only --root=/root/python-dump
     # 旧 Python 实现：
     #   /usr/bin/python3 -u /root/python-dump/python/main.py --receiver-only
     procd_set_param command /root/python-dump/cpp/build/dma_webradar \
-        --headless --webradar --root=/root/python-dump
+        --headless --webradar --actorkinds --root=/root/python-dump
     procd_set_param respawn 3600 5 5
     procd_set_param stdout 1
     procd_set_param stderr 1

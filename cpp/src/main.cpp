@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 
+#include "actorkinds/actor_kinds.h"
 #include "core/dma_core.h"
 #include "log/session_log.h"
 #include "web/web_radar.h"
@@ -60,7 +61,8 @@ void print_banner() {
   con::print_line("");
   con::print_line("============================================================");
   con::print_line("  DMA plaintext UDP console / WebRadar (C++ build)");
-  con::print_line("  status | watch | webradar start|stop|status | aim ...");
+  con::print_line(
+      "  status | watch | webradar/actorkinds start|stop|status | aim ...");
   con::print_line("============================================================");
   con::print_line("");
 }
@@ -71,7 +73,10 @@ void print_help() {
   con::print_line("  watch                  refresh state every 2s (Ctrl-C returns)");
   con::print_line("  webradar start [PORT]  start the HTTP radar service");
   con::print_line("  webradar stop|status   stop or show the radar service");
+  con::print_line("  actorkinds start [PORT] start the ActorKinds monitor (34901)");
+  con::print_line("  actorkinds stop|status stop or show the ActorKinds monitor");
   con::print_line("  aim <cmd>              send an AIM hot command to the driver");
+  con::print_line("  norecoil on|off|status send a NoRecoil hot command (independent)");
   con::print_line("  stream_stats           print RWVG stream counters");
   con::print_line("  help | exit            this help / quit");
 }
@@ -82,6 +87,7 @@ int main(int argc, char **argv) {
   bool receiver_only = false;
   bool headless = false;
   std::optional<int> auto_webradar_port;
+  std::optional<int> auto_actorkinds_port;
   std::optional<std::string> root_override;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -98,11 +104,21 @@ int main(int argc, char **argv) {
         std::cerr << "invalid --webradar port\n";
         return 2;
       }
+    } else if (arg == "--actorkinds") {
+      auto_actorkinds_port = 34901;
+    } else if (arg.rfind("--actorkinds=", 0) == 0) {
+      try {
+        auto_actorkinds_port =
+            std::stoi(arg.substr(std::string("--actorkinds=").size()));
+      } catch (...) {
+        std::cerr << "invalid --actorkinds port\n";
+        return 2;
+      }
     } else if (arg.rfind("--root=", 0) == 0) {
       root_override = arg.substr(std::string("--root=").size());
     } else if (arg == "--help" || arg == "-h") {
       std::cout << "usage: dma_webradar [--receiver-only] [--headless] "
-                   "[--webradar[=PORT]] [--root=DIR]\n";
+                   "[--webradar[=PORT]] [--actorkinds[=PORT]] [--root=DIR]\n";
       return 0;
     } else {
       std::cerr << "unknown argument: " << arg << "\n";
@@ -145,10 +161,14 @@ int main(int argc, char **argv) {
 
   std::unique_ptr<dma::DMACore> core;
   std::unique_ptr<dma::WebRadarService> web_radar;
+  std::unique_ptr<dma::ActorkindsService> actorkinds;
   try {
     core = std::make_unique<dma::DMACore>(session_log.get());
     web_radar = std::make_unique<dma::WebRadarService>(
         *core, 34900, root_override.value_or(""));
+    // Constructed after WebRadarService so it reuses the same web/pwd.txt token.
+    actorkinds =
+        std::make_unique<dma::ActorkindsService>(*core, 34901, root_dir);
   } catch (const std::exception &error) {
     con::print_line(std::string("[-] ") + error.what());
     return 1;
@@ -161,6 +181,13 @@ int main(int argc, char **argv) {
     con::print_line("WebRadar " + message);
   }
 
+  bool actorkinds_started = false;
+  if (auto_actorkinds_port.has_value()) {
+    auto [ok, message] = actorkinds->start(auto_actorkinds_port);
+    actorkinds_started = ok;
+    con::print_line("ActorKinds " + message);
+  }
+
   if (headless) {
     if (auto_webradar_port.has_value() && !webradar_started) {
       con::print_line("[-] Headless mode: WebRadar failed to start");
@@ -168,13 +195,22 @@ int main(int argc, char **argv) {
       con::set_session_log(nullptr);
       return 1;
     }
-    if (!auto_webradar_port.has_value()) {
-      con::print_line("[*] Headless mode: UDP only (pass --webradar to serve HTTP)");
+    if (auto_actorkinds_port.has_value() && !actorkinds_started) {
+      con::print_line("[-] Headless mode: ActorKinds failed to start");
+      web_radar->stop();
+      core->shutdown();
+      con::set_session_log(nullptr);
+      return 1;
+    }
+    if (!auto_webradar_port.has_value() && !auto_actorkinds_port.has_value()) {
+      con::print_line(
+          "[*] Headless mode: UDP only (pass --webradar/--actorkinds to serve HTTP)");
     }
     con::print_line("Headless mode ready (SIGTERM to stop)");
     while (!g_interrupted.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    actorkinds->stop();
     web_radar->stop();
     core->shutdown();
     con::set_session_log(nullptr);
@@ -239,6 +275,34 @@ int main(int argc, char **argv) {
       } else {
         con::print_line("Usage: webradar <start/stop/status> [Port]");
       }
+    } else if (command == "actorkinds") {
+      const std::string action = args.empty() ? "status" : args[0];
+      if (action == "status") {
+        jsonx::Json status = actorkinds->status();
+        con::print_line(
+            "ActorKinds " +
+            std::string(status.get("running").truthy() ? "running" : "stopped") +
+            " on 0.0.0.0:" + std::to_string(status.get("port").as_int(0)) +
+            " token=" + status.get("password").as_string_or("") +
+            " pwd=" + status.get("pwd_path").as_string_or(""));
+      } else if (action == "start") {
+        std::optional<int> port;
+        if (args.size() >= 2) {
+          try {
+            port = std::stoi(args[1]);
+          } catch (...) {
+            con::print_line("Usage: actorkinds <start/stop/status> [Port]");
+            continue;
+          }
+        }
+        auto [ok, message] = actorkinds->start(port);
+        con::print_line("ActorKinds " + message);
+      } else if (action == "stop") {
+        auto [ok, message] = actorkinds->stop();
+        con::print_line("ActorKinds " + message);
+      } else {
+        con::print_line("Usage: actorkinds <start/stop/status> [Port]");
+      }
     } else if (command == "aim") {
       if (args.empty()) {
         con::print_line("usage: aim on|off|status | aim map <name> | "
@@ -255,6 +319,23 @@ int main(int argc, char **argv) {
                                : "no live peer: client not connected yet");
         } catch (const std::exception &error) {
           con::print_line(std::string("aim send failed: ") + error.what());
+        }
+      }
+    } else if (command == "norecoil") {
+      if (args.empty()) {
+        con::print_line("usage: norecoil on|off|status");
+      } else {
+        std::string joined;
+        for (size_t i = 0; i < args.size(); ++i) {
+          if (i) joined += " ";
+          joined += args[i];
+        }
+        try {
+          const bool sent = core->send_norecoil_command("norecoil " + joined);
+          con::print_line(sent ? "norecoil command sent"
+                               : "no live peer: client not connected yet");
+        } catch (const std::exception &error) {
+          con::print_line(std::string("norecoil send failed: ") + error.what());
         }
       }
     } else if (command == "stream_stats") {
@@ -310,6 +391,7 @@ int main(int argc, char **argv) {
     }
   }
 
+  actorkinds->stop();
   web_radar->stop();
   core->shutdown();
   con::set_session_log(nullptr);

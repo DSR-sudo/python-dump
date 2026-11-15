@@ -22,6 +22,7 @@ add_executable(dma_webradar
   src/log/session_log.cpp
   src/http/http_server.cpp
   src/web/web_radar.cpp
+  src/actorkinds/actor_kinds.cpp
 )
 
 target_include_directories(dma_webradar PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

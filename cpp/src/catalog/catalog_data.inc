@@ -6636,6 +6636,7 @@ static const CatalogNameEntry kHeroNames[] = {
     {88000000049ULL, "小弟A"},
     {88000000050ULL, "小弟B"},
     {88000000051ULL, "旅人"},
+    {88000000052ULL, "野火"},
 };
 
 static const CatalogNameEntry kWeaponNames[] = {
@@ -6749,7 +6750,7 @@ static const CatalogNameEntry kWeaponNames[] = {
     {5484ULL, "刀"},
     {5485ULL, "刀"},
     {5486ULL, "刀"},
-    {5487ULL, "刀"},
+    {5487ULL, "持盾"},
     {5488ULL, "刀"},
     {5489ULL, "刀"},
     {5490ULL, "刀"},
@@ -6776,6 +6777,9 @@ static const CatalogNameEntry kWeaponNames[] = {
     {10373ULL, "速凝掩体"},
     {10374ULL, "燃烧弹"},
     {10377ULL, "粘性炸弹"},
+    {10386ULL, "致盲烟雾手雷"},
+    {10390ULL, "手雷"},
+    {10398ULL, "飞鸟"},
     {10817ULL, "SVCH"},
     {20866ULL, "QSZ92G"},
     {20867ULL, ".357"},
@@ -6785,6 +6789,7 @@ static const CatalogNameEntry kWeaponNames[] = {
     {20874ULL, "G17"},
     {20894ULL, "激素枪"},
     {20897ULL, "M1911"},
+    {21222ULL, "声波陷阱"},
     {24833ULL, "MP5"},
     {24834ULL, "P90"},
     {24835ULL, "Vector"},
@@ -6831,6 +6836,8 @@ static const CatalogNameEntry kWeaponNames[] = {
     {51884ULL, "MCXLT"},
     {51885ULL, "AR57"},
     {51889ULL, "RM277"},
+    {51891ULL, "MDR突击步枪"},
+    {51892ULL, "AN94"},
     {55425ULL, "电击箭"},
     {55426ULL, "侦测箭"},
     {59399ULL, "火箭筒"},
