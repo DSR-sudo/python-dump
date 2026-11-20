@@ -44,6 +44,7 @@ constexpr size_t kUdpRecvBuffer = 65536;
 const char *kRwbaseDecryptPrefix = "[CoordDecryptDebug][B64] ";
 const char *kCoordRawPrefix = "[COORDRAW][SEND] ";
 const char *kNorecoilReplyPrefix = "[PMU][NORECOIL]";
+const char *kOutlineReplyPrefix = "[PMU][OUTLINE]";
 
 double now_monotonic() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
@@ -632,6 +633,12 @@ void DMACore::capture_runtime_reply(std::string_view payload) {
     ++norecoil_reply_seq_;
     norecoil_reply_text_ = strip(text.substr(norecoil_prefix.size()));
   }
+  const std::string outline_prefix(kOutlineReplyPrefix);
+  if (starts_with(text, outline_prefix)) {
+    std::lock_guard<std::mutex> guard(outline_reply_lock_);
+    ++outline_reply_seq_;
+    outline_reply_text_ = strip(text.substr(outline_prefix.size()));
+  }
 }
 
 std::pair<uint64_t, std::string> DMACore::norecoil_reply_state() {
@@ -648,6 +655,36 @@ bool DMACore::send_norecoil_command(const std::string &command) {
                           driver_endpoint_->length);
   if (sent < 0) throw std::runtime_error("UDP NoRecoil send failed");
   return true;
+}
+
+std::pair<uint64_t, std::string> DMACore::outline_reply_state() {
+  std::lock_guard<std::mutex> guard(outline_reply_lock_);
+  return {outline_reply_seq_, outline_reply_text_};
+}
+
+bool DMACore::send_outline_command(const std::string &command) {
+  std::lock_guard<std::mutex> send_guard(send_lock_);
+  std::lock_guard<std::mutex> endpoint_guard(driver_endpoint_lock_);
+  if (!driver_endpoint_) return false;
+  ssize_t sent = ::sendto(sock_, command.data(), command.size(), 0,
+                          reinterpret_cast<const sockaddr *>(&driver_endpoint_->storage),
+                          driver_endpoint_->length);
+  if (sent < 0) throw std::runtime_error("UDP outline send failed");
+  return true;
+}
+
+std::optional<std::string> DMACore::send_outline_command_wait(
+    const std::string &command, double timeout) {
+  auto [seq0, ignored] = outline_reply_state();
+  (void)ignored;
+  if (!send_outline_command(command)) return std::nullopt;
+  const double deadline = now_monotonic() + timeout;
+  while (now_monotonic() < deadline) {
+    auto [seq, text] = outline_reply_state();
+    if (seq > seq0) return text;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return std::nullopt;
 }
 
 std::optional<std::string> DMACore::send_norecoil_command_wait(

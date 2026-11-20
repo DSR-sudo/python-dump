@@ -37,6 +37,20 @@ DEV_PASSWORD = "963007"
 NORECOIL_COMMANDS = frozenset(("on", "off", "status"))
 
 
+def _outline_command_allowed(command: str) -> bool:
+    """描边命令白名单：on/off/status/clear 或 set <mesh,...>（<=64 个十六进制）。"""
+    if command in ("on", "off", "status", "clear"):
+        return True
+    if command.startswith("set "):
+        rest = command[4:]
+        if not rest or len(rest) > 1600:
+            return False
+        if rest.count(",") + 1 > 64:
+            return False
+        return all(c in "0123456789abcdefABCDEFxX, \t" for c in rest)
+    return False
+
+
 def _norecoil_command_allowed(command: str) -> bool:
     parts = command.split()
     return len(parts) == 1 and parts[0].lower() in NORECOIL_COMMANDS
@@ -558,7 +572,8 @@ refresh();
 
             def do_POST(self):
                 parsed = urlparse(self.path)
-                if parsed.path not in ("/api/subscription", "/api/norecoil"):
+                if parsed.path not in ("/api/subscription", "/api/norecoil",
+                                       "/api/outline"):
                     self._send_json({"error": "Not Found"}, status=404)
                     return
                 query = parse_qs(parsed.query)
@@ -589,6 +604,24 @@ refresh();
                     try:
                         reply = service.core.send_norecoil_command_wait(
                             "norecoil " + command)
+                    except OSError:
+                        reply = None
+                    self._send_json({"ok": reply is not None,
+                                     "reply": reply or "no reply (client offline?)"},
+                                    status=200)
+                    return
+                if parsed.path == "/api/outline":
+                    # 描边筛选（dev 会话）：web 只筛选，读链+推表在 scan 客户端。
+                    if not self._is_dev_session(query_token=query_token):
+                        self._send_json({"error": "Forbidden"}, status=403)
+                        return
+                    command = str(payload.get("command") or "").strip()
+                    if not _outline_command_allowed(command):
+                        self._send_json({"error": "Bad command"}, status=400)
+                        return
+                    try:
+                        reply = service.core.send_outline_command_wait(
+                            "outline " + command)
                     except OSError:
                         reply = None
                     self._send_json({"ok": reply is not None,

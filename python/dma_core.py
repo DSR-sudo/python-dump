@@ -114,6 +114,10 @@ class DMACore:
         self._norecoil_reply_lock = threading.Lock()
         self._norecoil_reply_seq = 0
         self._norecoil_reply_text = ""
+
+        self._outline_reply_lock = threading.Lock()
+        self._outline_reply_seq = 0
+        self._outline_reply_text = ""
         self.driver_state_lock = threading.Lock()
         self.driver_endpoint = None
         self.last_driver_packet_ts = 0.0
@@ -973,10 +977,41 @@ class DMACore:
             with self._norecoil_reply_lock:
                 self._norecoil_reply_seq += 1
                 self._norecoil_reply_text = text[len(norecoil_prefix):].strip()
+        outline_prefix = "[PMU][OUTLINE]"
+        if text.startswith(outline_prefix):
+            with self._outline_reply_lock:
+                self._outline_reply_seq += 1
+                self._outline_reply_text = text[len(outline_prefix):].strip()
 
     def norecoil_reply_state(self):
         with self._norecoil_reply_lock:
             return self._norecoil_reply_seq, self._norecoil_reply_text
+
+    def outline_reply_state(self):
+        with self._outline_reply_lock:
+            return self._outline_reply_seq, self._outline_reply_text
+
+    def send_outline_command_wait(self, command: str, timeout: float = 1.5):
+        """发送描边命令并等待 [PMU][OUTLINE] 应答(超时返回 None)。"""
+        seq0, _ = self.outline_reply_state()
+        if not self.send_outline_command(command):
+            return None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            seq, text = self.outline_reply_state()
+            if seq > seq0:
+                return text
+            time.sleep(0.05)
+        return None
+
+    def send_outline_command(self, command: str) -> bool:
+        data = command.encode("utf-8")
+        with self.send_lock, self.driver_endpoint_lock:
+            endpoint = self.driver_endpoint
+            if endpoint is None:
+                return False
+            self.sock.sendto(data, endpoint)
+        return True
 
     def send_norecoil_command_wait(self, command: str, timeout: float = 1.5):
         """发送 NoRecoil 命令并等待 [PMU][NORECOIL] 应答(超时返回 None)。"""

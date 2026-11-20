@@ -122,6 +122,13 @@ def main():
             elif cmd == "watch2file":
                 handler.handle_watch2file(args)
                 
+            elif cmd == "outline":
+                if not args:
+                    log("usage: outline on|off|status|clear|set <mesh,...>", "WARN")
+                else:
+                    sent = core.send_outline_command("outline " + " ".join(args))
+                    log("outline command sent" if sent
+                        else "no live peer: client not connected yet", "INFO")
             elif cmd == "norecoil":
                 if not args or args[0].lower() not in ("on", "off", "status"):
                     log("usage: norecoil on|off|status", "WARN")

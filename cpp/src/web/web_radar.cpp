@@ -959,7 +959,8 @@ httpd::HttpResponse WebRadarService::handle_get(
 httpd::HttpResponse WebRadarService::handle_post(
     const httpd::HttpRequest &request, const std::string &path,
     const std::string &query_token) {
-  if (path != "/api/subscription" && path != "/api/norecoil") {
+  if (path != "/api/subscription" && path != "/api/norecoil" &&
+      path != "/api/outline") {
     jsonx::Json error = jsonx::Json::object();
     error.set("error", "Not Found");
     return json_response(error, 404);
@@ -1012,6 +1013,53 @@ httpd::HttpResponse WebRadarService::handle_post(
     std::optional<std::string> reply;
     try {
       reply = core_.send_norecoil_command_wait("norecoil " + command);
+    } catch (...) {
+      reply = std::nullopt;
+    }
+    jsonx::Json out = jsonx::Json::object();
+    out.set("ok", reply.has_value());
+    out.set("reply", reply.value_or("no reply (client offline?)"));
+    return json_response(out, 200);
+  }
+
+  if (path == "/api/outline") {
+    /* 中文：描边筛选（dev 会话）。on/off/status/clear 或 set <mesh,...>；
+     *       读链(mesh+0xE8)与推表都在 scan 客户端执行，这里只转发并等回复。
+     * English: outline filter (dev session). on/off/status/clear or
+     *          set <mesh,...>; the chain read (mesh+0xE8) and the kernel
+     *          table push both live in the scan client. */
+    if (!is_dev_session(request, query_token)) {
+      jsonx::Json error = jsonx::Json::object();
+      error.set("error", "Forbidden");
+      return json_response(error, 403);
+    }
+    std::string command = strip(python_str_or_empty(payload.get("command")));
+    /* Mesh 列表字符集约束：十六进制、0x 前缀、逗号与空白。 */
+    bool allowed = command == "on" || command == "off" ||
+                   command == "status" || command == "clear" ||
+                   command == "stats";
+    if (!allowed && command.rfind("set ", 0) == 0) {
+      const std::string list = command.substr(4);
+      allowed = !list.empty() && list.size() <= 1600;
+      size_t meshes = 1;
+      for (char c : list) {
+        const bool mesh_char =
+            (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+            (c >= 'A' && c <= 'F') || c == 'x' || c == 'X' ||
+            c == ',' || c == ' ' || c == '\t';
+        if (!mesh_char) { allowed = false; break; }
+        if (c == ',') ++meshes;
+      }
+      allowed = allowed && meshes <= 64;
+    }
+    if (!allowed) {
+      jsonx::Json error = jsonx::Json::object();
+      error.set("error", "Bad command");
+      return json_response(error, 400);
+    }
+    std::optional<std::string> reply;
+    try {
+      reply = core_.send_outline_command_wait("outline " + command);
     } catch (...) {
       reply = std::nullopt;
     }

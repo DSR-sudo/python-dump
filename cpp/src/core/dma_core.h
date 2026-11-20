@@ -85,6 +85,11 @@ class DMACore {
   std::optional<std::string> send_norecoil_command_wait(const std::string &command,
                                                         double timeout = 1.5);
 
+  // Outline (描边 v3.4) control: on|off|status|clear|set <mesh,...> ------------
+  bool send_outline_command(const std::string &command);
+  std::optional<std::string> send_outline_command_wait(const std::string &command,
+                                                       double timeout = 1.5);
+
   // Driver ------------------------------------------------------------------
   std::string format_status();
   void shutdown();
@@ -198,9 +203,10 @@ class DMACore {
   bool try_capture_region_log(const std::string &msg);
   void write_received_log(const std::string &message);
 
-  // NoRecoil hot-command replies
+  // NoRecoil / outline hot-command replies
   void capture_runtime_reply(std::string_view payload);
   std::pair<uint64_t, std::string> norecoil_reply_state();
+  std::pair<uint64_t, std::string> outline_reply_state();
 
   // misc helpers
   void write_deferred_console_line(const std::string &line);
@@ -223,6 +229,10 @@ class DMACore {
   std::mutex norecoil_reply_lock_;
   uint64_t norecoil_reply_seq_ = 0;
   std::string norecoil_reply_text_;
+
+  std::mutex outline_reply_lock_;
+  uint64_t outline_reply_seq_ = 0;
+  std::string outline_reply_text_;
 
   std::mutex main_status_lock_;
   std::optional<std::string> main_status_;

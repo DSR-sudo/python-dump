@@ -228,6 +228,7 @@
     <button id="outline-clear" type="button" style="padding:4px 10px;cursor:pointer;">清空表</button>
     <button id="outline-off" type="button" style="padding:4px 10px;cursor:pointer;">关</button>
     <button id="outline-status" type="button" style="padding:4px 10px;cursor:pointer;">状态</button>
+    <button id="outline-stats" type="button" style="padding:4px 10px;cursor:pointer;" title="命中计数器窗口（读即清零）：hits&gt;0 才证明表命中发生过；stale 非 0 站点已漂移须撤">计数</button>
   </div>
   <pre id="outline-out" style="white-space:pre-wrap;max-height:70px;overflow:auto;margin:4px 0 0;color:#db7;font-size:11px;"></pre>
 </div>
@@ -801,6 +802,7 @@
     document.getElementById('outline-clear').onclick = function () { outlineCmd('clear'); };
     document.getElementById('outline-off').onclick = function () { outlineCmd('off'); };
     document.getElementById('outline-status').onclick = function () { outlineCmd('status'); };
+    document.getElementById('outline-stats').onclick = function () { outlineCmd('stats'); };
     document.getElementById('outline-all').onclick = function () {
         Object.keys(outlineRowByKey).forEach(function (k) { outlineRowByKey[k].checked = true; outlineChecked.add(k); });
     };
