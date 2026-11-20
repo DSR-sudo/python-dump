@@ -214,12 +214,11 @@ class Checker:
 # ---------------------------------------------------------------------------
 # Test runtime
 # ---------------------------------------------------------------------------
-class AimResponder(threading.Thread):
+class PeerResponder(threading.Thread):
     def __init__(self, sock):
         super().__init__(daemon=True)
         self.sock = sock
         self.stop_event = threading.Event()
-        self.replies = []
 
     def run(self):
         self.sock.settimeout(0.2)
@@ -230,11 +229,7 @@ class AimResponder(threading.Thread):
                 continue
             except OSError:
                 break
-            if data.startswith(b"aim "):
-                self.replies.append(data.decode("utf-8", "replace"))
-                self.sock.sendto(b"\x01[PMU][AIMCTL] ok", peer)
-            elif data.startswith(b"norecoil "):
-                self.replies.append(data.decode("utf-8", "replace"))
+            if data.startswith(b"norecoil "):
                 self.sock.sendto(b"\x01[PMU][NORECOIL] ok", peer)
             elif len(data) == 1049:
                 magic, command = struct.unpack_from("<IB", data, 0)
@@ -264,7 +259,7 @@ def wait_for_http(port, token, timeout=10.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            status, _, _ = http_request(port, "GET", "/api/aim-state",
+            status, _, _ = http_request(port, "GET", "/api/session",
                                         {"X-Auth-Token": token})
             if status == 200:
                 return True
@@ -278,11 +273,13 @@ def main():
     root = Path(sys.argv[1]).resolve()
     binary = Path(sys.argv[2]).resolve()
     work = Path(tempfile.mkdtemp(prefix="dma_parity_"))
+    py_root = work / "python_root"
     cpp_root = work / "cpp_root"
-    (cpp_root / "web").mkdir(parents=True)
-    shutil.copy2(root / "web" / "config.txt", cpp_root / "web" / "config.txt")
-    shutil.copy2(root / "web" / "webpage.html", cpp_root / "web" / "webpage.html")
-    os.symlink(root / "image", cpp_root / "image")
+    for service_root in (py_root, cpp_root):
+        (service_root / "web").mkdir(parents=True)
+        for name in ("config.txt", "webpage.html"):
+            shutil.copy2(root / "web" / name, service_root / "web" / name)
+    os.environ["DMA_WEBRADAR_IMAGE_DIR"] = str(root / "image")
     cpp_pwd = cpp_root / "web" / "pwd.txt"
 
     os.environ["DMA_BIND_PORT"] = str(PY_UDP_PORT)
@@ -292,11 +289,12 @@ def main():
     from web_radar import WebRadarService
 
     py_core = DMACore(session_log=None)
-    py_service = WebRadarService(py_core, default_port=PY_WEB_PORT)
+    py_service = WebRadarService(py_core, default_port=PY_WEB_PORT,
+                                 root_dir=str(py_root))
     ok, message = py_service.start(port_override=PY_WEB_PORT)
     if not ok:
         raise SystemExit("python webradar failed: " + message)
-    py_token = (root / "web" / "pwd.txt").read_text()
+    py_token = (py_root / "web" / "pwd.txt").read_text()
 
     cpp_log = open(work / "cpp.log", "wb")
     cpp_env = dict(os.environ)
@@ -315,7 +313,7 @@ def main():
                 cpp_token = cpp_pwd.read_text()
                 if cpp_token:
                     status, _, _ = http_request(
-                        CXX_WEB_PORT, "GET", "/api/aim-state",
+                        CXX_WEB_PORT, "GET", "/api/session",
                         {"X-Auth-Token": cpp_token})
                     if status == 200:
                         break
@@ -327,7 +325,7 @@ def main():
 
         sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sender.bind(("127.0.0.1", 0))
-        responder = AimResponder(sender)
+        responder = PeerResponder(sender)
         responder.start()
 
         def send(frame):
@@ -463,45 +461,32 @@ def main():
         _, logs_cxx = get_json(CXX_WEB_PORT, "/api/logs", cpp_token)
         checker.same("/api/logs", logs_py, logs_cxx)
 
-        # 9. Auth / aim / map / 404 behaviour.
+        # 9. Session permissions and retired routes.
         status_py, _, _ = http_request(PY_WEB_PORT, "GET", "/api/data")
         status_cxx, _, _ = http_request(CXX_WEB_PORT, "GET", "/api/data")
         checker.equal("unauthorized /api/data", status_py, status_cxx)
 
-        status_py, parsed_py, _ = post_json(
-            PY_WEB_PORT, "/api/aim", py_token, {"command": "status"})
-        status_cxx, parsed_cxx, _ = post_json(
-            CXX_WEB_PORT, "/api/aim", cpp_token, {"command": "status"})
-        checker.equal("non-dev /api/aim status", status_py, status_cxx)
-        checker.same("non-dev /api/aim body", parsed_py, parsed_cxx)
-
-        status_py, parsed_py, _ = post_json(
-            PY_WEB_PORT, "/api/aim", "963007", {"command": "status"})
-        status_cxx, parsed_cxx, _ = post_json(
-            CXX_WEB_PORT, "/api/aim", "963007", {"command": "status"})
-        checker.equal("dev /api/aim status", status_py, status_cxx)
-        checker.same("dev /api/aim body", parsed_py, parsed_cxx)
-
-        status_py, parsed_py, _ = post_json(
-            PY_WEB_PORT, "/api/aim", "963007", {"command": "rm -rf /"})
-        status_cxx, parsed_cxx, _ = post_json(
-            CXX_WEB_PORT, "/api/aim", "963007", {"command": "rm -rf /"})
-        checker.equal("bad aim command", status_py, status_cxx)
-        checker.same("bad aim body", parsed_py, parsed_cxx)
-
-        status_py, parsed_py, _ = post_json(
-            PY_WEB_PORT, "/api/norecoil", py_token, {"command": "status"})
-        status_cxx, parsed_cxx, _ = post_json(
-            CXX_WEB_PORT, "/api/norecoil", cpp_token, {"command": "status"})
-        checker.equal("non-dev /api/norecoil status", status_py, status_cxx)
-        checker.same("non-dev /api/norecoil body", parsed_py, parsed_cxx)
-
-        status_py, parsed_py, _ = post_json(
-            PY_WEB_PORT, "/api/norecoil", "963007", {"command": "status"})
-        status_cxx, parsed_cxx, _ = post_json(
-            CXX_WEB_PORT, "/api/norecoil", "963007", {"command": "status"})
-        checker.equal("dev /api/norecoil status", status_py, status_cxx)
-        checker.same("dev /api/norecoil body", parsed_py, parsed_cxx)
+        for port, token in ((PY_WEB_PORT, py_token), (CXX_WEB_PORT, cpp_token)):
+            status, _, _ = http_request(port, "GET", "/api/session")
+            checker.equal(f"{port} unauthenticated session", status, 401)
+            for auth_token, dev in ((token, False), ("963007", True)):
+                status, session = get_json(port, "/api/session", auth_token)
+                checker.equal(f"{port} session status dev={dev}", status, 200)
+                checker.equal(f"{port} session body dev={dev}", session, {"dev": dev})
+                status, _, _ = http_request(
+                    port, "GET", "/api/aim-state", {"X-Auth-Token": auth_token})
+                checker.equal(f"{port} retired session URL dev={dev}", status, 404)
+                for path, payload in (("/api/aim", {"command": "status"}),
+                                      ("/api/map", {"map": "db.png"})):
+                    status, _, _ = post_json(port, path, auth_token, payload)
+                    checker.equal(f"{port} retired {path} dev={dev}", status, 404)
+                status, reply, _ = post_json(
+                    port, "/api/norecoil", auth_token, {"command": "status"})
+                checker.equal(f"{port} NoRecoil status dev={dev}",
+                              status, 200 if dev else 403)
+                if dev:
+                    checker.equal(f"{port} NoRecoil reply", reply,
+                                  {"ok": True, "reply": "ok"})
 
         status_py, parsed_py, _ = post_json(
             PY_WEB_PORT, "/api/norecoil", "963007", {"command": "rm -rf /"})
@@ -510,27 +495,12 @@ def main():
         checker.equal("bad norecoil command", status_py, status_cxx)
         checker.same("bad norecoil body", parsed_py, parsed_cxx)
 
-        status_py, parsed_py, _ = post_json(
-            PY_WEB_PORT, "/api/map", py_token, {"map": "db.png"})
-        status_cxx, parsed_cxx, _ = post_json(
-            CXX_WEB_PORT, "/api/map", cpp_token, {"map": "db.png"})
-        checker.equal("/api/map status", status_py, status_cxx)
-        checker.same("/api/map body", parsed_py, parsed_cxx)
-
         for path in ("/api/nope", "/nope"):
             status_py, _, _ = http_request(PY_WEB_PORT, "GET", path,
                                            {"X-Auth-Token": py_token})
             status_cxx, _, _ = http_request(CXX_WEB_PORT, "GET", path,
                                             {"X-Auth-Token": cpp_token})
             checker.equal(f"404 {path}", status_py, status_cxx)
-
-        status_py, parsed_py, _ = post_json(
-            PY_WEB_PORT, "/api/aim", py_token,
-            {"command": "status"}, {"X-Client-Id": "x"})
-        status_cxx, parsed_cxx, _ = post_json(
-            CXX_WEB_PORT, "/api/aim", cpp_token,
-            {"command": "status"}, {"X-Client-Id": "x"})
-        checker.equal("POST aim unauthorized body", status_py, status_cxx)
 
         # 10. Image auth + ETag conditional request.
         status_py, headers_py, body_py = http_request(
@@ -580,7 +550,7 @@ def main():
             connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
             saw = []
             for _ in range(2):
-                connection.request("GET", "/api/aim-state",
+                connection.request("GET", "/api/session",
                                    headers={"X-Auth-Token": token})
                 response = connection.getresponse()
                 saw.append((response.status, response.read()))

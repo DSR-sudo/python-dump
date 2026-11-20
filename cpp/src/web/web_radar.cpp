@@ -12,10 +12,8 @@
 #include <filesystem>
 #include <fstream>
 #include <random>
-#include <regex>
 #include <set>
 #include <sstream>
-#include <unordered_set>
 
 namespace dma {
 namespace {
@@ -24,7 +22,7 @@ constexpr int kDefaultWebRadarPort = 34900;
 constexpr size_t kMaxPostBody = 16384;
 constexpr size_t kMaxDecryptRecent = 120;
 constexpr const char *kExternalBaseDir = "/root/python-dump";
-constexpr const char *kAimDevPassword = "963007";
+constexpr const char *kDevPassword = "963007";
 
 const char *kFallbackHtml = R"HTML(<!DOCTYPE html>
 <html>
@@ -63,26 +61,6 @@ refresh();
 </script>
 </body>
 </html>)HTML";
-
-const std::unordered_set<std::string> &aim_set_keys() {
-  static const std::unordered_set<std::string> keys = {
-      "tick_ms", "scan_ms", "ai", "visible", "max_dist_cm", "fov_px",
-      "part", "disable_y", "min_px", "max_px", "reverse_px", "key_mode",
-      "suppress_side", "smooth_ms"};
-  return keys;
-}
-
-const std::map<std::string, std::string> &radar_map_models() {
-  static const std::map<std::string, std::string> models = {
-      {"db.png", "linghaodaba"},     {"cg.png", "changgongxigu"},
-      {"bks.png", "bakeshen"},       {"ht.png", "hangtianjidi"},
-      {"jy.png", "chaoxijianyu"},    {"jy_1f.png", "chaoxijianyu"},
-      {"jy_2f.png", "chaoxijianyu"}, {"jy_3f.png", "chaoxijianyu"},
-      {"jy_4f.png", "chaoxijianyu"}, {"az3.png", "az3"},
-      {"az3_in.png", "az3"},
-  };
-  return models;
-}
 
 bool is_space(char c) {
   return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
@@ -791,15 +769,15 @@ jsonx::Json WebRadarService::build_rwvg_data() {
 bool WebRadarService::is_authorized(const httpd::HttpRequest &request,
                                     const std::string &query_token) const {
   const std::string auth = request.header("x-auth-token");
-  return auth == password_ || auth == kAimDevPassword ||
-         query_token == password_ || query_token == kAimDevPassword;
+  return auth == password_ || auth == kDevPassword ||
+         query_token == password_ || query_token == kDevPassword;
 }
 
 bool WebRadarService::is_dev_session(const httpd::HttpRequest &request,
                                      const std::string &query_token) const {
   std::string token = request.header("x-auth-token");
   if (token.empty()) token = query_token;
-  return token == kAimDevPassword && token != password_;
+  return token == kDevPassword && token != password_;
 }
 
 std::string WebRadarService::client_id_of(const httpd::HttpRequest &request) {
@@ -820,29 +798,6 @@ bool WebRadarService::norecoil_command_allowed(const std::string &command) {
   std::transform(op.begin(), op.end(), op.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return op == "on" || op == "off" || op == "status";
-}
-
-bool WebRadarService::aim_command_allowed(const std::string &command) {
-  const auto parts = split_whitespace(command);
-  if (parts.empty()) return false;
-  std::string op = parts[0];
-  std::transform(op.begin(), op.end(), op.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  if (op == "on" || op == "off" || op == "status") return parts.size() == 1;
-  if (op == "map") {
-    return parts.size() == 2 &&
-           std::regex_match(parts[1], std::regex("[A-Za-z0-9_./-]{1,128}"));
-  }
-  if (op == "set") {
-    if (parts.size() != 3) return false;
-    std::string key = parts[1];
-    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
-      return static_cast<char>(std::tolower(c));
-    });
-    return aim_set_keys().count(key) > 0 &&
-           std::regex_match(parts[2], std::regex("[0-9.+-]{1,16}"));
-  }
-  return false;
 }
 
 httpd::HttpResponse WebRadarService::json_response(const jsonx::Json &payload,
@@ -922,7 +877,7 @@ httpd::HttpResponse WebRadarService::handle_get(
     return response;
   }
 
-  if (path == "/api/aim-state") {
+  if (path == "/api/session") {
     if (!is_authorized(request, query_token)) {
       jsonx::Json error = jsonx::Json::object();
       error.set("error", "Unauthorized");
@@ -1004,8 +959,7 @@ httpd::HttpResponse WebRadarService::handle_get(
 httpd::HttpResponse WebRadarService::handle_post(
     const httpd::HttpRequest &request, const std::string &path,
     const std::string &query_token) {
-  if (path != "/api/subscription" && path != "/api/map" && path != "/api/aim" &&
-      path != "/api/norecoil") {
+  if (path != "/api/subscription" && path != "/api/norecoil") {
     jsonx::Json error = jsonx::Json::object();
     error.set("error", "Not Found");
     return json_response(error, 404);
@@ -1042,34 +996,7 @@ httpd::HttpResponse WebRadarService::handle_post(
   }
   payload = std::move(*parsed);
 
-  if (path == "/api/aim") {
-    if (!is_dev_session(request, query_token)) {
-      jsonx::Json error = jsonx::Json::object();
-      error.set("error", "Forbidden");
-      return json_response(error, 403);
-    }
-    const std::string command =
-        strip(python_str_or_empty(payload.get("command")));
-    if (!aim_command_allowed(command)) {
-      jsonx::Json error = jsonx::Json::object();
-      error.set("error", "Bad command");
-      return json_response(error, 400);
-    }
-    std::optional<std::string> reply;
-    try {
-      reply = core_.send_aim_command_wait("aim " + command);
-    } catch (...) {
-      reply = std::nullopt;
-    }
-    jsonx::Json out = jsonx::Json::object();
-    out.set("ok", reply.has_value());
-    out.set("reply", reply.value_or("no reply (client offline?)"));
-    return json_response(out, 200);
-  }
-
   if (path == "/api/norecoil") {
-    /* NoRecoil is a separate hot-command family; it shares the dev gate and
-     * reply shape with /api/aim but never touches the aim engine. */
     if (!is_dev_session(request, query_token)) {
       jsonx::Json error = jsonx::Json::object();
       error.set("error", "Forbidden");
@@ -1091,33 +1018,6 @@ httpd::HttpResponse WebRadarService::handle_post(
     jsonx::Json out = jsonx::Json::object();
     out.set("ok", reply.has_value());
     out.set("reply", reply.value_or("no reply (client offline?)"));
-    return json_response(out, 200);
-  }
-
-  if (path == "/api/map") {
-    const std::string map_id = python_str_or_empty(payload.get("map"));
-    const auto &models = radar_map_models();
-    auto it = models.find(map_id);
-    if (it == models.end()) {
-      jsonx::Json error = jsonx::Json::object();
-      error.set("error", "Unknown map");
-      return json_response(error, 400);
-    }
-    const std::string model = it->second;
-    const bool dev = is_dev_session(request, query_token);
-    bool sent = false;
-    if (dev) {
-      try {
-        sent = core_.send_aim_command("aim map " + model);
-        core_.send_aim_command("aim set visible 1");
-      } catch (...) {
-        sent = false;
-      }
-    }
-    jsonx::Json out = jsonx::Json::object();
-    out.set("sent", sent);
-    out.set("model", model);
-    out.set("dev", dev);
     return json_response(out, 200);
   }
 

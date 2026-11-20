@@ -2,7 +2,6 @@
 import mimetypes
 import os
 import random
-import re
 import threading
 import time
 import zlib
@@ -34,53 +33,13 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     allow_reuse_address = True
 
 
-# 雷达底图 -> LModes 可见性模型(nika 上 /root/maps/<model>.bin)。
-# WebRadar 选中哪张底图,就把对应模型推给 client 热载(AIM MAP)。
-# aim 热命令白名单:/api/aim 只放行这些形式,任意文本不得直达 client。
-AIM_SET_KEYS = frozenset((
-    "tick_ms", "scan_ms", "ai", "visible", "max_dist_cm", "fov_px", "part",
-    "disable_y", "min_px", "max_px", "reverse_px", "key_mode",
-    "suppress_side", "smooth_ms",
-))
-AIM_DEV_PASSWORD = "963007"
-
-# NoRecoil 热命令白名单:独立于 aim,只有开关/状态三种形式。
+DEV_PASSWORD = "963007"
 NORECOIL_COMMANDS = frozenset(("on", "off", "status"))
 
 
 def _norecoil_command_allowed(command: str) -> bool:
     parts = command.split()
     return len(parts) == 1 and parts[0].lower() in NORECOIL_COMMANDS
-
-
-def _aim_command_allowed(command: str) -> bool:
-    parts = command.split()
-    if not parts:
-        return False
-    op = parts[0].lower()
-    if op in ("on", "off", "status"):
-        return len(parts) == 1
-    if op == "map":
-        return len(parts) == 2 and re.fullmatch(r"[A-Za-z0-9_.\-/]{1,128}", parts[1]) is not None
-    if op == "set":
-        return (len(parts) == 3 and parts[1].lower() in AIM_SET_KEYS
-                and re.fullmatch(r"[0-9.+-]{1,16}", parts[2]) is not None)
-    return False
-
-
-RADAR_MAP_MODELS = {
-    "db.png": "linghaodaba",
-    "cg.png": "changgongxigu",
-    "bks.png": "bakeshen",
-    "ht.png": "hangtianjidi",
-    "jy.png": "chaoxijianyu",
-    "jy_1f.png": "chaoxijianyu",
-    "jy_2f.png": "chaoxijianyu",
-    "jy_3f.png": "chaoxijianyu",
-    "jy_4f.png": "chaoxijianyu",
-    "az3.png": "az3",
-    "az3_in.png": "az3",
-}
 
 
 class WebRadarService:
@@ -565,15 +524,14 @@ refresh();
                 auth = self.headers.get("X-Auth-Token", "")
                 return (
                     auth == service.password
-                    or auth == "963007"
+                    or auth == DEV_PASSWORD
                     or query_token == service.password
-                    or query_token == "963007"
+                    or query_token == DEV_PASSWORD
                 )
 
             def _is_dev_session(self, query_token=""):
-                # 963007=开发密码;随机密码(service.password)会话不加载 aim、不发送数据。
                 token = self.headers.get("X-Auth-Token", "") or query_token
-                return token == AIM_DEV_PASSWORD and token != service.password
+                return token == DEV_PASSWORD and token != service.password
 
             def _client_id(self):
                 client_id = (self.headers.get("X-Client-Id", "") or "").strip()
@@ -600,8 +558,7 @@ refresh();
 
             def do_POST(self):
                 parsed = urlparse(self.path)
-                if parsed.path not in ("/api/subscription", "/api/map", "/api/aim",
-                                       "/api/norecoil"):
+                if parsed.path not in ("/api/subscription", "/api/norecoil"):
                     self._send_json({"error": "Not Found"}, status=404)
                     return
                 query = parse_qs(parsed.query)
@@ -621,25 +578,7 @@ refresh();
                 except Exception:
                     self._send_json({"error": "Bad Request"}, status=400)
                     return
-                if parsed.path == "/api/aim":
-                    # 开发密码专属热命令端点;普通随机密码一律 403,不发送任何数据。
-                    if not self._is_dev_session(query_token=query_token):
-                        self._send_json({"error": "Forbidden"}, status=403)
-                        return
-                    command = str(payload.get("command") or "").strip()
-                    if not _aim_command_allowed(command):
-                        self._send_json({"error": "Bad command"}, status=400)
-                        return
-                    try:
-                        reply = service.core.send_aim_command_wait("aim " + command)
-                    except OSError:
-                        reply = None
-                    self._send_json({"ok": reply is not None,
-                                     "reply": reply or "no reply (client offline?)"},
-                                    status=200)
-                    return
                 if parsed.path == "/api/norecoil":
-                    # 开发密码专属;与 /api/aim 共用鉴权但走独立命令和回包通道。
                     if not self._is_dev_session(query_token=query_token):
                         self._send_json({"error": "Forbidden"}, status=403)
                         return
@@ -654,28 +593,6 @@ refresh();
                         reply = None
                     self._send_json({"ok": reply is not None,
                                      "reply": reply or "no reply (client offline?)"},
-                                    status=200)
-                    return
-                if parsed.path == "/api/map":
-                    # 底图选择联动 aim 可见性模型:map=底图文件名 -> AIM MAP <model>。
-                    map_id = str(payload.get("map") or "")
-                    model = RADAR_MAP_MODELS.get(map_id)
-                    if model is None:
-                        self._send_json({"error": "Unknown map"}, status=400)
-                        return
-                    # 非开发会话:底图照常切换,但不向 client 发送任何 aim 数据。
-                    if self._is_dev_session(query_token=query_token):
-                        try:
-                            sent = service.core.send_aim_command(f"aim map {model}")
-                            # 换图即开可见性:map 进入 loading 后 set visible 1 合法,
-                            # 免去一个人人都会忘的手动步骤。
-                            service.core.send_aim_command("aim set visible 1")
-                        except OSError:
-                            sent = False
-                    else:
-                        sent = False
-                    self._send_json({"sent": bool(sent), "model": model,
-                                     "dev": self._is_dev_session(query_token=query_token)},
                                     status=200)
                     return
                 if not service.set_client_subscription(self._client_id(), payload):
@@ -719,8 +636,7 @@ refresh();
                     self.wfile.write(body)
                     return
 
-                if path == "/api/aim-state":
-                    # 前端探针:dev 会话才加载 aim 面板;普通会话仅得 dev=false。
+                if path == "/api/session":
                     if not self._is_authorized(query_token=query_token):
                         self._send_json({"error": "Unauthorized"}, status=401)
                         return

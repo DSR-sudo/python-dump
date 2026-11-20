@@ -62,7 +62,7 @@ void print_banner() {
   con::print_line("============================================================");
   con::print_line("  DMA plaintext UDP console / WebRadar (C++ build)");
   con::print_line(
-      "  status | watch | webradar/actorkinds start|stop|status | aim ...");
+      "  status | watch | webradar/actorkinds start|stop|status | norecoil on|off|status");
   con::print_line("============================================================");
   con::print_line("");
 }
@@ -75,7 +75,6 @@ void print_help() {
   con::print_line("  webradar stop|status   stop or show the radar service");
   con::print_line("  actorkinds start [PORT] start the ActorKinds monitor (34901)");
   con::print_line("  actorkinds stop|status stop or show the ActorKinds monitor");
-  con::print_line("  aim <cmd>              send an AIM hot command to the driver");
   con::print_line("  norecoil on|off|status send a NoRecoil hot command (independent)");
   con::print_line("  stream_stats           print RWVG stream counters");
   con::print_line("  help | exit            this help / quit");
@@ -302,24 +301,6 @@ int main(int argc, char **argv) {
         con::print_line("ActorKinds " + message);
       } else {
         con::print_line("Usage: actorkinds <start/stop/status> [Port]");
-      }
-    } else if (command == "aim") {
-      if (args.empty()) {
-        con::print_line("usage: aim on|off|status | aim map <name> | "
-                        "aim set <key> <value>");
-      } else {
-        std::string joined;
-        for (size_t i = 0; i < args.size(); ++i) {
-          if (i) joined += " ";
-          joined += args[i];
-        }
-        try {
-          const bool sent = core->send_aim_command("aim " + joined);
-          con::print_line(sent ? "aim command sent"
-                               : "no live peer: client not connected yet");
-        } catch (const std::exception &error) {
-          con::print_line(std::string("aim send failed: ") + error.what());
-        }
       }
     } else if (command == "norecoil") {
       if (args.empty()) {

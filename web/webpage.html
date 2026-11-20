@@ -199,6 +199,19 @@
         </div>
         <div id="ego-hint">点击 AI / 队友 / 敌人圆柱体切换视角 · 拖动画面微调 yaw / pitch · Esc 退出</div>
     </div>
+<div id="norecoil-panel" style="display:none;position:fixed;right:12px;bottom:44px;z-index:300;background:rgba(25,25,25,.94);border:1px solid #666;border-radius:6px;padding:8px 10px;font-size:12px;color:#ddd;max-width:360px;box-shadow:0 2px 10px rgba(0,0,0,.6);">
+  <div id="norecoil-panel-head" title="拖动移动面板" style="display:flex;align-items:center;gap:6px;margin-bottom:5px;cursor:move;user-select:none;touch-action:none;">
+    <div style="font-weight:bold;flex:1;">NoRecoil</div>
+    <button id="norecoil-panel-hide" type="button" title="隐藏面板" style="padding:1px 7px;cursor:pointer;background:#444;color:#ddd;border:1px solid #777;border-radius:3px;">–</button>
+  </div>
+  <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
+    <button id="norecoil-on" style="padding:4px 10px;cursor:pointer;">开</button>
+    <button id="norecoil-off" style="padding:4px 10px;cursor:pointer;">关</button>
+    <button id="norecoil-status" style="padding:4px 10px;cursor:pointer;">状态</button>
+  </div>
+  <pre id="norecoil-out" style="white-space:pre-wrap;max-height:70px;overflow:auto;margin:4px 0 0;color:#db7;font-size:11px;"></pre>
+</div>
+<button id="norecoil-panel-toggle" type="button" title="展开 NoRecoil 面板" style="display:none;position:fixed;right:12px;bottom:44px;z-index:300;padding:6px 12px;background:rgba(25,25,25,.94);color:#7c7;border:1px solid #666;border-radius:6px;font-size:12px;cursor:pointer;">NoRecoil</button>
     <script>
     const mapDimensions = {
         "db.png":  { width: 2949, height: 2266 },
@@ -900,12 +913,6 @@
         cancelMapGesture();
         if (currentMap !== mapId) { radarMotion.clear(); radarMarkers = []; map.innerHTML = ''; }
         currentMap = mapId;
-        // 选择底图时通知服务端:联动 nika client 热载对应 LModes 可见性模型。
-        fetch(`/api/map?token=${encodeURIComponent(authPassword())}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ map: mapId })
-        }).catch(() => {});
         applyMapBackground(currentMap);
         const dims = mapDimensions[mapId] || { width: 1000, height: 1000 };
         map.style.width = `${dims.width}px`;
@@ -2173,16 +2180,20 @@
         Array.from(el.children).forEach(c => c.classList.toggle('active', c.dataset.map === currentMap));
     }
 
-    // 会话探针：dev 会话（开发密码 963007）才显示校准按钮；普通随机密码会话隐藏。
-    function probeDevSession() {
-        if (!radarAuthed) return Promise.resolve();
-        return fetch('/api/aim-state?token=' + encodeURIComponent(authPassword()))
-            .then(r => r.ok ? r.json() : null)
-            .then(j => {
-                const calBtn = document.getElementById('calibrate-toggle');
-                if (calBtn) calBtn.classList.toggle('dev-visible', !!(j && j.dev));
-            })
-            .catch(() => {});
+    // 仅开发会话显示校准入口和 NoRecoil 面板。
+    async function probeDevSession() {
+        if (!radarAuthed) return;
+        const password = authPassword();
+        let session = null;
+        try {
+            const response = await fetch('/api/session', { headers: { 'X-Auth-Token': password } });
+            if (response.ok) session = await response.json();
+        } catch (_) {}
+        if (!radarAuthed || password !== authPassword()) return;
+        const dev = !!(session && session.dev);
+        const calBtn = document.getElementById('calibrate-toggle');
+        if (calBtn) calBtn.classList.toggle('dev-visible', dev);
+        setNorecoilAvailable(dev);
     }
 
 
@@ -2285,6 +2296,7 @@
         if (calibrateMode && typeof setCalibrateMode === 'function') setCalibrateMode(false);
         const calBtn = document.getElementById('calibrate-toggle');
         if (calBtn) calBtn.classList.remove('dev-visible'); // 锁定时隐藏校准入口
+        setNorecoilAvailable(false);
         updateFloorTabs();
         document.getElementById('auth-gate').classList.remove('hidden');
         document.getElementById('auth-error').style.display = showError ? 'block' : 'none';
@@ -2295,7 +2307,7 @@
         localStorage.setItem('authToken', authPassword());
         document.getElementById('auth-gate').classList.add('hidden');
         document.getElementById('auth-error').style.display = 'none';
-        probeDevSession(); // dev 会话（963007）才显示校准按钮
+        probeDevSession();
         selectMap(currentMap); // 此时才加载地图文件；selectMap 内部会发起首次数据拉取
         if (!pollLoopRunning) { pollLoopRunning = true; scheduleGameDataPoll(); }
         pushSubscription(true);
@@ -2320,6 +2332,86 @@
     }
 
     function loadAuth() { const savedPassword = localStorage.getItem('authToken'); if (savedPassword) { document.getElementById('auth-input').value = savedPassword; } }
+
+    const setNorecoilAvailable = (function () {
+        'use strict';
+        var panel = document.getElementById('norecoil-panel');
+        var norOut = document.getElementById('norecoil-out');
+        function norecoilCmd(command) {
+            fetch('/api/norecoil?token=' + encodeURIComponent(authPassword()), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: command })
+            }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; },
+                                                        function () { return { s: r.status, j: {} }; }); })
+              .then(function (res) {
+                norOut.textContent = res.j.reply || ('HTTP ' + res.s);
+              })
+              .catch(function () { norOut.textContent = 'request failed'; });
+        }
+        document.getElementById('norecoil-on').onclick = function () { norecoilCmd('on'); };
+        document.getElementById('norecoil-off').onclick = function () { norecoilCmd('off'); };
+        document.getElementById('norecoil-status').onclick = function () { norecoilCmd('status'); };
+        // ---- 面板可拖动 / 可隐藏 ----
+        // 拖动:按住标题栏整体移动(首次拖动从 right/bottom 定位切换为 left/top)。
+        // 隐藏:右上角 – 收起面板,右下角留 NoRecoil 按钮随时展开,位置记忆在本次会话内。
+        var head = document.getElementById('norecoil-panel-head');
+        var toggleBtn = document.getElementById('norecoil-panel-toggle');
+        var available = false, panelPos = null;
+        function applyPanelPos() {
+            if (!panelPos) return;
+            panel.style.left = panelPos.left + 'px';
+            panel.style.top = panelPos.top + 'px';
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+        }
+        function showPanel() {
+            panel.style.display = 'block';
+            applyPanelPos();
+            toggleBtn.style.display = 'none';
+        }
+        function hidePanel() {
+            panel.style.display = 'none';
+            toggleBtn.style.display = 'block';
+        }
+        toggleBtn.onclick = showPanel;
+        document.getElementById('norecoil-panel-hide').onclick = hidePanel;
+        head.addEventListener('pointerdown', function (e) {
+            if (e.button !== 0 && e.pointerType === 'mouse') return;
+            // 指针落在隐藏按钮上时不启动拖拽：setPointerCapture 会把后续指针事件
+            // （含合成 click）重定向到标题栏，按钮的 click 将永远收不到。
+            if (e.target && e.target.closest && e.target.closest('#norecoil-panel-hide')) return;
+            var rect = panel.getBoundingClientRect();
+            if (!panelPos) panelPos = { left: rect.left, top: rect.top };
+            var dx = e.clientX - rect.left, dy = e.clientY - rect.top;
+            head.setPointerCapture(e.pointerId);
+            function onMove(ev) {
+                panelPos.left = Math.max(0, Math.min(window.innerWidth - 60, ev.clientX - dx));
+                panelPos.top = Math.max(0, Math.min(window.innerHeight - 30, ev.clientY - dy));
+                applyPanelPos();
+            }
+            function onUp() {
+                head.removeEventListener('pointermove', onMove);
+                head.removeEventListener('pointerup', onUp);
+                head.removeEventListener('pointercancel', onUp);
+            }
+            head.addEventListener('pointermove', onMove);
+            head.addEventListener('pointerup', onUp);
+            head.addEventListener('pointercancel', onUp);
+        });
+        return function (enabled) {
+            if (enabled === available) return;
+            available = enabled;
+            if (enabled) {
+                showPanel();
+                norecoilCmd('status');
+            } else {
+                panel.style.display = 'none';
+                toggleBtn.style.display = 'none';
+                norOut.textContent = '';
+            }
+        };
+    })();
 
     loadSelection();
     loadAuth();
@@ -2434,150 +2526,5 @@
         });
     });
     </script>
-<div id="aim-panel" style="display:none;position:fixed;right:12px;bottom:44px;z-index:300;background:rgba(25,25,25,.94);border:1px solid #666;border-radius:6px;padding:8px 10px;font-size:12px;color:#ddd;max-width:360px;box-shadow:0 2px 10px rgba(0,0,0,.6);">
-  <div id="aim-panel-head" title="拖动移动面板" style="display:flex;align-items:center;gap:6px;margin-bottom:5px;cursor:move;user-select:none;touch-action:none;">
-    <div style="font-weight:bold;flex:1;">AIM / NoRecoil 热命令 <span style="color:#7c7;font-size:10px;">dev</span></div>
-    <button id="aim-panel-hide" type="button" title="隐藏面板" style="padding:1px 7px;cursor:pointer;background:#444;color:#ddd;border:1px solid #777;border-radius:3px;">–</button>
-  </div>
-  <div id="aim-panel-body">
-  <div style="display:flex;gap:5px;flex-wrap:wrap;">
-    <button id="aim-on" style="padding:4px 10px;cursor:pointer;">开</button>
-    <button id="aim-off" style="padding:4px 10px;cursor:pointer;">关</button>
-    <button id="aim-status" style="padding:4px 10px;cursor:pointer;">状态</button>
-    <select id="aim-part" style="padding:3px;">
-      <option value="">部位…</option><option value="0">0 头</option><option value="1">1 胸</option>
-      <option value="2">2 肩腋</option><option value="3">3 腿脚</option>
-    </select>
-    <input id="aim-fov" placeholder="FOV" size="4" style="width:52px;padding:3px;">
-    <button id="aim-fov-set" style="padding:4px 8px;cursor:pointer;">设FOV</button>
-    <select id="aim-sup" style="padding:3px;">
-      <option value="">侧键抑制…</option><option value="0">关</option><option value="1">开</option>
-    </select>
-  </div>
-  <div style="margin-top:7px;padding-top:6px;border-top:1px solid #444;display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
-    <span style="color:#da7;font-weight:bold;">NoRecoil（独立）</span>
-    <button id="norecoil-on" style="padding:4px 10px;cursor:pointer;">开</button>
-    <button id="norecoil-off" style="padding:4px 10px;cursor:pointer;">关</button>
-    <button id="norecoil-status" style="padding:4px 10px;cursor:pointer;">状态</button>
-  </div>
-  <pre id="norecoil-out" style="white-space:pre-wrap;max-height:70px;overflow:auto;margin:4px 0 0;color:#db7;font-size:11px;"></pre>
-  <pre id="aim-out" style="white-space:pre-wrap;max-height:130px;overflow:auto;margin:5px 0 0;color:#9c9;font-size:11px;"></pre>
-  </div>
-</div>
-<button id="aim-panel-toggle" type="button" title="展开 AIM 面板" style="display:none;position:fixed;right:12px;bottom:44px;z-index:300;padding:6px 12px;background:rgba(25,25,25,.94);color:#7c7;border:1px solid #666;border-radius:6px;font-size:12px;cursor:pointer;">AIM</button>
-<script>
-(function () {
-    'use strict';
-    var panel = document.getElementById('aim-panel');
-    var out = document.getElementById('aim-out');
-    function aimCmd(command) {
-        fetch('/api/aim?token=' + encodeURIComponent(authPassword()), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: command })
-        }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; },
-                                                    function () { return { s: r.status, j: {} }; }); })
-          .then(function (res) {
-            out.textContent = res.j.reply || ('HTTP ' + res.s);
-          })
-          .catch(function () { out.textContent = 'request failed'; });
-    }
-    document.getElementById('aim-on').onclick = function () { aimCmd('on'); };
-    document.getElementById('aim-off').onclick = function () { aimCmd('off'); };
-    document.getElementById('aim-status').onclick = function () { aimCmd('status'); };
-    document.getElementById('aim-fov-set').onclick = function () {
-        var v = parseFloat(document.getElementById('aim-fov').value);
-        if (v > 0) aimCmd('set fov_px ' + v);
-    };
-    document.getElementById('aim-part').onchange = function () {
-        if (this.value !== '') aimCmd('set part ' + this.value);
-    };
-    document.getElementById('aim-sup').onchange = function () {
-        if (this.value !== '') aimCmd('set suppress_side ' + this.value);
-    };
-    // NoRecoil 是独立的热命令族:独立端点、独立输出区,不读写 aim 状态。
-    var norOut = document.getElementById('norecoil-out');
-    function norecoilCmd(command) {
-        fetch('/api/norecoil?token=' + encodeURIComponent(authPassword()), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: command })
-        }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; },
-                                                    function () { return { s: r.status, j: {} }; }); })
-          .then(function (res) {
-            norOut.textContent = res.j.reply || ('HTTP ' + res.s);
-          })
-          .catch(function () { norOut.textContent = 'request failed'; });
-    }
-    document.getElementById('norecoil-on').onclick = function () { norecoilCmd('on'); };
-    document.getElementById('norecoil-off').onclick = function () { norecoilCmd('off'); };
-    document.getElementById('norecoil-status').onclick = function () { norecoilCmd('status'); };
-    // ---- 面板可拖动 / 可隐藏 ----
-    // 拖动:按住标题栏整体移动(首次拖动从 right/bottom 定位切换为 left/top)。
-    // 隐藏:右上角 – 收起面板,右下角留 AIM 小按钮随时展开,位置记忆在本次会话内。
-    var head = document.getElementById('aim-panel-head');
-    var toggleBtn = document.getElementById('aim-panel-toggle');
-    var panelVisible = false, panelPos = null; // panelPos: {left, top} 拖动后的位置
-    function applyPanelPos() {
-        if (!panelPos) return;
-        panel.style.left = panelPos.left + 'px';
-        panel.style.top = panelPos.top + 'px';
-        panel.style.right = 'auto';
-        panel.style.bottom = 'auto';
-    }
-    function showPanel() {
-        panelVisible = true;
-        panel.style.display = 'block';
-        applyPanelPos();
-        toggleBtn.style.display = 'none';
-    }
-    function hidePanel() {
-        panelVisible = false;
-        panel.style.display = 'none';
-        toggleBtn.style.display = 'block';
-    }
-    toggleBtn.onclick = showPanel;
-    document.getElementById('aim-panel-hide').onclick = hidePanel;
-    head.addEventListener('pointerdown', function (e) {
-        if (e.button !== 0 && e.pointerType === 'mouse') return;
-        // 指针落在隐藏按钮上时不启动拖拽：setPointerCapture 会把后续指针事件
-        // （含合成 click）重定向到标题栏，按钮的 click 将永远收不到。
-        if (e.target && e.target.closest && e.target.closest('#aim-panel-hide')) return;
-        var rect = panel.getBoundingClientRect();
-        if (!panelPos) panelPos = { left: rect.left, top: rect.top };
-        var dx = e.clientX - rect.left, dy = e.clientY - rect.top;
-        head.setPointerCapture(e.pointerId);
-        function onMove(ev) {
-            panelPos.left = Math.max(0, Math.min(window.innerWidth - 60, ev.clientX - dx));
-            panelPos.top = Math.max(0, Math.min(window.innerHeight - 30, ev.clientY - dy));
-            applyPanelPos();
-        }
-        function onUp() {
-            head.removeEventListener('pointermove', onMove);
-            head.removeEventListener('pointerup', onUp);
-            head.removeEventListener('pointercancel', onUp);
-        }
-        head.addEventListener('pointermove', onMove);
-        head.addEventListener('pointerup', onUp);
-        head.addEventListener('pointercancel', onUp);
-    });
-    // 探针:鉴权通过后查询会话类型,仅开发密码(963007)挂载面板。
-    // 主脚本每次解锁都会调 probeDevSession;这里只在首次解锁时挂面板并拉一次状态。
-    var probeTimer = setInterval(function () {
-        if (!radarAuthed) return;
-        clearInterval(probeTimer);
-        fetch('/api/aim-state?token=' + encodeURIComponent(authPassword()))
-            .then(function (r) { return r.ok ? r.json() : null; })
-            .then(function (j) {
-                if (j && j.dev) {
-                    showPanel();
-                    aimCmd('status');
-                    norecoilCmd('status'); // 独立查询，不依赖 aim 状态
-                }
-            })
-            .catch(function () {});
-    }, 1000);
-})();
-</script>
 </body>
 </html>

@@ -27,7 +27,7 @@ function stubElement() {
 
 // 楼层配置 + 地图缓存切片（mapFloors ... applyMapBackground，位于密码门区域内）
 function floorsCacheFixture() {
-    const fetchCalls = [];
+    const fetchCalls = [], norecoilAvailability = [];
     const elements = { 'floor-tabs': stubElement(), 'calibrate-toggle': stubElement() };
     const context = vm.createContext({
         Math, JSON, Promise, Date, console,
@@ -39,23 +39,22 @@ function floorsCacheFixture() {
         currentMap: 'jy.png', radarAuthed: true, egoMode: false,
         map: { style: {} }, egoMapImages: {},
         authPassword: () => 'pw',
+        setNorecoilAvailable: enabled => norecoilAvailability.push(enabled),
         mapImageUrl: name => `/image/${name}?token=pw`,
         selectMap: () => {},
     });
     vm.runInContext(script.slice(script.indexOf('    const mapFloors ='),
         script.indexOf('    function lockRadar(')), context);
-    return { context, elements, fetchCalls };
+    return { context, elements, fetchCalls, norecoilAvailability };
 }
 
-test('floor config: every floor image has dimensions, calibration and aim model entries', () => {
+test('floor config: every floor image has dimensions and calibration entries', () => {
     const floorImages = [...script.matchAll(/map:\s*'([\w.]+)'/g)].map(m => m[1]);
-    const cppSource = fs.readFileSync(`${__dirname}/../cpp/src/web_radar.cpp`, 'utf8');
     assert.ok(floorImages.length >= 5, '至少应包含 jy 四层与 az3 内部图');
     for (const name of floorImages) {
         const key = name.replace('.', '\\.');
         assert.match(html, new RegExp(`"${key}"\\s*:\\s*\\{\\s*width:\\s*\\d+,\\s*height:\\s*\\d+`), `${name} 缺 mapDimensions 条目`);
         assert.match(html, new RegExp(`"${key}"\\s*:\\s*\\{\\s*point3D_1`), `${name} 缺 mapConverters 条目`);
-        assert.match(cppSource, new RegExp(`\\{"${key}",\\s*"[^"]+"\\}`), `${name} 缺 RADAR_MAP_MODELS 映射`);
     }
 });
 
@@ -99,16 +98,21 @@ test('applyMapBackground: cache miss falls back to server URL, hit uses objectUR
     assert.equal(fetchCalls.length, 1);
 });
 
-test('probeDevSession: only dev sessions reveal the calibrate button', async () => {
-    const { context, elements } = floorsCacheFixture();
+test('probeDevSession: only dev sessions reveal calibration and NoRecoil controls', async () => {
+    const { context, elements, norecoilAvailability } = floorsCacheFixture();
     const btn = elements['calibrate-toggle'];
     let reply = { dev: true };
-    context.fetch = async () => ({ ok: true, status: 200, json: async () => reply });
+    context.fetch = async (url, options) => {
+        assert.equal(url, '/api/session');
+        assert.equal(options.headers['X-Auth-Token'], 'pw');
+        return { ok: true, status: 200, json: async () => reply };
+    };
     await vm.runInContext('probeDevSession()', context);
     assert.equal(btn.classList.contains('dev-visible'), true);   // dev: 加 class 显示
     reply = { dev: false };
     await vm.runInContext('probeDevSession()', context);
     assert.equal(btn.classList.contains('dev-visible'), false);  // 非 dev: 摘掉 class
+    assert.deepEqual(norecoilAvailability, [true, false]);
     // CSS 必须同时具备默认隐藏与 .dev-visible 显示两条规则（防止回退到 none 的回归）
     assert.match(html, /#calibrate-toggle\s*\{\s*display:\s*none;\s*\}/);
     assert.match(html, /#calibrate-toggle\.dev-visible\s*\{\s*display:\s*inline-block;\s*\}/);

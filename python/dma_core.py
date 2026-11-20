@@ -111,11 +111,6 @@ class DMACore:
         self.driver_online = False
         self.driver_connection_state = DriverConnectionState.DISCONNECTED
         self.driver_endpoint_lock = threading.Lock()
-        # aim 热命令应答:[PMU][AIMCTL] LOG 包按序号缓存,/api/aim 同步取用。
-        self._aim_reply_lock = threading.Lock()
-        self._aim_reply_seq = 0
-        self._aim_reply_text = ""
-        # NoRecoil 独立应答通道:与 aim 的序号/文本互不影响。
         self._norecoil_reply_lock = threading.Lock()
         self._norecoil_reply_seq = 0
         self._norecoil_reply_text = ""
@@ -973,39 +968,15 @@ class DMACore:
 
     def _capture_runtime_reply(self, payload: bytes):
         text = payload.decode("utf-8", "replace").strip("\x00 \r\n\t")
-        # aim 与 norecoil 各用独立序号:任一方的回包不能唤醒另一方的等待。
-        aim_prefix = "[PMU][AIMCTL]"
         norecoil_prefix = "[PMU][NORECOIL]"
-        if text.startswith(aim_prefix):
-            with self._aim_reply_lock:
-                self._aim_reply_seq += 1
-                self._aim_reply_text = text[len(aim_prefix):].strip()
-            return
         if text.startswith(norecoil_prefix):
             with self._norecoil_reply_lock:
                 self._norecoil_reply_seq += 1
                 self._norecoil_reply_text = text[len(norecoil_prefix):].strip()
 
-    def aim_reply_state(self):
-        with self._aim_reply_lock:
-            return self._aim_reply_seq, self._aim_reply_text
-
     def norecoil_reply_state(self):
         with self._norecoil_reply_lock:
             return self._norecoil_reply_seq, self._norecoil_reply_text
-
-    def send_aim_command_wait(self, command: str, timeout: float = 1.5):
-        """发送热命令并等待 client 的下一条 [PMU][AIMCTL] 应答(超时返回 None)。"""
-        seq0, _ = self.aim_reply_state()
-        if not self.send_aim_command(command):
-            return None
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            seq, text = self.aim_reply_state()
-            if seq > seq0:
-                return text
-            time.sleep(0.05)
-        return None
 
     def send_norecoil_command_wait(self, command: str, timeout: float = 1.5):
         """发送 NoRecoil 命令并等待 [PMU][NORECOIL] 应答(超时返回 None)。"""
@@ -1021,15 +992,6 @@ class DMACore:
         return None
 
     def send_norecoil_command(self, command: str) -> bool:
-        # 同一条文本 UDP 通道、同一个对端;仅回包前缀/序号与 aim 分离。
-        return self.send_aim_command(command)
-
-    def send_aim_command(self, command: str) -> bool:
-        # 中文：向当前对端(本部署即 nika 上的 PMU client)发送文本 AIM 命令;
-        #       应答以 LOG 包异步回来,走既有后台消息显示。
-        # English: Send a text AIM command to the live peer (the nika PMU
-        #          client in this deployment); replies come back as LOG
-        #          packets through the existing background-line display.
         data = command.encode("utf-8")
         with self.send_lock, self.driver_endpoint_lock:
             endpoint = self.driver_endpoint

@@ -122,16 +122,7 @@ def main():
             elif cmd == "watch2file":
                 handler.handle_watch2file(args)
                 
-            elif cmd == "aim":
-                # 运行时 aim 控制:应答以 [PMU][AIMCTL] 后台行回显(输入时挂起,回车刷新)。
-                if not args:
-                    log("usage: aim on|off|status | aim map <name> | aim set <key> <value>", "WARN")
-                else:
-                    sent = core.send_aim_command("aim " + " ".join(args))
-                    log("aim command sent" if sent else "no live peer: client not connected yet",
-                        None if sent else "WARN")
             elif cmd == "norecoil":
-                # 独立于 aim 的常驻无后座开关;应答以 [PMU][NORECOIL] 后台行回显。
                 if not args or args[0].lower() not in ("on", "off", "status"):
                     log("usage: norecoil on|off|status", "WARN")
                 else:

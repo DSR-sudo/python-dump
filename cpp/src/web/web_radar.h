@@ -76,7 +76,6 @@ class WebRadarService {
   bool is_dev_session(const httpd::HttpRequest &request,
                       const std::string &query_token) const;
   static std::string client_id_of(const httpd::HttpRequest &request);
-  static bool aim_command_allowed(const std::string &command);
   static bool norecoil_command_allowed(const std::string &command);
 
   static httpd::HttpResponse json_response(const jsonx::Json &payload,

@@ -43,7 +43,6 @@ constexpr size_t kUdpRecvBuffer = 65536;
 
 const char *kRwbaseDecryptPrefix = "[CoordDecryptDebug][B64] ";
 const char *kCoordRawPrefix = "[COORDRAW][SEND] ";
-const char *kAimReplyPrefix = "[PMU][AIMCTL]";
 const char *kNorecoilReplyPrefix = "[PMU][NORECOIL]";
 
 double now_monotonic() {
@@ -614,7 +613,7 @@ size_t DMACore::send_to_driver(std::string_view payload) {
 }
 
 // ---------------------------------------------------------------------------
-// Aim control
+// NoRecoil control
 // ---------------------------------------------------------------------------
 void DMACore::capture_runtime_reply(std::string_view payload) {
   std::string text(payload);
@@ -627,16 +626,7 @@ void DMACore::capture_runtime_reply(std::string_view payload) {
   while (begin < end && is_trim(text[begin])) ++begin;
   while (end > begin && is_trim(text[end - 1])) --end;
   text = text.substr(begin, end - begin);
-  const std::string aim_prefix(kAimReplyPrefix);
   const std::string norecoil_prefix(kNorecoilReplyPrefix);
-  /* Separate sequence counters: an AIM reply must never satisfy a NoRecoil
-   * waiter, and vice versa. */
-  if (starts_with(text, aim_prefix)) {
-    std::lock_guard<std::mutex> guard(aim_reply_lock_);
-    ++aim_reply_seq_;
-    aim_reply_text_ = strip(text.substr(aim_prefix.size()));
-    return;
-  }
   if (starts_with(text, norecoil_prefix)) {
     std::lock_guard<std::mutex> guard(norecoil_reply_lock_);
     ++norecoil_reply_seq_;
@@ -644,46 +634,20 @@ void DMACore::capture_runtime_reply(std::string_view payload) {
   }
 }
 
-std::pair<uint64_t, std::string> DMACore::aim_reply_state() {
-  std::lock_guard<std::mutex> guard(aim_reply_lock_);
-  return {aim_reply_seq_, aim_reply_text_};
-}
-
 std::pair<uint64_t, std::string> DMACore::norecoil_reply_state() {
   std::lock_guard<std::mutex> guard(norecoil_reply_lock_);
   return {norecoil_reply_seq_, norecoil_reply_text_};
 }
 
-bool DMACore::send_aim_command(const std::string &command) {
-  std::string data = command;
+bool DMACore::send_norecoil_command(const std::string &command) {
   std::lock_guard<std::mutex> send_guard(send_lock_);
   std::lock_guard<std::mutex> endpoint_guard(driver_endpoint_lock_);
   if (!driver_endpoint_) return false;
-  ssize_t sent = ::sendto(sock_, data.data(), data.size(), 0,
+  ssize_t sent = ::sendto(sock_, command.data(), command.size(), 0,
                           reinterpret_cast<const sockaddr *>(&driver_endpoint_->storage),
                           driver_endpoint_->length);
-  if (sent < 0) throw std::runtime_error("UDP aim send failed");
+  if (sent < 0) throw std::runtime_error("UDP NoRecoil send failed");
   return true;
-}
-
-std::optional<std::string> DMACore::send_aim_command_wait(
-    const std::string &command, double timeout) {
-  auto [seq0, ignored] = aim_reply_state();
-  (void)ignored;
-  if (!send_aim_command(command)) return std::nullopt;
-  const double deadline = now_monotonic() + timeout;
-  while (now_monotonic() < deadline) {
-    auto [seq, text] = aim_reply_state();
-    if (seq > seq0) return text;
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  }
-  return std::nullopt;
-}
-
-bool DMACore::send_norecoil_command(const std::string &command) {
-  /* Same text datagram channel and peer as the AIM commands, but the reply is
-   * captured under its own prefix/sequence. */
-  return send_aim_command(command);
 }
 
 std::optional<std::string> DMACore::send_norecoil_command_wait(

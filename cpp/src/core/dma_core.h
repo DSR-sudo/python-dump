@@ -80,12 +80,7 @@ class DMACore {
   jsonx::Json get_send_thread_history(int limit = 50);
   ActorSnapshotData get_actor_scan_snapshot();
 
-  // Aim control -------------------------------------------------------------
-  bool send_aim_command(const std::string &command);
-  std::optional<std::string> send_aim_command_wait(const std::string &command,
-                                                   double timeout = 1.5);
-
-  // NoRecoil control (independent of aim) -----------------------------------
+  // NoRecoil control -------------------------------------------------------------
   bool send_norecoil_command(const std::string &command);
   std::optional<std::string> send_norecoil_command_wait(const std::string &command,
                                                         double timeout = 1.5);
@@ -203,9 +198,8 @@ class DMACore {
   bool try_capture_region_log(const std::string &msg);
   void write_received_log(const std::string &message);
 
-  // aim / norecoil hot-command replies
+  // NoRecoil hot-command replies
   void capture_runtime_reply(std::string_view payload);
-  std::pair<uint64_t, std::string> aim_reply_state();
   std::pair<uint64_t, std::string> norecoil_reply_state();
 
   // misc helpers
@@ -225,10 +219,6 @@ class DMACore {
   std::mutex driver_endpoint_lock_;
   std::optional<SocketEndpoint> driver_endpoint_;
   double last_driver_packet_ts_ = 0.0;
-
-  std::mutex aim_reply_lock_;
-  uint64_t aim_reply_seq_ = 0;
-  std::string aim_reply_text_;
 
   std::mutex norecoil_reply_lock_;
   uint64_t norecoil_reply_seq_ = 0;

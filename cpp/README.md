@@ -82,8 +82,7 @@ webradar start [PORT]  启动网页雷达
 webradar stop|status   停止/查看
 actorkinds start [PORT] 启动 ActorKinds 监控页
 actorkinds stop|status  停止/查看
-aim <cmd>              向 client 发 AIM 热命令
-norecoil on|off|status 向 client 发 NoRecoil 热命令（独立于 aim）
+norecoil on|off|status 向 client 发 NoRecoil 热命令
 stream_stats           输出 RWVG 计数器
 cr3 <pid>              请求 CR3（UserDTB/KernelDTB/Base）
 cpueaxh_ping           发送 PingPong 命令并等待 ACK
@@ -97,14 +96,12 @@ help | exit
 | --- | --- | --- |
 | GET | `/` | `web/webpage.html` |
 | GET | `/api/data` | 雷达负载；支持 `X-Auth-Token`、`X-Client-Id`、`X-Data-Token`（304→204）、`nocache` |
-| GET | `/api/aim-state` | `{"dev": bool}` |
+| GET | `/api/session` | `{"dev": bool}` |
 | GET | `/api/rwvg` | 协议描述、统计、快照、日志 |
 | GET | `/api/logs` | 仅日志部分 |
 | GET | `/image/...` | 地图图片，带 ETag / 304 |
 | POST | `/api/subscription` | 每客户端过滤订阅（clean/resources/deadbox/qualities/ego） |
-| POST | `/api/map` | 底图联动 AIM `map <model>` |
-| POST | `/api/aim` | 开发口令专属热命令白名单 |
-| POST | `/api/norecoil` | 开发口令专属；`on`/`off`/`status`，与 aim 独立 |
+| POST | `/api/norecoil` | 开发口令专属；`on`/`off`/`status` |
 
 鉴权口令：`web/pwd.txt` 中的随机 6 位口令，或开发口令 `963007`。启动时生成并写入
 `web/pwd.txt`；端口读取 `web/config.txt` 第一行。

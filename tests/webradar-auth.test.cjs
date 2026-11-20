@@ -48,6 +48,7 @@ function gateFixture({ password = '', fetchResponse = null } = {}) {
         clientId: 'test-client',
         DATA_POLL_INTERVAL_MS: 16, DATA_REFRESH_FALLBACK_MS: 30000,
         currentMap: 'db.png',
+        setNorecoilAvailable: () => {},
         radarAuthed: false, pollLoopRunning: false,
         dataToken: null, dataChangedAt: 0, dataRequestSerial: 0, dataAppliedSerial: 0,
         // 解锁后 selectMap 走完整路径所需的本地桩
@@ -64,7 +65,7 @@ function gateFixture({ password = '', fetchResponse = null } = {}) {
     Object.defineProperty(context, 'spies', { value: spies });
     // 门控函数（authPassword/mapImageUrl/lockRadar/unlockRadar/tryAuth/loadAuth）
     vm.runInContext(script.slice(script.indexOf('    function authPassword('),
-        script.indexOf('    loadSelection();')), context);
+        script.indexOf('    const setNorecoilAvailable =')), context);
     // 轮询调度（解锁后才启动）
     vm.runInContext(script.slice(script.indexOf('    function scheduleGameDataPoll'),
         script.indexOf('    // 用上次保存的密码自动验证')), context);
@@ -121,6 +122,7 @@ test('correct password unlocks: gate hides, map loads with token, poll loop star
     assert.equal(f.timers.length, 1);
     // 验证请求带了密码头
     assert.equal(f.fetchCalls[0].options.headers['X-Auth-Token'], '123789');
+    assert.equal(f.fetchCalls.some(({ url }) => url.startsWith('/api/map')), false);
 });
 
 test('a 401 during polling re-locks the radar: map dropped, loop stops itself', async () => {
