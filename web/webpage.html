@@ -719,6 +719,7 @@
         outlineToggle.style.display = 'none';
     };
 
+    var outlineHistory = [];
     function outlineCmd(command) {
         fetch('/api/outline?token=' + encodeURIComponent(authPassword()), {
             method: 'POST',
@@ -727,9 +728,17 @@
         }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; },
                                                         function () { return { s: r.status, j: {} }; }); })
           .then(function (res) {
-              outlineOut.textContent = res.j.reply || ('HTTP ' + res.s);
+              /* 追加式输出：保留最近 6 条，避免 on 的报错被 set 的成功覆盖。 */
+              var line = '> ' + command + '\n  ' + (res.j.reply || ('HTTP ' + res.s));
+              outlineHistory.push(line);
+              if (outlineHistory.length > 6) outlineHistory.shift();
+              outlineOut.textContent = outlineHistory.join('\n');
+              outlineOut.scrollTop = outlineOut.scrollHeight;
           })
-          .catch(function () { outlineOut.textContent = 'request failed'; });
+          .catch(function () {
+              outlineHistory.push('> ' + command + '\n  request failed');
+              outlineOut.textContent = outlineHistory.join('\n');
+          });
     }
 
     /* 数据每轮刷新：仅当 mesh 键集合变化时才重建列表（重建会把正在被点击的
@@ -779,10 +788,14 @@
 
     function outlineApply() {
         var meshes = Array.from(outlineChecked);
-        if (!meshes.length) { outlineOut.textContent = '未勾选任何角色'; return; }
-        /* 描边选中 = 先挂载（幂等），再推表。 */
+        if (!meshes.length) {
+            outlineHistory.push('> 描边选中\n  未勾选任何角色');
+            outlineOut.textContent = outlineHistory.join('\n');
+            return;
+        }
+        /* 描边选中 = 先挂载（幂等），再推表；两步回复都会留在输出区。 */
         outlineCmd('on');
-        setTimeout(function () { outlineCmd('set ' + meshes.join(',')); }, 300);
+        setTimeout(function () { outlineCmd('set ' + meshes.join(',')); }, 800);
     }
     document.getElementById('outline-apply').onclick = outlineApply;
     document.getElementById('outline-clear').onclick = function () { outlineCmd('clear'); };
