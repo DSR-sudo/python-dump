@@ -212,6 +212,26 @@
   <pre id="norecoil-out" style="white-space:pre-wrap;max-height:70px;overflow:auto;margin:4px 0 0;color:#db7;font-size:11px;"></pre>
 </div>
 <button id="norecoil-panel-toggle" type="button" title="展开 NoRecoil 面板" style="display:none;position:fixed;right:12px;bottom:44px;z-index:300;padding:6px 12px;background:rgba(25,25,25,.94);color:#7c7;border:1px solid #666;border-radius:6px;font-size:12px;cursor:pointer;">NoRecoil</button>
+
+<!-- 描边筛选面板（dev 会话）：勾选角色 -> set <mesh,...>；scan 侧读 mesh+0xE8 推内核表 -->
+<div id="outline-panel" style="display:none;position:fixed;right:12px;bottom:190px;z-index:300;background:rgba(25,25,25,.94);border:1px solid #666;border-radius:6px;padding:8px 10px;font-size:12px;color:#ddd;max-width:360px;box-shadow:0 2px 10px rgba(0,0,0,.6);">
+  <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
+    <div style="font-weight:bold;flex:1;">描边筛选</div>
+    <button id="outline-panel-hide" type="button" title="隐藏面板" style="padding:1px 7px;cursor:pointer;background:#444;color:#ddd;border:1px solid #777;border-radius:3px;">–</button>
+  </div>
+  <div style="margin-bottom:4px;color:#aaa;">勾选要描边的角色（mesh 键，重建不漂移）：</div>
+  <div id="outline-entity-list" style="max-height:150px;overflow:auto;border:1px solid #444;border-radius:3px;padding:3px 5px;margin-bottom:5px;background:#111;"></div>
+  <div style="display:flex;gap:4px;flex-wrap:wrap;">
+    <button id="outline-apply" type="button" style="padding:4px 10px;cursor:pointer;">描边选中</button>
+    <button id="outline-all" type="button" style="padding:4px 10px;cursor:pointer;">全选</button>
+    <button id="outline-none" type="button" style="padding:4px 10px;cursor:pointer;">全不选</button>
+    <button id="outline-clear" type="button" style="padding:4px 10px;cursor:pointer;">清空表</button>
+    <button id="outline-off" type="button" style="padding:4px 10px;cursor:pointer;">关</button>
+    <button id="outline-status" type="button" style="padding:4px 10px;cursor:pointer;">状态</button>
+  </div>
+  <pre id="outline-out" style="white-space:pre-wrap;max-height:70px;overflow:auto;margin:4px 0 0;color:#db7;font-size:11px;"></pre>
+</div>
+<button id="outline-panel-toggle" type="button" title="展开描边面板" style="display:none;position:fixed;right:130px;bottom:44px;z-index:300;padding:6px 12px;background:rgba(25,25,25,.94);color:#e9c46a;border:1px solid #666;border-radius:6px;font-size:12px;cursor:pointer;">描边</button>
     <script>
     const mapDimensions = {
         "db.png":  { width: 2949, height: 2266 },
@@ -674,6 +694,109 @@
 
     window.addEventListener('resize', () => { if (isFollowing) recenterView(); });
 
+    // ---- 描边筛选面板（dev 会话；mesh 键勾选 -> /api/outline） ----
+    var outlinePanel = document.getElementById('outline-panel');
+    var outlineToggle = document.getElementById('outline-panel-toggle');
+    var outlineOut = document.getElementById('outline-out');
+    var outlineEntityList = document.getElementById('outline-entity-list');
+    var outlineAvailable = false;
+    var outlineChecked = new Set();
+    var outlineRowByKey = {};
+    var lastOutlineKeySig = '';
+
+    function setOutlineAvailable(on) {
+        outlineAvailable = !!on;
+        outlinePanel.style.display = on ? 'block' : 'none';
+        outlineToggle.style.display = on ? 'none' : 'none';
+        if (!on) outlinePanel.style.display = 'none';
+    }
+    document.getElementById('outline-panel-hide').onclick = function () {
+        outlinePanel.style.display = 'none';
+        outlineToggle.style.display = outlineAvailable ? 'inline-block' : 'none';
+    };
+    outlineToggle.onclick = function () {
+        outlinePanel.style.display = 'block';
+        outlineToggle.style.display = 'none';
+    };
+
+    function outlineCmd(command) {
+        fetch('/api/outline?token=' + encodeURIComponent(authPassword()), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: command })
+        }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; },
+                                                        function () { return { s: r.status, j: {} }; }); })
+          .then(function (res) {
+              outlineOut.textContent = res.j.reply || ('HTTP ' + res.s);
+          })
+          .catch(function () { outlineOut.textContent = 'request failed'; });
+    }
+
+    /* 数据每轮刷新：仅当 mesh 键集合变化时才重建列表（重建会把正在被点击的
+     * 复选框换掉，单选就会失效）；勾选状态按 mesh 键保持。 */
+    function outlineSyncEntities() {
+        if (!outlineEntityList) return;
+        var next = {};
+        (entitiesToRender || []).forEach(function (e) {
+            /* 订阅实体不带 mesh 字段：mesh 编码在稳定 key "mesh:<hex>" 里
+             * （actor-scan 实体才有；旧流实体无 mesh，跳过）。 */
+            var mesh = 0;
+            if (e && typeof e.key === 'string' && e.key.indexOf('mesh:') === 0)
+                mesh = parseInt(e.key.slice(5), 16) || 0;
+            if (!mesh) return;
+            next['0x' + mesh.toString(16)] = {
+                mesh: mesh,
+                label: (e.type || '?') + ' ' + (e.name || e.id || '') +
+                       ' [0x' + mesh.toString(16).toUpperCase() + ']'
+            };
+        });
+        // 移除已消失的勾选
+        outlineChecked.forEach(function (k) { if (!next[k]) outlineChecked.delete(k); });
+        var sig = Object.keys(next).sort().join('|');
+        if (sig === lastOutlineKeySig && outlineEntityList.children.length)
+            return;
+        lastOutlineKeySig = sig;
+        outlineEntityList.innerHTML = '';
+        outlineRowByKey = {};
+        Object.keys(next).sort().forEach(function (k) {
+            var row = document.createElement('label');
+            row.style.display = 'block';
+            row.style.cursor = 'pointer';
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = outlineChecked.has(k);
+            cb.onchange = function () {
+                if (cb.checked) outlineChecked.add(k); else outlineChecked.delete(k);
+            };
+            row.appendChild(cb);
+            row.appendChild(document.createTextNode(' ' + next[k].label));
+            outlineEntityList.appendChild(row);
+            outlineRowByKey[k] = cb;
+        });
+        if (!Object.keys(next).length)
+            outlineEntityList.innerHTML = '<div style="color:#777">（暂无带 mesh 的实体）</div>';
+    }
+
+    function outlineApply() {
+        var meshes = Array.from(outlineChecked);
+        if (!meshes.length) { outlineOut.textContent = '未勾选任何角色'; return; }
+        /* 描边选中 = 先挂载（幂等），再推表。 */
+        outlineCmd('on');
+        setTimeout(function () { outlineCmd('set ' + meshes.join(',')); }, 300);
+    }
+    document.getElementById('outline-apply').onclick = outlineApply;
+    document.getElementById('outline-clear').onclick = function () { outlineCmd('clear'); };
+    document.getElementById('outline-off').onclick = function () { outlineCmd('off'); };
+    document.getElementById('outline-status').onclick = function () { outlineCmd('status'); };
+    document.getElementById('outline-all').onclick = function () {
+        Object.keys(outlineRowByKey).forEach(function (k) { outlineRowByKey[k].checked = true; outlineChecked.add(k); });
+    };
+    document.getElementById('outline-none').onclick = function () {
+        Object.keys(outlineRowByKey).forEach(function (k) { outlineRowByKey[k].checked = false; });
+        outlineChecked.clear();
+    };
+    outlineSyncEntities();
+
     // ===============================================================
     // == 修改点 1: 重写鼠标滚轮缩放逻辑 ==
     // ===============================================================
@@ -740,6 +863,7 @@
             dataChangedAt = Date.now();
             if (token !== dataToken) dataToken = token;
             entitiesToRender = [...data.entities];
+            if (typeof outlineSyncEntities === 'function') outlineSyncEntities();
             itemsToRender = Array.isArray(data.items) ? [...data.items] : [];
             localPlayer = data.local_player;
             teammates = data.teammates;
@@ -2194,6 +2318,7 @@
         const calBtn = document.getElementById('calibrate-toggle');
         if (calBtn) calBtn.classList.toggle('dev-visible', dev);
         setNorecoilAvailable(dev);
+        setOutlineAvailable(dev);
     }
 
 
