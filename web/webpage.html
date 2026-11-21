@@ -213,7 +213,7 @@
 </div>
 <button id="norecoil-panel-toggle" type="button" title="展开 NoRecoil 面板" style="display:none;position:fixed;right:12px;bottom:44px;z-index:300;padding:6px 12px;background:rgba(25,25,25,.94);color:#7c7;border:1px solid #666;border-radius:6px;font-size:12px;cursor:pointer;">NoRecoil</button>
 
-<!-- 描边筛选面板（dev 会话）：勾选角色 -> set <mesh,...>；scan 侧读 mesh+0xE8 推内核表 -->
+<!-- 描边筛选面板（dev 会话）：自动=仅真人+距离筛选，或手动勾选 -> set <mesh,...>；scan 侧验证 mesh+0x480 代理链、外部写三字节并按读者身份挂读视图守卫 -->
 <div id="outline-panel" style="display:none;position:fixed;right:12px;bottom:190px;z-index:300;background:rgba(25,25,25,.94);border:1px solid #666;border-radius:6px;padding:8px 10px;font-size:12px;color:#ddd;max-width:360px;box-shadow:0 2px 10px rgba(0,0,0,.6);">
   <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
     <div style="font-weight:bold;flex:1;">描边筛选</div>
@@ -221,6 +221,11 @@
   </div>
   <div style="margin-bottom:4px;color:#aaa;">勾选要描边的角色（mesh 键，重建不漂移）：</div>
   <div id="outline-entity-list" style="max-height:150px;overflow:auto;border:1px solid #444;border-radius:3px;padding:3px 5px;margin-bottom:5px;background:#111;"></div>
+  <div style="margin-bottom:5px;display:flex;align-items:center;gap:10px;color:#bbb;">
+    <label style="cursor:pointer;"><input type="checkbox" id="outline-auto" checked> 自动</label>
+    <label style="cursor:pointer;"><input type="checkbox" id="outline-real" checked> 仅真人</label>
+    <label>≤<input type="number" id="outline-dist" min="0" max="500" step="5" value="20" style="width:52px;background:#111;color:#ddd;border:1px solid #555;border-radius:3px;padding:1px 3px;">m（0=不限）</label>
+  </div>
   <div style="display:flex;gap:4px;flex-wrap:wrap;">
     <button id="outline-apply" type="button" style="padding:4px 10px;cursor:pointer;">描边选中</button>
     <button id="outline-all" type="button" style="padding:4px 10px;cursor:pointer;">全选</button>
@@ -787,6 +792,80 @@
             outlineEntityList.innerHTML = '<div style="color:#777">（暂无带 mesh 的实体）</div>';
     }
 
+    /* ---- 自动筛选：仅真人 + 距离（本地玩家为圆心，平面距离，cm→m） ---- */
+    var outlineAuto = true, outlineRealOnly = true, outlineDistM = 20;
+    var outlineAutoSig = '', outlineAutoAt = 0, outlineArmed = false;
+    try {
+        outlineAuto = localStorage.getItem('outline.auto') !== '0';
+        outlineRealOnly = localStorage.getItem('outline.real') !== '0';
+        var storedDist = parseInt(localStorage.getItem('outline.dist') || '', 10);
+        if (Number.isFinite(storedDist) && storedDist >= 0 && storedDist <= 500) outlineDistM = storedDist;
+    } catch (e) { /* 私密模式等无 localStorage 时用默认值 */ }
+    function outlineBindAutoControls() {
+        var auto = document.getElementById('outline-auto');
+        var real = document.getElementById('outline-real');
+        var dist = document.getElementById('outline-dist');
+        if (!auto || !real || !dist) return;
+        auto.checked = outlineAuto;
+        real.checked = outlineRealOnly;
+        dist.value = outlineDistM;
+        auto.onchange = function () {
+            outlineAuto = auto.checked;
+            try { localStorage.setItem('outline.auto', outlineAuto ? '1' : '0'); } catch (e) {}
+            if (!outlineAuto) { outlineAutoSig = ''; }
+        };
+        real.onchange = function () {
+            outlineRealOnly = real.checked;
+            try { localStorage.setItem('outline.real', outlineRealOnly ? '1' : '0'); } catch (e) {}
+        };
+        dist.onchange = function () {
+            var v = parseInt(dist.value, 10);
+            if (!Number.isFinite(v) || v < 0 || v > 500) { v = 20; dist.value = 20; }
+            outlineDistM = v;
+            try { localStorage.setItem('outline.dist', String(v)); } catch (e) {}
+        };
+    }
+    outlineBindAutoControls();
+
+    /* 每轮数据到达后计算目标集合；只在签名变化且距上次推送 ≥1s 时下发，
+     * 防止移动目标反复穿越距离环刷爆命令通道。集合变空发 clear。 */
+    function outlineAutoTick() {
+        if (!outlineAuto || !outlineAvailable) return;
+        if (!localPlayer || !localPlayer.position) return;
+        var px = Number(localPlayer.position.x), py = Number(localPlayer.position.y);
+        if (!Number.isFinite(px) || !Number.isFinite(py)) return;
+        var set = [];
+        (entitiesToRender || []).forEach(function (e) {
+            if (!e || typeof e.key !== 'string' || e.key.indexOf('mesh:') !== 0) return;
+            if (e.is_local) return;
+            if (outlineRealOnly && e.type !== 'player') return;
+            if (outlineDistM > 0 && e.position) {
+                var dx = Number(e.position.x) - px, dy = Number(e.position.y) - py;
+                if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+                if (Math.sqrt(dx * dx + dy * dy) > outlineDistM * 100) return;
+            }
+            var mesh = parseInt(e.key.slice(5), 16);
+            if (mesh) set.push(mesh);
+        });
+        var sig = (outlineRealOnly ? 'R' : '-') + outlineDistM + ':' + set.join(',');
+        if (sig === outlineAutoSig) return;
+        var now = Date.now();
+        if (now - outlineAutoAt < 1000) return;
+        outlineAutoSig = sig;
+        outlineAutoAt = now;
+        if (!set.length) {
+            outlineCmd('clear');
+            return;
+        }
+        if (!outlineArmed) {
+            outlineCmd('on');
+            outlineArmed = true;
+            setTimeout(function () { outlineCmd('set ' + set.join(',')); }, 800);
+        } else {
+            outlineCmd('set ' + set.join(','));
+        }
+    }
+
     function outlineApply() {
         var meshes = Array.from(outlineChecked);
         if (!meshes.length) {
@@ -800,7 +879,11 @@
     }
     document.getElementById('outline-apply').onclick = outlineApply;
     document.getElementById('outline-clear').onclick = function () { outlineCmd('clear'); };
-    document.getElementById('outline-off').onclick = function () { outlineCmd('off'); };
+    document.getElementById('outline-off').onclick = function () {
+        outlineArmed = false;
+        outlineAutoSig = '';
+        outlineCmd('off');
+    };
     document.getElementById('outline-status').onclick = function () { outlineCmd('status'); };
     document.getElementById('outline-stats').onclick = function () { outlineCmd('stats'); };
     document.getElementById('outline-all').onclick = function () {
@@ -879,6 +962,7 @@
             if (token !== dataToken) dataToken = token;
             entitiesToRender = [...data.entities];
             if (typeof outlineSyncEntities === 'function') outlineSyncEntities();
+            if (typeof outlineAutoTick === 'function') outlineAutoTick();
             itemsToRender = Array.isArray(data.items) ? [...data.items] : [];
             localPlayer = data.local_player;
             teammates = data.teammates;
