@@ -880,8 +880,14 @@
     document.getElementById('outline-apply').onclick = outlineApply;
     document.getElementById('outline-clear').onclick = function () { outlineCmd('clear'); };
     document.getElementById('outline-off').onclick = function () {
+        /* 手动关 = 同时停掉自动模式：否则下一轮数据刷新会立刻重新 on+set，
+         * 客户端又去读 proxy。用户重新勾选“自动”后才会再次武装。 */
         outlineArmed = false;
         outlineAutoSig = '';
+        outlineAuto = false;
+        var autoBox = document.getElementById('outline-auto');
+        if (autoBox) autoBox.checked = false;
+        try { localStorage.setItem('outline.auto', '0'); } catch (e) {}
         outlineCmd('off');
     };
     document.getElementById('outline-status').onclick = function () { outlineCmd('status'); };
