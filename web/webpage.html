@@ -834,19 +834,27 @@
         if (!localPlayer || !localPlayer.position) return;
         var px = Number(localPlayer.position.x), py = Number(localPlayer.position.y);
         if (!Number.isFinite(px) || !Number.isFinite(py)) return;
-        var set = [];
+        /* 客户端/接口的集合上限是 64：超限的 set 会被整条拒绝，客户端继续沿用
+         * 上一轮集合，远离范围的目标就撤不掉了。这里按距离取最近的 64 个。 */
+        var cand = [];
         (entitiesToRender || []).forEach(function (e) {
             if (!e || typeof e.key !== 'string' || e.key.indexOf('mesh:') !== 0) return;
             if (e.is_local) return;
             if (outlineRealOnly && e.type !== 'player') return;
+            var d = 0;
             if (outlineDistM > 0 && e.position) {
                 var dx = Number(e.position.x) - px, dy = Number(e.position.y) - py;
                 if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
-                if (Math.sqrt(dx * dx + dy * dy) > outlineDistM * 100) return;
+                d = Math.sqrt(dx * dx + dy * dy);
+                if (d > outlineDistM * 100) return;
             }
             var mesh = parseInt(e.key.slice(5), 16);
-            if (mesh) set.push(mesh);
+            /* 客户端按 16 进制解析：必须回传 "0x<hex>"，不能回传 parseInt
+             * 得到的十进制数字（那会变成完全不同的地址，读取全失败）。 */
+            if (mesh) cand.push({ key: '0x' + mesh.toString(16), d: d });
         });
+        cand.sort(function (a, b) { return a.d - b.d; });
+        var set = cand.slice(0, 64).map(function (c) { return c.key; });
         var sig = (outlineRealOnly ? 'R' : '-') + outlineDistM + ':' + set.join(',');
         if (sig === outlineAutoSig) return;
         var now = Date.now();
@@ -867,7 +875,8 @@
     }
 
     function outlineApply() {
-        var meshes = Array.from(outlineChecked);
+        /* 与客户端 kMaxMeshes 对齐：多出的勾选不下发，否则整条 set 被拒。 */
+        var meshes = Array.from(outlineChecked).slice(0, 64);
         if (!meshes.length) {
             outlineHistory.push('> 描边选中\n  未勾选任何角色');
             outlineOut.textContent = outlineHistory.join('\n');
