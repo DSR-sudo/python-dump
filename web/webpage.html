@@ -224,6 +224,7 @@
   <div style="margin-bottom:5px;display:flex;align-items:center;gap:10px;color:#bbb;">
     <label style="cursor:pointer;"><input type="checkbox" id="outline-auto" checked> 自动</label>
     <label style="cursor:pointer;"><input type="checkbox" id="outline-real" checked> 仅真人</label>
+    <label style="cursor:pointer;" title="队友=team_id 与本地玩家相同：自动集合剔除队友，只描敌人。取消勾选则队友也进集合。"><input type="checkbox" id="outline-enemy" checked> 仅敌人</label>
     <label>≤<input type="number" id="outline-dist" min="0" max="500" step="5" value="20" style="width:52px;background:#111;color:#ddd;border:1px solid #555;border-radius:3px;padding:1px 3px;">m（0=不限）</label>
   </div>
   <div style="display:flex;gap:4px;flex-wrap:wrap;">
@@ -762,13 +763,17 @@
             if (!mesh) return;
             next['0x' + mesh.toString(16)] = {
                 mesh: mesh,
-                label: (e.type || '?') + ' ' + (e.name || e.id || '') +
+                label: (outlineIsTeammate(e) ? '[队友] ' : '') +
+                       (e.type || '?') + ' ' + (e.name || e.id || '') +
                        ' [0x' + mesh.toString(16).toUpperCase() + ']'
             };
         });
         // 移除已消失的勾选
         outlineChecked.forEach(function (k) { if (!next[k]) outlineChecked.delete(k); });
-        var sig = Object.keys(next).sort().join('|');
+        /* 本地 team_id 进签名：队友标记随本地玩家数据晚到时也要重画行。 */
+        var sig = (localPlayer && Number.isFinite(Number(localPlayer.team_id))
+                   ? Number(localPlayer.team_id) : '-') + '|' +
+                  Object.keys(next).sort().join('|');
         if (sig === lastOutlineKeySig && outlineEntityList.children.length)
             return;
         lastOutlineKeySig = sig;
@@ -794,21 +799,31 @@
     }
 
     /* ---- 自动筛选：仅真人 + 距离（本地玩家为圆心，平面距离，cm→m） ---- */
-    var outlineAuto = true, outlineRealOnly = true, outlineDistM = 20;
+    var outlineAuto = true, outlineRealOnly = true, outlineEnemyOnly = true, outlineDistM = 20;
     var outlineAutoSig = '', outlineAutoAt = 0, outlineArmed = false;
     try {
         outlineAuto = localStorage.getItem('outline.auto') !== '0';
         outlineRealOnly = localStorage.getItem('outline.real') !== '0';
+        outlineEnemyOnly = localStorage.getItem('outline.enemy') !== '0';
         var storedDist = parseInt(localStorage.getItem('outline.dist') || '', 10);
         if (Number.isFinite(storedDist) && storedDist >= 0 && storedDist <= 500) outlineDistM = storedDist;
     } catch (e) { /* 私密模式等无 localStorage 时用默认值 */ }
+    /* 队友判定（用户规则）：team_id 与本地玩家相同即队友。
+     * 本地 team_id 未知（NaN）时无法判定，一律不当队友处理。 */
+    function outlineIsTeammate(e) {
+        if (!localPlayer) return false;
+        var lt = Number(localPlayer.team_id);
+        return Number.isFinite(lt) && Number(e.team_id) === lt;
+    }
     function outlineBindAutoControls() {
         var auto = document.getElementById('outline-auto');
         var real = document.getElementById('outline-real');
+        var enemy = document.getElementById('outline-enemy');
         var dist = document.getElementById('outline-dist');
-        if (!auto || !real || !dist) return;
+        if (!auto || !real || !enemy || !dist) return;
         auto.checked = outlineAuto;
         real.checked = outlineRealOnly;
+        enemy.checked = outlineEnemyOnly;
         dist.value = outlineDistM;
         auto.onchange = function () {
             outlineAuto = auto.checked;
@@ -818,6 +833,10 @@
         real.onchange = function () {
             outlineRealOnly = real.checked;
             try { localStorage.setItem('outline.real', outlineRealOnly ? '1' : '0'); } catch (e) {}
+        };
+        enemy.onchange = function () {
+            outlineEnemyOnly = enemy.checked;
+            try { localStorage.setItem('outline.enemy', outlineEnemyOnly ? '1' : '0'); } catch (e) {}
         };
         dist.onchange = function () {
             var v = parseInt(dist.value, 10);
@@ -842,6 +861,8 @@
             if (!e || typeof e.key !== 'string' || e.key.indexOf('mesh:') !== 0) return;
             if (e.is_local) return;
             if (outlineRealOnly && e.type !== 'player') return;
+            /* 仅敌人：同队队友（team_id 相同）不进自动集合，不描边。 */
+            if (outlineEnemyOnly && outlineIsTeammate(e)) return;
             var d = 0;
             if (outlineDistM > 0 && e.position) {
                 var dx = Number(e.position.x) - px, dy = Number(e.position.y) - py;
@@ -856,7 +877,8 @@
         });
         cand.sort(function (a, b) { return a.d - b.d; });
         var set = cand.slice(0, 64).map(function (c) { return c.key; });
-        var sig = (outlineRealOnly ? 'R' : '-') + outlineDistM + ':' + set.join(',');
+        var sig = (outlineRealOnly ? 'R' : '-') + (outlineEnemyOnly ? 'E' : '-') +
+                  outlineDistM + ':' + set.join(',');
         if (sig === outlineAutoSig) return;
         var now = Date.now();
         if (now - outlineAutoAt < 1000) return;
