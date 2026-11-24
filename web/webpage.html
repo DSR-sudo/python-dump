@@ -233,6 +233,7 @@
     <button id="outline-clear" type="button" style="padding:4px 10px;cursor:pointer;">清空表</button>
     <button id="outline-off" type="button" style="padding:4px 10px;cursor:pointer;">关</button>
     <button id="outline-status" type="button" style="padding:4px 10px;cursor:pointer;">状态</button>
+    <button id="outline-probe" type="button" style="padding:4px 10px;cursor:pointer;" title="只读诊断（不写字节）：勾选了目标就逐个探测勾选的（≤8），否则探测当前下发集合前 8 个。回执分类：WR=可写 LV=已亮(我们) UK=已标记(来源不明) OF=官方接管 NP=无代理 VT=类不符 AN=锚不符 X=跨页 RD/R2=读失败；f=mesh+0x2A6 标志字节，b=代理三字节 7D/80/81">诊断</button>
     <button id="outline-stats" type="button" style="padding:4px 10px;cursor:pointer;" title="命中计数器窗口（读即清零）：hits&gt;0 才证明表命中发生过；stale 非 0 站点已漂移须撤">计数</button>
   </div>
   <pre id="outline-out" style="white-space:pre-wrap;max-height:70px;overflow:auto;margin:4px 0 0;color:#db7;font-size:11px;"></pre>
@@ -900,6 +901,12 @@
         outlineCmd('off');
     };
     document.getElementById('outline-status').onclick = function () { outlineCmd('status'); };
+    document.getElementById('outline-probe').onclick = function () {
+        /* 只读诊断：有勾选就点名探测勾选的（mesh 地址与列表 [0x...] 对上），
+         * 没勾选就探当前下发集合的前 8 个（自动模式=最近目标，含队友）。 */
+        var picked = Array.from(outlineChecked).slice(0, 8);
+        outlineCmd(picked.length ? ('probe ' + picked.join(',')) : 'probe');
+    };
     document.getElementById('outline-stats').onclick = function () { outlineCmd('stats'); };
     document.getElementById('outline-all').onclick = function () {
         Object.keys(outlineRowByKey).forEach(function (k) { outlineRowByKey[k].checked = true; outlineChecked.add(k); });

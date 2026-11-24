@@ -76,7 +76,7 @@ void print_help() {
   con::print_line("  actorkinds start [PORT] start the ActorKinds monitor (34901)");
   con::print_line("  actorkinds stop|status stop or show the ActorKinds monitor");
   con::print_line("  norecoil on|off|status send a NoRecoil hot command (independent)");
-  con::print_line("  outline on|off|status|clear|set <mesh,...>  outline filter hot command");
+  con::print_line("  outline on|off|status|clear|stats|set <mesh,...>|probe [mesh,...]  outline hot command");
   con::print_line("  stream_stats           print RWVG stream counters");
   con::print_line("  help | exit            this help / quit");
 }
@@ -322,7 +322,7 @@ int main(int argc, char **argv) {
       }
     } else if (command == "outline") {
       if (args.empty()) {
-        con::print_line("usage: outline on|off|status|clear|set <mesh,...>");
+        con::print_line("usage: outline on|off|status|clear|stats|set <mesh,...>|probe [mesh,...]");
       } else {
         std::string joined;
         for (size_t i = 0; i < args.size(); ++i) {

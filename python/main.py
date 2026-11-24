@@ -124,7 +124,7 @@ def main():
                 
             elif cmd == "outline":
                 if not args:
-                    log("usage: outline on|off|status|clear|set <mesh,...>", "WARN")
+                    log("usage: outline on|off|status|clear|stats|set <mesh,...>|probe [mesh,...]", "WARN")
                 else:
                     sent = core.send_outline_command("outline " + " ".join(args))
                     log("outline command sent" if sent

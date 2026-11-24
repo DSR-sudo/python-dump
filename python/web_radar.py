@@ -38,14 +38,22 @@ NORECOIL_COMMANDS = frozenset(("on", "off", "status"))
 
 
 def _outline_command_allowed(command: str) -> bool:
-    """描边命令白名单：on/off/status/clear 或 set <mesh,...>（<=64 个十六进制）。"""
-    if command in ("on", "off", "status", "clear"):
+    """描边命令白名单：on/off/status/clear/stats、set <mesh,...>（<=64 个十六
+    进制）或 probe [mesh,...]（只读诊断，<=8 个）。"""
+    if command in ("on", "off", "status", "clear", "stats", "probe"):
         return True
     if command.startswith("set "):
         rest = command[4:]
         if not rest or len(rest) > 1600:
             return False
         if rest.count(",") + 1 > 64:
+            return False
+        return all(c in "0123456789abcdefABCDEFxX, \t" for c in rest)
+    if command.startswith("probe "):
+        rest = command[6:]
+        if not rest or len(rest) > 400:
+            return False
+        if rest.count(",") + 1 > 8:
             return False
         return all(c in "0123456789abcdefABCDEFxX, \t" for c in rest)
     return False
