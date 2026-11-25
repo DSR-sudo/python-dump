@@ -213,28 +213,28 @@
 </div>
 <button id="norecoil-panel-toggle" type="button" title="展开 NoRecoil 面板" style="display:none;position:fixed;right:12px;bottom:44px;z-index:300;padding:6px 12px;background:rgba(25,25,25,.94);color:#7c7;border:1px solid #666;border-radius:6px;font-size:12px;cursor:pointer;">NoRecoil</button>
 
-<!-- 描边筛选面板（dev 会话）：自动=仅真人+距离筛选，或手动勾选 -> set <mesh,...>；scan 侧验证 mesh+0x480 代理链、外部写三字节并按读者身份挂读视图守卫 -->
+<!-- 描边筛选面板（dev 会话）：自动=仅真人+仅敌人+距离筛选，可选 random 间歇描边 -> set <mesh,...>；scan 侧验证 mesh+0x480 代理链、外部写三字节并按读者身份挂读视图守卫 -->
 <div id="outline-panel" style="display:none;position:fixed;right:12px;bottom:190px;z-index:300;background:rgba(25,25,25,.94);border:1px solid #666;border-radius:6px;padding:8px 10px;font-size:12px;color:#ddd;max-width:360px;box-shadow:0 2px 10px rgba(0,0,0,.6);">
-  <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
+  <div id="outline-panel-head" title="拖动移动面板" style="display:flex;align-items:center;gap:6px;margin-bottom:5px;cursor:move;user-select:none;touch-action:none;">
     <div style="font-weight:bold;flex:1;">描边筛选</div>
     <button id="outline-panel-hide" type="button" title="隐藏面板" style="padding:1px 7px;cursor:pointer;background:#444;color:#ddd;border:1px solid #777;border-radius:3px;">–</button>
   </div>
-  <div style="margin-bottom:4px;color:#aaa;">勾选要描边的角色（mesh 键，重建不漂移）：</div>
-  <div id="outline-entity-list" style="max-height:150px;overflow:auto;border:1px solid #444;border-radius:3px;padding:3px 5px;margin-bottom:5px;background:#111;"></div>
-  <div style="margin-bottom:5px;display:flex;align-items:center;gap:10px;color:#bbb;">
+  <div style="margin-bottom:5px;display:flex;align-items:center;gap:10px;color:#bbb;flex-wrap:wrap;">
     <label style="cursor:pointer;"><input type="checkbox" id="outline-auto" checked> 自动</label>
     <label style="cursor:pointer;"><input type="checkbox" id="outline-real" checked> 仅真人</label>
     <label style="cursor:pointer;" title="队友=team_id 与本地玩家相同：自动集合剔除队友，只描敌人。取消勾选则队友也进集合。"><input type="checkbox" id="outline-enemy" checked> 仅敌人</label>
+    <label style="cursor:pointer;" title="间歇描边：勾选后按下方时间范围周期工作——每个时间间隔内取随机时刻，把当前自动范围内的 mesh 描边一段描边时长，其余时间不描。"><input type="checkbox" id="outline-random"> random</label>
     <label>≤<input type="number" id="outline-dist" min="0" max="500" step="5" value="20" style="width:52px;background:#111;color:#ddd;border:1px solid #555;border-radius:3px;padding:1px 3px;">m（0=不限）</label>
   </div>
+  <div id="outline-timer-row" style="margin-bottom:5px;display:none;align-items:center;gap:10px;color:#bbb;flex-wrap:wrap;">
+    <label>每<input type="number" id="outline-interval" min="1" max="60" step="0.5" value="5" style="width:44px;background:#111;color:#ddd;border:1px solid #555;border-radius:3px;padding:1px 3px;">s</label>
+    <label>描<input type="number" id="outline-duration" min="0.1" max="60" step="0.1" value="0.5" style="width:44px;background:#111;color:#ddd;border:1px solid #555;border-radius:3px;padding:1px 3px;">s</label>
+  </div>
   <div style="display:flex;gap:4px;flex-wrap:wrap;">
-    <button id="outline-apply" type="button" style="padding:4px 10px;cursor:pointer;">描边选中</button>
-    <button id="outline-all" type="button" style="padding:4px 10px;cursor:pointer;">全选</button>
-    <button id="outline-none" type="button" style="padding:4px 10px;cursor:pointer;">全不选</button>
     <button id="outline-clear" type="button" style="padding:4px 10px;cursor:pointer;">清空表</button>
     <button id="outline-off" type="button" style="padding:4px 10px;cursor:pointer;">关</button>
     <button id="outline-status" type="button" style="padding:4px 10px;cursor:pointer;">状态</button>
-    <button id="outline-probe" type="button" style="padding:4px 10px;cursor:pointer;" title="只读诊断（不写字节）：勾选了目标就逐个探测勾选的（≤8），否则探测当前下发集合前 8 个。回执分类：WR=可写 LV=已亮(我们) UK=已标记(来源不明) OF=官方接管 NP=无代理 VT=类不符 AN=锚不符 X=跨页 RD/R2=读失败；f=mesh+0x2A6 标志字节，b=代理三字节 7D/80/81">诊断</button>
+    <button id="outline-probe" type="button" style="padding:4px 10px;cursor:pointer;" title="只读诊断（不写字节）：探测当前下发集合前 8 个（自动模式=最近目标）。回执分类：WR=可写 LV=已亮(我们) UK=已标记(来源不明) OF=官方接管 NP=无代理 VT=类不符 AN=锚不符 X=跨页 RD/R2=读失败；f=mesh+0x2A6 标志字节，b=代理三字节 7D/80/81">诊断</button>
     <button id="outline-stats" type="button" style="padding:4px 10px;cursor:pointer;" title="命中计数器窗口（读即清零）：hits&gt;0 才证明表命中发生过；stale 非 0 站点已漂移须撤">计数</button>
   </div>
   <pre id="outline-out" style="white-space:pre-wrap;max-height:70px;overflow:auto;margin:4px 0 0;color:#db7;font-size:11px;"></pre>
@@ -702,21 +702,28 @@
 
     window.addEventListener('resize', () => { if (isFollowing) recenterView(); });
 
-    // ---- 描边筛选面板（dev 会话；mesh 键勾选 -> /api/outline） ----
+    // ---- 描边筛选面板（dev 会话；自动筛选 -> /api/outline，可拖动） ----
     var outlinePanel = document.getElementById('outline-panel');
     var outlineToggle = document.getElementById('outline-panel-toggle');
     var outlineOut = document.getElementById('outline-out');
-    var outlineEntityList = document.getElementById('outline-entity-list');
     var outlineAvailable = false;
-    var outlineChecked = new Set();
-    var outlineRowByKey = {};
-    var lastOutlineKeySig = '';
 
+    /* ---- 可拖动（同 NoRecoil）：按住标题栏整体移动，首次拖动从
+     * right/bottom 定位切换为 left/top；位置记忆在本次会话内。 ---- */
+    var outlineHead = document.getElementById('outline-panel-head');
+    var outlinePanelPos = null;
+    function applyOutlinePanelPos() {
+        if (!outlinePanelPos) return;
+        outlinePanel.style.left = outlinePanelPos.left + 'px';
+        outlinePanel.style.top = outlinePanelPos.top + 'px';
+        outlinePanel.style.right = 'auto';
+        outlinePanel.style.bottom = 'auto';
+    }
     function setOutlineAvailable(on) {
         outlineAvailable = !!on;
-        outlinePanel.style.display = on ? 'block' : 'none';
-        outlineToggle.style.display = on ? 'none' : 'none';
-        if (!on) outlinePanel.style.display = 'none';
+        if (on) { outlinePanel.style.display = 'block'; applyOutlinePanelPos(); }
+        else outlinePanel.style.display = 'none';
+        outlineToggle.style.display = 'none';
     }
     document.getElementById('outline-panel-hide').onclick = function () {
         outlinePanel.style.display = 'none';
@@ -724,8 +731,32 @@
     };
     outlineToggle.onclick = function () {
         outlinePanel.style.display = 'block';
+        applyOutlinePanelPos();
         outlineToggle.style.display = 'none';
     };
+    outlineHead.addEventListener('pointerdown', function (e) {
+        if (e.button !== 0 && e.pointerType === 'mouse') return;
+        // 指针落在隐藏按钮上时不启动拖拽：setPointerCapture 会把后续指针事件
+        // （含合成 click）重定向到标题栏，按钮的 click 将永远收不到。
+        if (e.target && e.target.closest && e.target.closest('#outline-panel-hide')) return;
+        var rect = outlinePanel.getBoundingClientRect();
+        if (!outlinePanelPos) outlinePanelPos = { left: rect.left, top: rect.top };
+        var dx = e.clientX - rect.left, dy = e.clientY - rect.top;
+        outlineHead.setPointerCapture(e.pointerId);
+        function onMove(ev) {
+            outlinePanelPos.left = Math.max(0, Math.min(window.innerWidth - 60, ev.clientX - dx));
+            outlinePanelPos.top = Math.max(0, Math.min(window.innerHeight - 30, ev.clientY - dy));
+            applyOutlinePanelPos();
+        }
+        function onUp() {
+            outlineHead.removeEventListener('pointermove', onMove);
+            outlineHead.removeEventListener('pointerup', onUp);
+            outlineHead.removeEventListener('pointercancel', onUp);
+        }
+        outlineHead.addEventListener('pointermove', onMove);
+        outlineHead.addEventListener('pointerup', onUp);
+        outlineHead.addEventListener('pointercancel', onUp);
+    });
 
     var outlineHistory = [];
     function outlineCmd(command) {
@@ -749,64 +780,29 @@
           });
     }
 
-    /* 数据每轮刷新：仅当 mesh 键集合变化时才重建列表（重建会把正在被点击的
-     * 复选框换掉，单选就会失效）；勾选状态按 mesh 键保持。 */
-    function outlineSyncEntities() {
-        if (!outlineEntityList) return;
-        var next = {};
-        (entitiesToRender || []).forEach(function (e) {
-            /* 订阅实体不带 mesh 字段：mesh 编码在稳定 key "mesh:<hex>" 里
-             * （actor-scan 实体才有；旧流实体无 mesh，跳过）。 */
-            var mesh = 0;
-            if (e && typeof e.key === 'string' && e.key.indexOf('mesh:') === 0)
-                mesh = parseInt(e.key.slice(5), 16) || 0;
-            if (!mesh) return;
-            next['0x' + mesh.toString(16)] = {
-                mesh: mesh,
-                label: (outlineIsTeammate(e) ? '[队友] ' : '') +
-                       (e.type || '?') + ' ' + (e.name || e.id || '') +
-                       ' [0x' + mesh.toString(16).toUpperCase() + ']'
-            };
-        });
-        // 移除已消失的勾选
-        outlineChecked.forEach(function (k) { if (!next[k]) outlineChecked.delete(k); });
-        /* 本地 team_id 进签名：队友标记随本地玩家数据晚到时也要重画行。 */
-        var sig = (localPlayer && Number.isFinite(Number(localPlayer.team_id))
-                   ? Number(localPlayer.team_id) : '-') + '|' +
-                  Object.keys(next).sort().join('|');
-        if (sig === lastOutlineKeySig && outlineEntityList.children.length)
-            return;
-        lastOutlineKeySig = sig;
-        outlineEntityList.innerHTML = '';
-        outlineRowByKey = {};
-        Object.keys(next).sort().forEach(function (k) {
-            var row = document.createElement('label');
-            row.style.display = 'block';
-            row.style.cursor = 'pointer';
-            var cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.checked = outlineChecked.has(k);
-            cb.onchange = function () {
-                if (cb.checked) outlineChecked.add(k); else outlineChecked.delete(k);
-            };
-            row.appendChild(cb);
-            row.appendChild(document.createTextNode(' ' + next[k].label));
-            outlineEntityList.appendChild(row);
-            outlineRowByKey[k] = cb;
-        });
-        if (!Object.keys(next).length)
-            outlineEntityList.innerHTML = '<div style="color:#777">（暂无带 mesh 的实体）</div>';
-    }
-
-    /* ---- 自动筛选：仅真人 + 距离（本地玩家为圆心，平面距离，cm→m） ---- */
+    /* ---- 自动筛选：仅真人 + 仅敌人 + 距离（本地玩家为圆心，平面距离，cm→m），
+     * 可选 random 间歇：每个时间间隔内随机时刻亮一段描边时长 ---- */
     var outlineAuto = true, outlineRealOnly = true, outlineEnemyOnly = true, outlineDistM = 20;
+    var outlineRandom = false, outlineIntervalS = 5, outlineDurationS = 0.5;
     var outlineAutoSig = '', outlineAutoAt = 0, outlineArmed = false;
+    /* on→set 之间客户端需要 ~800ms 挂载：延迟 set 用计时器持有，亮窗提前
+     * 关闭或手动清空/关闭时取消，避免 clear 之后表又被迟到的 set 填回来。 */
+    var outlineSetTimer = 0, outlineArmedAt = 0;
+    function outlineScheduleSet(keys, delay) {
+        clearTimeout(outlineSetTimer);
+        outlineSetTimer = setTimeout(function () { outlineCmd('set ' + keys.join(',')); }, delay);
+    }
     try {
         outlineAuto = localStorage.getItem('outline.auto') !== '0';
         outlineRealOnly = localStorage.getItem('outline.real') !== '0';
         outlineEnemyOnly = localStorage.getItem('outline.enemy') !== '0';
         var storedDist = parseInt(localStorage.getItem('outline.dist') || '', 10);
         if (Number.isFinite(storedDist) && storedDist >= 0 && storedDist <= 500) outlineDistM = storedDist;
+        outlineRandom = localStorage.getItem('outline.random') === '1';
+        var storedIv = parseFloat(localStorage.getItem('outline.interval') || '');
+        if (Number.isFinite(storedIv) && storedIv >= 1 && storedIv <= 60) outlineIntervalS = storedIv;
+        var storedDur = parseFloat(localStorage.getItem('outline.duration') || '');
+        if (Number.isFinite(storedDur) && storedDur >= 0.1 && storedDur <= 60) outlineDurationS = storedDur;
     } catch (e) { /* 私密模式等无 localStorage 时用默认值 */ }
     /* 队友判定（用户规则）：team_id 与本地玩家相同即队友。
      * 本地 team_id 未知（NaN）时无法判定，一律不当队友处理。 */
@@ -820,11 +816,21 @@
         var real = document.getElementById('outline-real');
         var enemy = document.getElementById('outline-enemy');
         var dist = document.getElementById('outline-dist');
-        if (!auto || !real || !enemy || !dist) return;
+        var rand = document.getElementById('outline-random');
+        var iv = document.getElementById('outline-interval');
+        var dur = document.getElementById('outline-duration');
+        var timerRow = document.getElementById('outline-timer-row');
+        if (!auto || !real || !enemy || !dist || !rand || !iv || !dur || !timerRow) return;
         auto.checked = outlineAuto;
         real.checked = outlineRealOnly;
         enemy.checked = outlineEnemyOnly;
         dist.value = outlineDistM;
+        rand.checked = outlineRandom;
+        iv.value = outlineIntervalS;
+        dur.value = outlineDurationS;
+        timerRow.style.display = outlineRandom ? 'flex' : 'none';
+        /* 周期参数变化即重锚：下一轮从新的间隔/时长重新随机。 */
+        function reflash() { outlineFlashAnchor = 0; }
         auto.onchange = function () {
             outlineAuto = auto.checked;
             try { localStorage.setItem('outline.auto', outlineAuto ? '1' : '0'); } catch (e) {}
@@ -844,16 +850,79 @@
             outlineDistM = v;
             try { localStorage.setItem('outline.dist', String(v)); } catch (e) {}
         };
+        rand.onchange = function () {
+            outlineRandom = rand.checked;
+            try { localStorage.setItem('outline.random', outlineRandom ? '1' : '0'); } catch (e) {}
+            timerRow.style.display = outlineRandom ? 'flex' : 'none';
+            reflash();
+        };
+        iv.onchange = function () {
+            var v = parseFloat(iv.value);
+            if (!Number.isFinite(v) || v < 1 || v > 60) { v = 5; iv.value = 5; }
+            outlineIntervalS = v;
+            try { localStorage.setItem('outline.interval', String(v)); } catch (e) {}
+            reflash();
+        };
+        dur.onchange = function () {
+            var v = parseFloat(dur.value);
+            if (!Number.isFinite(v) || v < 0.1 || v > 60) { v = 0.5; dur.value = 0.5; }
+            outlineDurationS = v;
+            try { localStorage.setItem('outline.duration', String(v)); } catch (e) {}
+            reflash();
+        };
     }
     outlineBindAutoControls();
 
+    /* ---- random 间歇调度：每个时间间隔（interval）内取随机时刻起亮一段
+     * 描边时长（duration）。未开 random、时长 ≥ 间隔或参数非法视为常亮。
+     * outlineFlashAnchor=当前周期起点，outlineFlashOffset=本周期随机亮起点。 */
+    var outlineFlashAnchor = 0, outlineFlashOffset = 0, outlineWasFlash = true;
+    function outlineFlashOn(now) {
+        if (!outlineRandom) return true;
+        var cyc = outlineIntervalS * 1000, dur = outlineDurationS * 1000;
+        if (!(cyc > 0) || !(dur > 0) || dur >= cyc) return true;
+        if (!outlineFlashAnchor || now < outlineFlashAnchor || now - outlineFlashAnchor >= cyc) {
+            outlineFlashAnchor = now;
+            outlineFlashOffset = Math.random() * (cyc - dur);
+        }
+        var t = now - outlineFlashAnchor;
+        return t >= outlineFlashOffset && t < outlineFlashOffset + dur;
+    }
+
     /* 每轮数据到达后计算目标集合；只在签名变化且距上次推送 ≥1s 时下发，
-     * 防止移动目标反复穿越距离环刷爆命令通道。集合变空发 clear。 */
+     * 防止移动目标反复穿越距离环刷爆命令通道。集合变空发 clear。
+     * random 勾选时只在亮窗内推表；窗外把上一轮的表清掉（clear 不走 1s
+     * 限流——0.5s 的亮窗可能整窗被限流卡掉），亮窗开启瞬间也绕过限流。 */
     function outlineAutoTick() {
         if (!outlineAuto || !outlineAvailable) return;
         if (!localPlayer || !localPlayer.position) return;
         var px = Number(localPlayer.position.x), py = Number(localPlayer.position.y);
         if (!Number.isFinite(px) || !Number.isFinite(py)) return;
+        var now = Date.now();
+        var flash = outlineFlashOn(now);
+        if (!flash) {
+            outlineWasFlash = false;
+            if (outlineAutoSig !== '') {
+                outlineAutoSig = '';
+                outlineAutoAt = now;
+                clearTimeout(outlineSetTimer);
+                outlineCmd('clear');
+            }
+            /* 空闲期预挂载：random 首个亮窗可能比 on→set 的 800ms 挂载延迟
+             * 还短，提前把 on 发掉，亮窗一到就能直接推表。 */
+            if (!outlineArmed) {
+                outlineArmed = true;
+                outlineArmedAt = now;
+                outlineCmd('on');
+            }
+            return;
+        }
+        if (!outlineWasFlash) {
+            /* 新亮窗（或取消 random）：立即允许推表，别让上一窗的 clear
+             * 占用 1s 限流窗口。 */
+            outlineWasFlash = true;
+            outlineAutoAt = 0;
+        }
         /* 客户端/接口的集合上限是 64：超限的 set 会被整条拒绝，客户端继续沿用
          * 上一轮集合，远离范围的目标就撤不掉了。这里按距离取最近的 64 个。 */
         var cand = [];
@@ -878,9 +947,9 @@
         cand.sort(function (a, b) { return a.d - b.d; });
         var set = cand.slice(0, 64).map(function (c) { return c.key; });
         var sig = (outlineRealOnly ? 'R' : '-') + (outlineEnemyOnly ? 'E' : '-') +
+                  (outlineRandom ? 'F' + outlineIntervalS + '/' + outlineDurationS : '') +
                   outlineDistM + ':' + set.join(',');
         if (sig === outlineAutoSig) return;
-        var now = Date.now();
         if (now - outlineAutoAt < 1000) return;
         outlineAutoSig = sig;
         outlineAutoAt = now;
@@ -891,30 +960,26 @@
         if (!outlineArmed) {
             outlineCmd('on');
             outlineArmed = true;
-            setTimeout(function () { outlineCmd('set ' + set.join(',')); }, 800);
+            outlineArmedAt = now;
+            outlineScheduleSet(set, 800);
+        } else if (now - outlineArmedAt < 900) {
+            /* 刚预挂载完就开窗：补足剩余挂载时间再推，别让 set 跑在 on 前面。 */
+            outlineScheduleSet(set, Math.max(50, 900 - (now - outlineArmedAt)));
         } else {
             outlineCmd('set ' + set.join(','));
         }
     }
 
-    function outlineApply() {
-        /* 与客户端 kMaxMeshes 对齐：多出的勾选不下发，否则整条 set 被拒。 */
-        var meshes = Array.from(outlineChecked).slice(0, 64);
-        if (!meshes.length) {
-            outlineHistory.push('> 描边选中\n  未勾选任何角色');
-            outlineOut.textContent = outlineHistory.join('\n');
-            return;
-        }
-        /* 描边选中 = 先挂载（幂等），再推表；两步回复都会留在输出区。 */
-        outlineCmd('on');
-        setTimeout(function () { outlineCmd('set ' + meshes.join(',')); }, 800);
-    }
-    document.getElementById('outline-apply').onclick = outlineApply;
-    document.getElementById('outline-clear').onclick = function () { outlineCmd('clear'); };
+    document.getElementById('outline-clear').onclick = function () {
+        clearTimeout(outlineSetTimer);
+        outlineCmd('clear');
+    };
     document.getElementById('outline-off').onclick = function () {
         /* 手动关 = 同时停掉自动模式：否则下一轮数据刷新会立刻重新 on+set，
          * 客户端又去读 proxy。用户重新勾选“自动”后才会再次武装。 */
+        clearTimeout(outlineSetTimer);
         outlineArmed = false;
+        outlineArmedAt = 0;
         outlineAutoSig = '';
         outlineAuto = false;
         var autoBox = document.getElementById('outline-auto');
@@ -924,20 +989,11 @@
     };
     document.getElementById('outline-status').onclick = function () { outlineCmd('status'); };
     document.getElementById('outline-probe').onclick = function () {
-        /* 只读诊断：有勾选就点名探测勾选的（mesh 地址与列表 [0x...] 对上），
-         * 没勾选就探当前下发集合的前 8 个（自动模式=最近目标，含队友）。 */
-        var picked = Array.from(outlineChecked).slice(0, 8);
-        outlineCmd(picked.length ? ('probe ' + picked.join(',')) : 'probe');
+        /* 只读诊断：探测当前下发集合的前 8 个（自动模式=最近目标，含队友；
+         * random 间歇模式下=最近一次亮窗推过的表）。 */
+        outlineCmd('probe');
     };
     document.getElementById('outline-stats').onclick = function () { outlineCmd('stats'); };
-    document.getElementById('outline-all').onclick = function () {
-        Object.keys(outlineRowByKey).forEach(function (k) { outlineRowByKey[k].checked = true; outlineChecked.add(k); });
-    };
-    document.getElementById('outline-none').onclick = function () {
-        Object.keys(outlineRowByKey).forEach(function (k) { outlineRowByKey[k].checked = false; });
-        outlineChecked.clear();
-    };
-    outlineSyncEntities();
 
     // ===============================================================
     // == 修改点 1: 重写鼠标滚轮缩放逻辑 ==
@@ -1005,7 +1061,6 @@
             dataChangedAt = Date.now();
             if (token !== dataToken) dataToken = token;
             entitiesToRender = [...data.entities];
-            if (typeof outlineSyncEntities === 'function') outlineSyncEntities();
             if (typeof outlineAutoTick === 'function') outlineAutoTick();
             itemsToRender = Array.isArray(data.items) ? [...data.items] : [];
             localPlayer = data.local_player;
